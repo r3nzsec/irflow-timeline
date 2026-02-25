@@ -1,0 +1,26 @@
+diff --git a/node_modules/@ts-evtx/core/dist/src/evtx/EvtxFile.js b/node_modules/@ts-evtx/core/dist/src/evtx/EvtxFile.js
+index 9756967..e72c33c 100644
+--- a/node_modules/@ts-evtx/core/dist/src/evtx/EvtxFile.js
++++ b/node_modules/@ts-evtx/core/dist/src/evtx/EvtxFile.js
+@@ -40,8 +40,8 @@ export class EvtxFile {
+     static async open(path) {
+         const buffer = await fs.promises.readFile(path);
+         // Check file size (reasonable limit for EVTX files)
+-        if (buffer.length > 100 * 1024 * 1024) { // 100MB limit
+-            throw new Error(`EVTX file too large: ${buffer.length} bytes (max 100MB)`);
++        if (buffer.length > 3 * 1024 * 1024 * 1024) { // 3GB limit
++            throw new Error(`EVTX file too large: ${buffer.length} bytes (max 3GB)`);
+         }
+         return new EvtxFile(buffer);
+     }
+@@ -49,8 +49,8 @@ export class EvtxFile {
+     static openSync(path) {
+         const buffer = fs.readFileSync(path);
+         // Check file size (reasonable limit for EVTX files)
+-        if (buffer.length > 100 * 1024 * 1024) { // 100MB limit
+-            throw new Error(`EVTX file too large: ${buffer.length} bytes (max 100MB)`);
++        if (buffer.length > 3 * 1024 * 1024 * 1024) { // 3GB limit
++            throw new Error(`EVTX file too large: ${buffer.length} bytes (max 3GB)`);
+         }
+         return new EvtxFile(buffer);
+     }

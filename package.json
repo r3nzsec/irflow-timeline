@@ -1,0 +1,110 @@
+{
+  "name": "irflow-timeline",
+  "version": "2.0.0",
+  "description": "IRFlow Timeline — High-performance DFIR timeline viewer for macOS (30-50GB+ CSV/XLSX)",
+  "main": "main.js",
+  "author": "DFIR Community",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "build:renderer": "vite build",
+    "start": "npm run build:renderer && electron .",
+    "dist": "npm run build:renderer && electron-builder --mac",
+    "dist:dmg": "npm run build:renderer && electron-builder --mac dmg",
+    "dist:universal": "npm run build:renderer && electron-builder --mac --universal",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "postinstall": "patch-package"
+  },
+  "build": {
+    "appId": "com.dfir.irflow-timeline",
+    "productName": "IRFlow Timeline",
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "darkModeSupport": true,
+      "hardenedRuntime": true
+    },
+    "dmg": {
+      "title": "IRFlow Timeline",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "files": [
+      "dist/**/*",
+      "main.js",
+      "preload.js",
+      "db.js",
+      "parser.js",
+      "assets/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "fileAssociations": [
+      {
+        "ext": "csv",
+        "name": "CSV File",
+        "role": "Viewer"
+      },
+      {
+        "ext": "tsv",
+        "name": "TSV File",
+        "role": "Viewer"
+      },
+      {
+        "ext": "xlsx",
+        "name": "Excel File",
+        "role": "Viewer"
+      },
+      {
+        "ext": "plaso",
+        "name": "Plaso File",
+        "role": "Viewer"
+      },
+      {
+        "ext": "evtx",
+        "name": "EVTX File",
+        "role": "Viewer"
+      }
+    ]
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "patch-package": "^8.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^6.0.7",
+    "wait-on": "^8.0.1"
+  },
+  "dependencies": {
+    "@ts-evtx/core": "^1.1.1",
+    "better-sqlite3": "^11.7.0",
+    "csv-parser": "^3.0.0",
+    "exceljs": "^4.4.0"
+  }
+}

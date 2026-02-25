@@ -1,0 +1,872 @@
+/**
+ * main.js — Electron main process for IRFlow Timeline
+ *
+ * Coordinates between the renderer (React UI) and the backend
+ * (SQLite DB + streaming parser). All data operations happen here
+ * in the main process, with results sent to renderer via IPC.
+ */
+
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require("electron");
+const path = require("path");
+const fs = require("fs");
+const TimelineDB = require("./db");
+const { parseFile, getXLSXSheets } = require("./parser");
+
+let mainWindow;
+const db = new TimelineDB();
+let tabCounter = 0;
+
+// ── macOS lifecycle ────────────────────────────────────────────────
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    db.closeAll();
+    app.quit();
+  }
+});
+
+app.on("activate", () => {
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+});
+
+app.on("before-quit", () => {
+  db.closeAll();
+});
+
+app.on("open-file", (event, filePath) => {
+  event.preventDefault();
+  if (mainWindow && mainWindow.webContents) {
+    importFile(filePath);
+  } else {
+    app.pendingFilePath = filePath;
+  }
+});
+
+// ── Window ─────────────────────────────────────────────────────────
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1500,
+    height: 950,
+    minWidth: 900,
+    minHeight: 600,
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 16, y: 16 },
+    vibrancy: "under-window",
+    backgroundColor: "#0f1114",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+    show: false,
+  });
+
+  const isDev = !app.isPackaged;
+  if (isDev) {
+    mainWindow.loadURL("http://localhost:5173");
+  } else {
+    mainWindow.loadFile(path.join(__dirname, "dist", "index.html"));
+  }
+
+  mainWindow.once("ready-to-show", () => {
+    mainWindow.show();
+    if (app.pendingFilePath) {
+      importFile(app.pendingFilePath);
+      delete app.pendingFilePath;
+    }
+  });
+
+  mainWindow.on("closed", () => { mainWindow = null; });
+
+  // Forward right-click coordinates to renderer via IPC.
+  // On macOS with external trackpads, DOM contextmenu events may not reach the renderer,
+  // so we forward from the main process where the event always fires.
+  mainWindow.webContents.on("context-menu", (event, params) => {
+    event.preventDefault();
+    mainWindow.webContents.send("native-context-menu", { x: params.x, y: params.y });
+  });
+
+  buildMenu();
+}
+
+// ── File import ────────────────────────────────────────────────────
+async function importFile(filePath) {
+  const tabId = `tab_${++tabCounter}_${Date.now()}`;
+  const fileName = path.basename(filePath);
+  const ext = path.extname(filePath).toLowerCase();
+
+  // For XLSX, check for multiple sheets
+  let sheetName = undefined;
+  if (ext === ".xlsx" || ext === ".xls" || ext === ".xlsm") {
+    try {
+      const sheets = await getXLSXSheets(filePath);
+      if (sheets.length > 1) {
+        // Ask user which sheet
+        mainWindow.webContents.send("sheet-selection", {
+          tabId,
+          fileName,
+          filePath,
+          sheets,
+        });
+        return;
+      }
+    } catch (e) {
+      // Continue with default sheet
+    }
+  }
+
+  startImport(filePath, tabId, fileName, sheetName);
+}
+
+async function startImport(filePath, tabId, fileName, sheetName) {
+  // Notify renderer that import has started
+  mainWindow.webContents.send("import-start", {
+    tabId,
+    fileName,
+    filePath,
+  });
+
+  try {
+    const result = await parseFile(filePath, tabId, db, (rows, bytesRead, totalBytes) => {
+      mainWindow.webContents.send("import-progress", {
+        tabId,
+        rowsImported: rows,
+        bytesRead,
+        totalBytes,
+        percent: totalBytes > 0 ? Math.round((bytesRead / totalBytes) * 100) : 0,
+      });
+    }, sheetName);
+
+    // Fetch initial window of data (windowed — not all rows)
+    const initialData = db.queryRows(tabId, {
+      offset: 0,
+      limit: 5000,
+      sortCol: null,
+      sortDir: "asc",
+    });
+
+    const emptyColumns = db.getEmptyColumns(tabId);
+
+    mainWindow.webContents.send("import-complete", {
+      tabId,
+      fileName,
+      headers: result.headers,
+      rowCount: result.rowCount,
+      tsColumns: result.tsColumns,
+      numericColumns: result.numericColumns || [],
+      initialRows: initialData.rows,
+      totalFiltered: initialData.totalFiltered,
+      emptyColumns,
+    });
+
+    // Start building FTS search index in background (non-blocking, chunked)
+    db.buildFtsAsync(tabId, (progress) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("fts-progress", { tabId, ...progress });
+      }
+    }).catch((err) => {
+      console.error(`FTS index build failed for tab ${tabId}:`, err?.message || err);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("fts-progress", { tabId, indexed: 0, total: 0, done: true, error: err?.message });
+      }
+    });
+  } catch (err) {
+    mainWindow.webContents.send("import-error", {
+      tabId,
+      fileName,
+      error: err.message,
+    });
+  }
+}
+
+// ── IPC Handlers ───────────────────────────────────────────────────
+
+// Open file dialog
+ipcMain.handle("open-file-dialog", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openFile", "multiSelections"],
+    filters: [
+      { name: "Timeline Files", extensions: ["csv", "tsv", "txt", "log", "xlsx", "xls", "plaso", "evtx"] },
+      { name: "CSV Files", extensions: ["csv", "tsv", "txt", "log"] },
+      { name: "Excel Files", extensions: ["xlsx", "xls", "xlsm"] },
+      { name: "Plaso Files", extensions: ["plaso"] },
+      { name: "EVTX Files", extensions: ["evtx"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
+  });
+  if (result.canceled) return null;
+  await Promise.allSettled(result.filePaths.map((fp) => importFile(fp)));
+  return true;
+});
+
+// Query rows (the main data fetch for virtual scrolling)
+ipcMain.handle("query-rows", (event, { tabId, options }) => {
+  return db.queryRows(tabId, options);
+});
+
+// Toggle bookmark
+ipcMain.handle("toggle-bookmark", (event, { tabId, rowId }) => {
+  return db.toggleBookmark(tabId, rowId);
+});
+
+// Bulk set bookmarks
+ipcMain.handle("set-bookmarks", (event, { tabId, rowIds, add }) => {
+  db.setBookmarks(tabId, rowIds, add);
+  return true;
+});
+
+// Get bookmark count
+ipcMain.handle("get-bookmark-count", (event, { tabId }) => {
+  return db.getBookmarkCount(tabId);
+});
+
+// Tag operations
+ipcMain.handle("add-tag", (event, { tabId, rowId, tag }) => {
+  db.addTag(tabId, rowId, tag);
+  return true;
+});
+
+ipcMain.handle("remove-tag", (event, { tabId, rowId, tag }) => {
+  db.removeTag(tabId, rowId, tag);
+  return true;
+});
+
+ipcMain.handle("get-all-tags", (event, { tabId }) => {
+  return db.getAllTags(tabId);
+});
+
+ipcMain.handle("get-all-tag-data", (event, { tabId }) => {
+  return db.getAllTagData(tabId);
+});
+
+ipcMain.handle("get-bookmarked-ids", (event, { tabId }) => {
+  return db.getBookmarkedIds(tabId);
+});
+
+ipcMain.handle("bulk-add-tags", (event, { tabId, tagMap }) => {
+  db.bulkAddTags(tabId, tagMap);
+  return true;
+});
+
+// IOC matching
+ipcMain.handle("load-ioc-file", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openFile"],
+    filters: [
+      { name: "IOC Files", extensions: ["txt", "csv", "ioc"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
+    title: "Open IOC List",
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  try {
+    const raw = fs.readFileSync(result.filePaths[0], "utf-8");
+    return { content: raw, fileName: path.basename(result.filePaths[0]) };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+ipcMain.handle("match-iocs", (event, { tabId, iocPatterns, batchSize }) => {
+  return db.matchIocs(tabId, iocPatterns, batchSize || 200);
+});
+
+// Close tab
+ipcMain.handle("close-tab", (event, { tabId }) => {
+  db.closeTab(tabId);
+  return true;
+});
+
+// Get column stats
+ipcMain.handle("get-column-stats", (event, { tabId, colName, options }) => {
+  return db.getColumnStats(tabId, colName, options);
+});
+
+// Get unique values for a column (checkbox filter dropdown)
+ipcMain.handle("get-column-unique-values", (event, { tabId, colName, options }) => {
+  return db.getColumnUniqueValues(tabId, colName, options);
+});
+
+// Get columns that are entirely empty
+ipcMain.handle("get-empty-columns", (event, { tabId }) => {
+  return db.getEmptyColumns(tabId);
+});
+
+// Get group values with counts (column grouping)
+ipcMain.handle("get-group-values", (event, { tabId, groupCol, options }) => {
+  return db.getGroupValues(tabId, groupCol, options);
+});
+
+// Export filtered data (CSV or XLSX)
+ipcMain.handle("export-filtered", async (event, { tabId, options }) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: `filtered_export.csv`,
+    filters: [
+      { name: "CSV Files", extensions: ["csv"] },
+      { name: "Excel Files", extensions: ["xlsx"] },
+    ],
+  });
+  if (result.canceled) return false;
+
+  const exportData = db.exportQuery(tabId, options);
+  if (!exportData) return false;
+
+  const isXlsx = result.filePath.toLowerCase().endsWith(".xlsx");
+
+  if (isXlsx) {
+    const ExcelJS = require("exceljs");
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Export");
+
+    // Add header row
+    sheet.addRow(exportData.headers);
+    // Style header
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true };
+    headerRow.eachCell((cell) => {
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF161B22" } };
+      cell.font = { bold: true, color: { argb: "FF58A6FF" } };
+    });
+
+    // Stream rows
+    let count = 0;
+    for (const rawRow of exportData.iterator) {
+      const values = exportData.safeCols.map((sc) => rawRow[sc] || "");
+      sheet.addRow(values);
+      count++;
+      if (count % 100000 === 0) {
+        mainWindow.webContents.send("export-progress", { count });
+      }
+    }
+
+    // Auto-fit column widths (approximate)
+    sheet.columns.forEach((col, i) => {
+      const header = exportData.headers[i] || "";
+      let maxLen = header.length;
+      col.eachCell({ includeEmpty: false }, (cell) => {
+        const len = cell.value ? String(cell.value).length : 0;
+        if (len > maxLen) maxLen = len;
+      });
+      col.width = Math.min(Math.max(maxLen + 2, 8), 60);
+    });
+
+    await workbook.xlsx.writeFile(result.filePath);
+    return { count, filePath: result.filePath };
+  }
+
+  // CSV export
+  const writeStream = fs.createWriteStream(result.filePath, { encoding: "utf-8" });
+
+  // Write header
+  writeStream.write(exportData.headers.join(",") + "\n");
+
+  // Stream rows
+  let count = 0;
+  for (const rawRow of exportData.iterator) {
+    const values = exportData.safeCols.map((sc) => {
+      const val = rawRow[sc] || "";
+      return val.includes(",") || val.includes('"') || val.includes("\n")
+        ? `"${val.replace(/"/g, '""')}"`
+        : val;
+    });
+    writeStream.write(values.join(",") + "\n");
+    count++;
+    if (count % 100000 === 0) {
+      mainWindow.webContents.send("export-progress", { count });
+    }
+  }
+
+  writeStream.end();
+  return { count, filePath: result.filePath };
+});
+
+// Generate HTML report from bookmarked/tagged events
+ipcMain.handle("generate-report", async (event, { tabId, fileName, tagColors }) => {
+  const reportData = db.getReportData(tabId);
+  if (!reportData) return { error: "No data available" };
+
+  const result = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: `${fileName.replace(/\.[^.]+$/, "")}_report.html`,
+    filters: [{ name: "HTML Report", extensions: ["html"] }],
+  });
+  if (result.canceled) return null;
+
+  const html = buildReportHtml(reportData, fileName, tagColors);
+  fs.writeFileSync(result.filePath, html, "utf-8");
+  return { filePath: result.filePath };
+});
+
+// Sheet selection response (for multi-sheet XLSX)
+ipcMain.handle("select-sheet", (event, { filePath, tabId, fileName, sheetName }) => {
+  startImport(filePath, tabId, fileName, sheetName);
+});
+
+// Get tab info
+ipcMain.handle("get-tab-info", (event, { tabId }) => {
+  return db.getTabInfo(tabId);
+});
+
+// FTS build status check
+ipcMain.handle("get-fts-status", (event, { tabId }) => {
+  return db.getFtsStatus(tabId);
+});
+
+// Search count across a tab (for cross-tab find)
+ipcMain.handle("search-count", (event, { tabId, searchTerm, searchMode, searchCondition }) => {
+  return db.searchCount(tabId, searchTerm, searchMode, searchCondition);
+});
+
+// Histogram data for timeline visualization
+ipcMain.handle("get-histogram-data", (event, { tabId, colName, options }) => {
+  return db.getHistogramData(tabId, colName, options);
+});
+
+ipcMain.handle("get-stacking-data", (event, { tabId, colName, options }) => {
+  return db.getStackingData(tabId, colName, options);
+});
+
+ipcMain.handle("get-gap-analysis", (event, { tabId, colName, gapThresholdMinutes, options }) => {
+  return db.getGapAnalysis(tabId, colName, gapThresholdMinutes, options);
+});
+
+ipcMain.handle("get-log-source-coverage", (event, { tabId, sourceCol, tsCol, options }) => {
+  return db.getLogSourceCoverage(tabId, sourceCol, tsCol, options);
+});
+
+ipcMain.handle("get-burst-analysis", (event, { tabId, colName, windowMinutes, thresholdMultiplier, options }) => {
+  return db.getBurstAnalysis(tabId, colName, windowMinutes, thresholdMultiplier, options);
+});
+
+ipcMain.handle("bulk-tag-by-time-range", (event, { tabId, colName, ranges }) => {
+  return db.bulkTagByTimeRange(tabId, colName, ranges);
+});
+
+// Merge multiple tabs into a single chronological timeline
+ipcMain.handle("merge-tabs", async (event, { mergedTabId, sources }) => {
+  try {
+    mainWindow.webContents.send("import-start", {
+      tabId: mergedTabId,
+      fileName: "Merged Timeline",
+      filePath: "(merged)",
+    });
+
+    const result = db.mergeTabs(mergedTabId, sources, (progress) => {
+      mainWindow.webContents.send("import-progress", {
+        tabId: mergedTabId,
+        rowsImported: progress.current,
+        bytesRead: progress.current,
+        totalBytes: progress.total,
+        percent: progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0,
+      });
+    });
+
+    // Fetch initial window sorted by unified datetime
+    const initialData = db.queryRows(mergedTabId, {
+      offset: 0,
+      limit: 5000,
+      sortCol: "datetime",
+      sortDir: "asc",
+    });
+
+    const emptyColumns = db.getEmptyColumns(mergedTabId);
+
+    mainWindow.webContents.send("import-complete", {
+      tabId: mergedTabId,
+      fileName: "Merged Timeline",
+      headers: result.headers,
+      rowCount: result.rowCount,
+      tsColumns: result.tsColumns,
+      numericColumns: result.numericColumns || [],
+      initialRows: initialData.rows,
+      totalFiltered: initialData.totalFiltered,
+      emptyColumns,
+    });
+
+    return { success: true, rowCount: result.rowCount };
+  } catch (err) {
+    try { db.closeTab(mergedTabId); } catch (_) {}
+    mainWindow.webContents.send("import-error", {
+      tabId: mergedTabId,
+      fileName: "Merged Timeline",
+      error: err.message,
+    });
+    return { success: false, error: err.message };
+  }
+});
+
+// Session save
+ipcMain.handle("save-session", async (event, { sessionData }) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: "session.tle",
+    filters: [{ name: "TLE Session", extensions: ["tle"] }],
+  });
+  if (result.canceled) return null;
+  fs.writeFileSync(result.filePath, JSON.stringify(sessionData, null, 2), "utf-8");
+  return result.filePath;
+});
+
+// Session load
+ipcMain.handle("load-session", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openFile"],
+    filters: [{ name: "TLE Session", extensions: ["tle"] }],
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  try {
+    const raw = fs.readFileSync(result.filePaths[0], "utf-8");
+    return JSON.parse(raw);
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+// Import file for session restore (no dialog)
+// Import files by path (used for drag-and-drop)
+ipcMain.handle("import-files", async (event, { filePaths }) => {
+  await Promise.allSettled(
+    filePaths.filter((fp) => fs.existsSync(fp)).map((fp) => importFile(fp))
+  );
+  return true;
+});
+
+ipcMain.handle("import-file-for-restore", async (event, { filePath, sheetName }) => {
+  if (!fs.existsSync(filePath)) return { error: `File not found: ${filePath}` };
+  const tabId = `tab_${++tabCounter}_${Date.now()}`;
+  const fileName = path.basename(filePath);
+  startImport(filePath, tabId, fileName, sheetName || undefined);
+  return { tabId, fileName };
+});
+
+// ── Filter Presets (persistent storage) ─────────────────────────────
+const presetsPath = path.join(app.getPath("userData"), "filter-presets.json");
+
+ipcMain.handle("load-filter-presets", () => {
+  try { return JSON.parse(fs.readFileSync(presetsPath, "utf-8")); }
+  catch { return []; }
+});
+
+ipcMain.handle("save-filter-presets", (event, { presets }) => {
+  fs.writeFileSync(presetsPath, JSON.stringify(presets, null, 2));
+  return true;
+});
+
+// ── Native macOS Menu ──────────────────────────────────────────────
+function buildMenu() {
+  const template = [
+    {
+      label: "IRFlow Timeline",
+      submenu: [
+        { role: "about" },
+        { type: "separator" },
+        { role: "services" },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        { role: "quit" },
+      ],
+    },
+    {
+      label: "File",
+      submenu: [
+        {
+          label: "Open...",
+          accelerator: "CmdOrCtrl+O",
+          click: () => mainWindow?.webContents.send("trigger-open"),
+        },
+        { type: "separator" },
+        {
+          label: "Save Session...",
+          accelerator: "CmdOrCtrl+S",
+          click: () => mainWindow?.webContents.send("trigger-save-session"),
+        },
+        {
+          label: "Open Session...",
+          accelerator: "CmdOrCtrl+Shift+O",
+          click: () => mainWindow?.webContents.send("trigger-load-session"),
+        },
+        { type: "separator" },
+        {
+          label: "Export Filtered View...",
+          accelerator: "CmdOrCtrl+E",
+          click: () => mainWindow?.webContents.send("trigger-export"),
+        },
+        {
+          label: "Generate Report...",
+          accelerator: "CmdOrCtrl+Shift+R",
+          click: () => mainWindow?.webContents.send("trigger-generate-report"),
+        },
+        { type: "separator" },
+        {
+          label: "Close Tab",
+          accelerator: "CmdOrCtrl+W",
+          click: () => mainWindow?.webContents.send("trigger-close-tab"),
+        },
+        {
+          label: "Close All Tabs",
+          accelerator: "CmdOrCtrl+Shift+Q",
+          click: () => mainWindow?.webContents.send("trigger-close-all-tabs"),
+        },
+        { type: "separator" },
+        { role: "close" },
+      ],
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" }, { role: "redo" }, { type: "separator" },
+        { role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" },
+        { type: "separator" },
+        {
+          label: "Find...",
+          accelerator: "CmdOrCtrl+F",
+          click: () => mainWindow?.webContents.send("trigger-search"),
+        },
+        {
+          label: "Find in All Tabs...",
+          accelerator: "CmdOrCtrl+Shift+F",
+          click: () => mainWindow?.webContents.send("trigger-crossfind"),
+        },
+      ],
+    },
+    {
+      label: "Tools",
+      submenu: [
+        {
+          label: "Datetime Format",
+          submenu: [
+            { label: "Default (raw)", click: () => mainWindow?.webContents.send("set-datetime-format", "") },
+            { label: "yyyy-MM-dd HH:mm:ss", click: () => mainWindow?.webContents.send("set-datetime-format", "yyyy-MM-dd HH:mm:ss") },
+            { label: "yyyy-MM-dd HH:mm:ss.fff", click: () => mainWindow?.webContents.send("set-datetime-format", "yyyy-MM-dd HH:mm:ss.fff") },
+            { label: "yyyy-MM-dd HH:mm:ss.fffffff", click: () => mainWindow?.webContents.send("set-datetime-format", "yyyy-MM-dd HH:mm:ss.fffffff") },
+            { label: "MM/dd/yyyy HH:mm:ss", click: () => mainWindow?.webContents.send("set-datetime-format", "MM/dd/yyyy HH:mm:ss") },
+            { label: "dd/MM/yyyy HH:mm:ss", click: () => mainWindow?.webContents.send("set-datetime-format", "dd/MM/yyyy HH:mm:ss") },
+            { label: "yyyy-MM-dd", click: () => mainWindow?.webContents.send("set-datetime-format", "yyyy-MM-dd") },
+          ],
+        },
+        {
+          label: "Timezone",
+          submenu: [
+            { label: "UTC", click: () => mainWindow?.webContents.send("set-timezone", "UTC") },
+            { label: "US/Eastern (EST/EDT)", click: () => mainWindow?.webContents.send("set-timezone", "America/New_York") },
+            { label: "US/Central (CST/CDT)", click: () => mainWindow?.webContents.send("set-timezone", "America/Chicago") },
+            { label: "US/Mountain (MST/MDT)", click: () => mainWindow?.webContents.send("set-timezone", "America/Denver") },
+            { label: "US/Pacific (PST/PDT)", click: () => mainWindow?.webContents.send("set-timezone", "America/Los_Angeles") },
+            { label: "Europe/London (GMT/BST)", click: () => mainWindow?.webContents.send("set-timezone", "Europe/London") },
+            { label: "Europe/Berlin (CET/CEST)", click: () => mainWindow?.webContents.send("set-timezone", "Europe/Berlin") },
+            { label: "Asia/Tokyo (JST)", click: () => mainWindow?.webContents.send("set-timezone", "Asia/Tokyo") },
+            { label: "Asia/Shanghai (CST)", click: () => mainWindow?.webContents.send("set-timezone", "Asia/Shanghai") },
+            { label: "Australia/Sydney (AEST/AEDT)", click: () => mainWindow?.webContents.send("set-timezone", "Australia/Sydney") },
+            { label: "Local (system)", click: () => mainWindow?.webContents.send("set-timezone", "local") },
+          ],
+        },
+        { type: "separator" },
+        {
+          label: "Font Size",
+          submenu: [
+            { label: "Increase", accelerator: "CmdOrCtrl+Plus", click: () => mainWindow?.webContents.send("set-font-size", "increase") },
+            { label: "Decrease", accelerator: "CmdOrCtrl+-", click: () => mainWindow?.webContents.send("set-font-size", "decrease") },
+            { type: "separator" },
+            ...[9, 10, 11, 12, 13, 14, 16, 18].map((s) => ({
+              label: `${s}px`, click: () => mainWindow?.webContents.send("set-font-size", s),
+            })),
+          ],
+        },
+        { type: "separator" },
+        {
+          label: "Reset Column Widths",
+          accelerator: "CmdOrCtrl+R",
+          click: () => mainWindow?.webContents.send("trigger-reset-columns"),
+        },
+        {
+          label: "Toggle Histogram",
+          click: () => mainWindow?.webContents.send("trigger-histogram"),
+        },
+        { type: "separator" },
+        {
+          label: "Theme",
+          submenu: [
+            { label: "Dark", click: () => mainWindow?.webContents.send("set-theme", "dark") },
+            { label: "Light", click: () => mainWindow?.webContents.send("set-theme", "light") },
+          ],
+        },
+      ],
+    },
+    {
+      label: "View",
+      submenu: [
+        {
+          label: "Toggle Bookmarked Only",
+          accelerator: "CmdOrCtrl+B",
+          click: () => mainWindow?.webContents.send("trigger-bookmark-toggle"),
+        },
+        {
+          label: "Column Manager",
+          accelerator: "CmdOrCtrl+Shift+C",
+          click: () => mainWindow?.webContents.send("trigger-column-manager"),
+        },
+        {
+          label: "Conditional Formatting",
+          accelerator: "CmdOrCtrl+Shift+L",
+          click: () => mainWindow?.webContents.send("trigger-color-rules"),
+        },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+        { type: "separator" },
+        { role: "zoomIn" }, { role: "zoomOut" }, { role: "resetZoom" },
+        { type: "separator" },
+        { role: "toggleDevTools" },
+      ],
+    },
+    {
+      label: "Window",
+      submenu: [{ role: "minimize" }, { role: "zoom" }, { type: "separator" }, { role: "front" }],
+    },
+    {
+      label: "Help",
+      submenu: [
+        {
+          label: "Keyboard Shortcuts",
+          accelerator: "CmdOrCtrl+/",
+          click: () => mainWindow?.webContents.send("trigger-shortcuts"),
+        },
+        { type: "separator" },
+        {
+          label: "EZ Tools Website",
+          click: () => shell.openExternal("https://ericzimmerman.github.io/"),
+        },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+// ── HTML Report Builder ──────────────────────────────────────────
+function buildReportHtml(data, fileName, tagColors = {}) {
+  const esc = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const now = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
+
+  // Filter out columns that are entirely empty across bookmarked+tagged rows
+  const allReportRows = [...data.bookmarkedRows];
+  for (const rows of Object.values(data.taggedGroups)) {
+    for (const r of rows) allReportRows.push(r);
+  }
+  const usedHeaders = data.headers.filter((h) =>
+    allReportRows.some((r) => r[h] && String(r[h]).trim())
+  );
+
+  const renderTable = (rows, headers) => {
+    if (rows.length === 0) return '<p style="color:#9a9590;font-style:italic;">No events</p>';
+    let html = '<div class="table-wrap"><table><thead><tr>';
+    for (const h of headers) html += `<th>${esc(h)}</th>`;
+    html += "</tr></thead><tbody>";
+    for (const row of rows) {
+      html += "<tr>";
+      for (const h of headers) html += `<td>${esc(row[h])}</td>`;
+      html += "</tr>";
+    }
+    html += "</tbody></table></div>";
+    return html;
+  };
+
+  let body = "";
+
+  // Header
+  body += `<div class="report-header">
+    <h1>IRFlow Timeline Report</h1>
+    <div class="meta">
+      <span>Source: <strong>${esc(fileName)}</strong></span>
+      <span>Generated: <strong>${now}</strong></span>
+    </div>
+  </div>`;
+
+  // Summary cards
+  body += `<div class="cards">
+    <div class="card"><div class="card-val">${data.totalRows.toLocaleString()}</div><div class="card-label">Total Rows</div></div>
+    <div class="card"><div class="card-val">${data.bookmarkCount.toLocaleString()}</div><div class="card-label">Bookmarked</div></div>
+    <div class="card"><div class="card-val">${data.taggedRowCount.toLocaleString()}</div><div class="card-label">Tagged Rows</div></div>
+    <div class="card"><div class="card-val">${data.tagCount}</div><div class="card-label">Unique Tags</div></div>
+  </div>`;
+
+  // Timestamp range
+  if (data.tsRange) {
+    body += `<div class="ts-range">
+      <strong>Timeline Span (${esc(data.tsRange.column)}):</strong>
+      ${esc(data.tsRange.earliest)} &mdash; ${esc(data.tsRange.latest)}
+    </div>`;
+  }
+
+  // Tag breakdown chips
+  if (data.tagSummary.length > 0) {
+    body += '<div class="section"><h2>Tag Breakdown</h2><div class="tag-chips">';
+    for (const { tag, cnt } of data.tagSummary) {
+      const color = tagColors[tag] || "#8b949e";
+      body += `<span class="tag-chip" style="border-color:${color};color:${color};background:${color}22">${esc(tag)} <strong>${cnt}</strong></span>`;
+    }
+    body += "</div></div>";
+  }
+
+  // Bookmarked events table
+  if (data.bookmarkedRows.length > 0) {
+    body += `<div class="section"><h2>Bookmarked Events (${data.bookmarkCount})</h2>`;
+    body += renderTable(data.bookmarkedRows, usedHeaders);
+    body += "</div>";
+  }
+
+  // Tagged event tables (one per tag)
+  for (const { tag, cnt } of data.tagSummary) {
+    const rows = data.taggedGroups[tag] || [];
+    if (rows.length === 0) continue;
+    const color = tagColors[tag] || "#8b949e";
+    body += `<div class="section">
+      <h2><span class="tag-badge" style="background:${color}33;color:${color};border:1px solid ${color}66">${esc(tag)}</span> (${cnt} events)</h2>`;
+    body += renderTable(rows, usedHeaders);
+    body += "</div>";
+  }
+
+  // Empty report fallback
+  if (data.bookmarkedRows.length === 0 && data.tagSummary.length === 0) {
+    body += '<div class="section"><p style="color:#9a9590;font-style:italic;text-align:center;padding:40px 0;">No bookmarked or tagged events to include in report.<br>Bookmark events with the star icon or tag them to include in the report.</p></div>';
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IRFlow Report — ${esc(fileName)}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f1114;color:#e0ddd8;font-family:-apple-system,'SF Pro Text','Segoe UI',sans-serif;font-size:13px;padding:30px;max-width:1400px;margin:0 auto}
+.report-header{border-bottom:2px solid #E85D2A;padding-bottom:16px;margin-bottom:24px}
+.report-header h1{font-size:22px;font-weight:700;color:#E85D2A}
+.meta{display:flex;gap:24px;color:#9a9590;font-size:12px;margin-top:6px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:24px}
+.card{background:#181b20;border:1px solid #2a2d33;border-radius:8px;padding:16px;text-align:center}
+.card-val{font-size:24px;font-weight:700;color:#E85D2A}
+.card-label{font-size:11px;color:#9a9590;text-transform:uppercase;letter-spacing:.06em;margin-top:4px}
+.ts-range{background:#181b20;border:1px solid #2a2d33;border-radius:6px;padding:10px 16px;margin-bottom:24px;font-size:12px;color:#9a9590}
+.section{margin-bottom:32px}
+.section h2{font-size:16px;font-weight:600;margin-bottom:12px;color:#e0ddd8;display:flex;align-items:center;gap:8px}
+.tag-chips{display:flex;flex-wrap:wrap;gap:8px}
+.tag-chip{padding:4px 12px;border:1px solid;border-radius:20px;font-size:12px}
+.tag-chip strong{margin-left:4px}
+.tag-badge{padding:2px 10px;border-radius:4px;font-size:12px;font-weight:600}
+.table-wrap{overflow-x:auto;border:1px solid #2a2d33;border-radius:8px}
+table{width:100%;border-collapse:collapse;font-size:11px;font-family:'SF Mono','Fira Code',Menlo,monospace}
+th{position:sticky;top:0;background:#181b20;color:#E85D2A;padding:8px 10px;text-align:left;border-bottom:2px solid #2a2d33;white-space:nowrap;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+td{padding:5px 10px;border-bottom:1px solid #1a1d22;color:#e0ddd8;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+tr:nth-child(even){background:#141720}
+tr:hover{background:rgba(232,93,42,.08)}
+footer{margin-top:40px;padding-top:16px;border-top:1px solid #2a2d33;color:#5c5752;font-size:10px;text-align:center}
+@media print{body{background:#fff;color:#1c1917}th{background:#f7f5f3;color:#E85D2A}td{color:#1c1917;border-color:#e0dbd6}.card{border-color:#e0dbd6;background:#faf8f6}tr:nth-child(even){background:#faf8f6}.report-header{border-color:#E85D2A}.ts-range{background:#faf8f6;border-color:#e0dbd6}}
+</style>
+</head>
+<body>
+${body}
+<footer>Generated by IRFlow Timeline &mdash; ${now}</footer>
+</body>
+</html>`;
+}
+
+app.whenReady().then(createWindow);
