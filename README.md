@@ -203,6 +203,15 @@ Inspired by [Eric Zimmerman's Timeline Explorer](https://ericzimmerman.github.io
 - [log2timeline/Plaso](https://github.com/log2timeline/plaso) -- Super timeline generation framework by Kristinn Gudjonsson and contributors
 - [SANS DFIR](https://www.sans.org/digital-forensics-incident-response/) -- DFIR training and community resources
 
+### Beta Testers
+
+Thanks to the following people for testing and providing feedback:
+
+- Maddy Keller
+- Omar Jbari
+- Nicolas Bareil
+- Dominic Rathmann
+
 ## License
 
 MIT
