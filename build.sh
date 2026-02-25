@@ -2,7 +2,7 @@
 set -e
 
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║   Timeline Explorer v2.0 — macOS Build (SQLite-backed)  ║"
+echo "║   IRFlow Timeline v2.0 — macOS Build (SQLite-backed)     ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
