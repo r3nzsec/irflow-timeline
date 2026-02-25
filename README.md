@@ -1,7 +1,7 @@
 # IRFlow Timeline
 <img width="731" height="410" alt="image" src="https://github.com/user-attachments/assets/23e50080-85a6-4a25-ad7c-3779076aeb20" />
 
-A high-performance native macOS application for DFIR timeline analysis. Built on Electron + SQLite to handle **30-50GB+** forensic timelines (CSV, TSV, XLSX, EVTX, Plaso) without breaking a sweat.
+A high-performance native macOS application for DFIR timeline analysis. Built on Electron + SQLite to handle large files for forensic timelines (CSV, TSV, XLSX, EVTX, Plaso) without breaking a sweat.
 
 Inspired by Eric Zimmerman's Timeline Explorer for Windows.
 
