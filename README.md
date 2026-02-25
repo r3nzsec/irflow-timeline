@@ -179,9 +179,29 @@ npm run dist:universal
 
 Output in `release/`.
 
-## Credits
+## Credits & Acknowledgments
 
 Inspired by [Eric Zimmerman's Timeline Explorer](https://ericzimmerman.github.io/).
+
+### Open Source Projects
+
+| Project | Usage | Link |
+|---------|-------|------|
+| **Electron** | Application framework | [electron/electron](https://github.com/electron/electron) |
+| **better-sqlite3** | High-performance SQLite engine with WAL mode, FTS5 | [WiseLibs/better-sqlite3](https://github.com/WiseLibs/better-sqlite3) |
+| **@ts-evtx/core** | Native Windows EVTX event log parsing | [nicholasgasior/ts-evtx](https://github.com/nicholasgasior/ts-evtx) |
+| **Plaso (log2timeline)** | Forensic timeline generation (we import Plaso SQLite output) | [log2timeline/plaso](https://github.com/log2timeline/plaso) |
+| **ExcelJS** | XLSX streaming reader | [exceljs/exceljs](https://github.com/exceljs/exceljs) |
+| **csv-parser** | CSV/TSV streaming parser | [mafintosh/csv-parser](https://github.com/mafintosh/csv-parser) |
+| **React** | UI rendering | [facebook/react](https://github.com/facebook/react) |
+| **Vite** | Build tooling and hot-reload | [vitejs/vite](https://github.com/vitejs/vite) |
+| **electron-builder** | macOS DMG packaging | [electron-userland/electron-builder](https://github.com/electron-userland/electron-builder) |
+
+### DFIR Community
+
+- [Eric Zimmerman](https://ericzimmerman.github.io/) -- Timeline Explorer for Windows, the original inspiration for this project
+- [log2timeline/Plaso](https://github.com/log2timeline/plaso) -- Super timeline generation framework by Kristinn Gudjonsson and contributors
+- [SANS DFIR](https://www.sans.org/digital-forensics-incident-response/) -- DFIR training and community resources
 
 ## License
 
