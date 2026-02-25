@@ -41,7 +41,7 @@ npm run start                                 # build + launch
                          |
 +------------------------v---------------------------+
 |  SQLite Engine (better-sqlite3)                    |
-|  - WAL mode, 500MB cache, 2GB mmap                |
+|  - WAL mode, 500MB cache, 2GB mmap                 |
 |  - FTS5 full-text search index                     |
 |  - B-tree indexes on timestamp/numeric columns     |
 |  - SQL filtering, sorting, pagination              |
@@ -53,7 +53,7 @@ npm run start                                 # build + launch
 |  Streaming Parsers                                 |
 |  - CSV: readline stream, 50K-row batch inserts     |
 |  - XLSX: ExcelJS streaming reader                  |
-|  - EVTX: @ts-evtx/core async generator            |
+|  - EVTX: @ts-evtx/core async generator             |
 |  - Plaso: SQLite ATTACH + zlib decompress          |
 |  - Never loads full file into memory               |
 +----------------------------------------------------+
