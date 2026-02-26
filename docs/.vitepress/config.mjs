@@ -14,6 +14,7 @@ export default defineConfig({
       { text: 'Getting Started', link: '/getting-started/installation' },
       { text: 'Features', link: '/features/virtual-grid' },
       { text: 'Workflows', link: '/workflows/kape-integration' },
+      { text: 'DFIR Tips', link: '/dfir-tips/ransomware-investigation' },
       { text: 'Reference', link: '/reference/keyboard-shortcuts' },
       {
         text: 'v2.1.1',
@@ -76,6 +77,23 @@ export default defineConfig({
             { text: 'Keyboard Shortcuts', link: '/reference/keyboard-shortcuts' },
             { text: 'KAPE Profiles', link: '/reference/kape-profiles' },
             { text: 'Performance Tips', link: '/reference/performance-tips' }
+          ]
+        }
+      ],
+      '/dfir-tips/': [
+        {
+          text: 'DFIR Tips & Tricks',
+          items: [
+            { text: 'Ransomware Investigation', link: '/dfir-tips/ransomware-investigation' },
+            { text: 'Lateral Movement Tracing', link: '/dfir-tips/lateral-movement-tracing' },
+            { text: 'Malware Execution Analysis', link: '/dfir-tips/malware-execution-analysis' },
+            { text: 'Brute Force & Account Compromise', link: '/dfir-tips/brute-force-account-compromise' },
+            { text: 'Insider Threat & Exfiltration', link: '/dfir-tips/insider-threat-exfiltration' },
+            { text: 'Log Tampering Detection', link: '/dfir-tips/log-tampering-detection' },
+            { text: 'Persistence Hunting', link: '/dfir-tips/persistence-hunting' },
+            { text: 'KAPE Triage Workflow', link: '/dfir-tips/kape-triage-workflow' },
+            { text: 'Threat Intel IOC Sweeps', link: '/dfir-tips/threat-intel-ioc-sweeps' },
+            { text: 'Building the Final Report', link: '/dfir-tips/building-final-report' }
           ]
         }
       ],
