@@ -43,7 +43,7 @@ IRFlow Timeline is a native macOS application purpose-built for digital forensic
 | Format | Extensions | Description |
 |--------|-----------|-------------|
 | **CSV/TSV** | `.csv`, `.tsv`, `.txt`, `.log` | Auto-detects delimiters (comma, tab, pipe) |
-| **Excel** | `.xlsx`, `.xls`, `.xlsm` | Streaming reader with sheet selection |
+| **Excel** | `.xlsx`, `.xls`, `.xlsm` | Streaming reader (XLSX) + legacy binary parser (XLS) with sheet selection |
 | **EVTX** | `.evtx` | Windows Event Log binary format |
 | **Plaso** | `.plaso` | Forensic timeline database |
 

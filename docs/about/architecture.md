@@ -33,8 +33,9 @@ Technical overview of IRFlow Timeline's architecture for developers and contribu
                        ▼
 ┌─────────────────────────────────────────────────┐
 │  Parser Layer (parser.js)                       │
-│  - CSV/TSV: 16MB chunk streaming                │
+│  - CSV/TSV: 128MB chunk streaming                │
 │  - XLSX: ExcelJS streaming reader               │
+│  - XLS: SheetJS legacy binary parser            │
 │  - EVTX: @ts-evtx binary parser                │
 │  - Plaso: SQLite direct query                   │
 └─────────────────────────────────────────────────┘
@@ -94,12 +95,12 @@ CREATE TABLE color_rules (id, col_name, condition, value, bg_color, fg_color);
 - `EXTRACT_DATE(value)` — normalize any timestamp to `yyyy-MM-dd`
 - `EXTRACT_DATETIME_MINUTE(value)` — normalize to `yyyy-MM-dd HH:mm`
 
-**Performance tuning:**
-- WAL journal mode for concurrent reads
-- 512MB cache, 2GB MMAP
-- Exclusive locking (single-user optimization)
-- 32KB page size
-- Lazy index creation
+**Performance tuning (phase-dependent):**
+- Import: `journal_mode=OFF`, 1GB cache, 64KB pages, `threads=4`
+- Index/FTS build: `journal_mode=OFF`, 1GB cache, `threads=8`
+- Query: WAL mode, 256MB cache, 512MB MMAP
+- Exclusive locking throughout (single-user optimization)
+- All columns indexed asynchronously after import
 
 ### Parser Layer
 
@@ -107,8 +108,9 @@ CREATE TABLE color_rules (id, col_name, condition, value, bg_color, fg_color);
 
 Streaming parsers convert source files into SQLite batch inserts:
 
-- **CSV:** 16MB chunk reader, RFC 4180 compliant, auto-delimiter detection
+- **CSV:** 128MB chunk reader, RFC 4180 compliant, auto-delimiter detection
 - **XLSX:** ExcelJS `WorkbookReader` for memory-efficient streaming
+- **XLS:** SheetJS in-memory reader for legacy binary Excel format
 - **EVTX:** `@ts-evtx` binary parsing with dynamic schema discovery
 - **Plaso:** Direct SQLite query via `better-sqlite3`
 
@@ -121,11 +123,11 @@ File → Parser (streaming chunks) → Batch Arrays → SQLite INSERT
                                     (50K rows)     (prepared statements)
 ```
 
-1. Parser reads file in chunks (16MB for CSV)
-2. Rows are accumulated into 50,000-row batches
-3. Batches are inserted using pre-built multi-row INSERT statements
-4. Progress callbacks update the UI
-5. After import: type detection, lazy index creation
+1. Parser reads file in chunks (128MB for CSV)
+2. Rows are accumulated into adaptive batches (up to 100,000 rows, tuned by column count)
+3. Batches are inserted using pre-built multi-row INSERT statements with pre-allocated parameter arrays
+4. Progress callbacks update the UI every 200ms (time-based)
+5. After import: type detection, then async background builds (column indexes → FTS5 index)
 
 ### Query Pipeline
 
@@ -151,6 +153,7 @@ UI Action → IPC → db.queryRows() → SQL Query → Result Set → IPC → Gr
 | **Vite** | ^6.0.7 | Build tooling |
 | **better-sqlite3** | ^11.7.0 | SQLite bindings (zero-copy) |
 | **ExcelJS** | ^4.4.0 | XLSX streaming |
+| **SheetJS (xlsx)** | ^0.18.5 | Legacy XLS parsing |
 | **@ts-evtx** | ^1.1.1 | EVTX binary parsing |
 | **csv-parser** | ^3.0.0 | CSV parsing |
 | **electron-builder** | ^25.1.8 | App packaging |

@@ -106,12 +106,15 @@ In the graph view:
 - **Edge labels** show the number of logon events between each host pair
 - **Arrows** indicate the direction of authentication (source to target)
 
+The tracker also automatically flags **outlier hostnames** -- nodes with default Windows names (`DESKTOP-XXXXX`, `WIN-XXXXX`), penetration testing distro defaults (`KALI`, `PARROT`), or generic/suspicious names (`ADMIN`, `TEST`, `HACKER`). These are highlighted in the graph and often indicate attacker-controlled machines that were never properly renamed.
+
 Look for the following patterns:
 
 | Pattern | Significance |
 |---------|--------------|
 | WS001 -> DC01 -> FS02 | Multi-hop chain -- attacker pivoted from workstation to DC to file server |
 | Single source with many outbound edges | Possible staging host or C2 beachhead |
+| Outlier-flagged node with outbound connections | Likely attacker machine -- default/generic hostname not matching environment naming convention |
 | Workstation-to-workstation connections | Unusual in most environments -- warrants investigation |
 | Bi-directional edges between two hosts | May indicate interactive RDP sessions with file transfers |
 

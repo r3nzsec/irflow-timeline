@@ -22,7 +22,7 @@ During import you will see:
 - Column discovery for EVTX files
 
 ::: info Large Files
-Files over 1GB may take a minute to import. The streaming architecture processes data in 16MB chunks with 50,000-row batches, so the UI remains responsive throughout.
+Files over 1GB may take a minute to import. The streaming architecture processes data in 128MB chunks with adaptive batch sizes (up to 100,000 rows per batch), so the UI remains responsive throughout. After import, column indexes and full-text search indexes build in the background — you can start working immediately.
 :::
 
 ## Navigate the Grid

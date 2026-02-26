@@ -10,9 +10,10 @@ Files are imported in streaming chunks — the full file is never loaded into me
 
 | Format | Chunk Size | Batch Size |
 |--------|-----------|------------|
-| **CSV/TSV** | 16 MB | 50,000 rows |
-| **XLSX** | Streaming (ExcelJS) | 50,000 rows |
-| **EVTX** | Full file (binary) | 50,000 rows |
+| **CSV/TSV** | 128 MB | Adaptive (up to 100,000 rows) |
+| **XLSX** | Streaming (ExcelJS) | Adaptive (up to 100,000 rows) |
+| **XLS** | Full file (SheetJS) | Adaptive (up to 100,000 rows) |
+| **EVTX** | Full file (binary) | Adaptive (up to 100,000 rows) |
 | **Plaso** | Single SQLite query | All rows |
 
 ### Expected Import Times
@@ -34,14 +35,14 @@ These are approximate times on an Apple Silicon Mac:
 
 ## Search Performance
 
-### FTS Index
+### Background Indexing
 
-The full-text search index is built lazily on your first search:
+After import, two background build phases run automatically:
 
-- Building processes 100,000 rows per chunk
-- The UI remains responsive during index creation
-- Subsequent searches are near-instant
-- If you search before the index is ready, LIKE mode is used as a fallback
+1. **Column indexes** — one B-tree index per column, built sequentially (yields to event loop between each)
+2. **FTS5 search index** — full-text search index built in 200,000-row chunks
+
+Both phases run asynchronously so the UI remains interactive. A status indicator in the toolbar shows progress. If you search before the FTS index is ready, LIKE mode is used as a fallback.
 
 ### Search Mode Performance
 
@@ -69,11 +70,11 @@ The grid maintains a window of ~5,000 rows:
 
 ### Sorting
 
-The first time you sort by a column, a SQLite index is created:
+Column indexes are built automatically in the background after import:
 
-- Initial sort may take a moment for large datasets
-- Subsequent sorts on the same column are instant
-- Indexes are created lazily to keep initial load fast
+- Sorting is fast once background indexing completes
+- A status indicator shows indexing progress in the toolbar
+- All columns are indexed (not just timestamp columns)
 
 ## Memory Management
 
@@ -81,14 +82,35 @@ The first time you sort by a column, a SQLite index is created:
 
 IRFlow Timeline uses aggressive SQLite tuning for performance:
 
+SQLite pragmas are tuned per-phase for maximum throughput:
+
+**During import:**
+
 | Setting | Value | Purpose |
 |---------|-------|---------|
-| **Journal mode** | WAL | Concurrent reads during writes |
-| **Synchronous** | OFF (during import) | Fast async writes |
-| **Cache size** | 512 MB | Large memory buffer |
-| **MMAP size** | 2 GB | Memory-mapped I/O |
-| **Page size** | 32 KB | Larger page transfers |
-| **Temp store** | Memory | Fast intermediate operations |
+| **Journal mode** | OFF | No journal overhead for temp databases |
+| **Synchronous** | OFF | Fast async writes |
+| **Cache size** | 1 GB | Keep entire B-tree in memory |
+| **MMAP size** | 0 | Disabled during writes |
+| **Page size** | 64 KB | Fewer B-tree nodes, faster bulk writes |
+| **Threads** | 4 | Parallel sort for internal operations |
+
+**During background index/FTS build:**
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| **Journal mode** | OFF | No journal overhead |
+| **Cache size** | 1 GB | Keep data + index pages in memory |
+| **Threads** | 8 | Parallel sort/merge for CREATE INDEX |
+
+**During query mode:**
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| **Journal mode** | WAL | Concurrent reads |
+| **Synchronous** | NORMAL | Safe for queries |
+| **Cache size** | 256 MB | Query cache |
+| **MMAP size** | 512 MB | Memory-mapped reads |
 
 ### Temporary Files
 
