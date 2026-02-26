@@ -2,6 +2,8 @@
 
 The Persistence Analyzer automatically scans your timeline data for Windows persistence mechanisms, scoring each finding by risk level and organizing results by category. It supports both EVTX event logs and registry exports, detecting over 30 distinct persistence techniques across services, scheduled tasks, WMI subscriptions, registry autorun keys, and more.
 
+![Persistence Analyzer showing 8648 findings in Timeline view with severity scores, service installations, and category filtering](/dfir-tips/Persistence-Analyzer.png)
+
 ## Opening the Persistence Analyzer
 
 - **Menu:** Tools > Persistence Analyzer
