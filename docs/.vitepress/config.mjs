@@ -55,7 +55,8 @@ export default defineConfig({
             { text: 'Gap & Burst Analysis', link: '/features/gap-burst-analysis' },
             { text: 'IOC Matching', link: '/features/ioc-matching' },
             { text: 'Stacking', link: '/features/stacking' },
-            { text: 'Log Source Coverage', link: '/features/log-source-coverage' }
+            { text: 'Log Source Coverage', link: '/features/log-source-coverage' },
+            { text: 'Persistence Analyzer', link: '/features/persistence-analyzer' }
           ]
         }
       ],
