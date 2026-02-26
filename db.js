@@ -21,6 +21,15 @@ const fs = require("fs");
 const os = require("os");
 const crypto = require("crypto");
 
+// ── Debug trace logger (shared with main.js) ────────────────────
+const debugLogPath = path.join(os.homedir(), "tle-debug.log");
+function dbg(tag, msg, data) {
+  const ts = new Date().toISOString();
+  const line = `[${ts}] [${tag}] ${msg}${data !== undefined ? " " + JSON.stringify(data, null, 0) : ""}`;
+  console.error(line);
+  try { fs.appendFileSync(debugLogPath, line + "\n"); } catch {}
+}
+
 class TimelineDB {
   constructor() {
     this.databases = new Map(); // tabId -> { db, dbPath, headers, rowCount, tsColumns }
@@ -30,13 +39,16 @@ class TimelineDB {
    * Create a new database for a tab and prepare the schema
    */
   createTab(tabId, headers) {
+    dbg("DB", `createTab start`, { tabId, headerCount: headers?.length });
     const dbPath = path.join(
       os.tmpdir(),
       `tle_${tabId}_${crypto.randomBytes(4).toString("hex")}.db`
     );
 
     const db = new Database(dbPath);
+    dbg("DB", `Database opened`, { dbPath });
 
+    try {
     // Register REGEXP function for regex search mode
     db.function("regexp", { deterministic: true }, (pattern, value) => {
       if (pattern == null || value == null) return 0;
@@ -84,6 +96,14 @@ class TimelineDB {
       if (/^\d{10}(\.\d+)?$/.test(s)) { const d = new Date(parseFloat(s) * 1000); if (!isNaN(d)) return d.toISOString().substring(0, 10); }
       // Unix timestamp (milliseconds, 13 digits)
       if (/^\d{13}$/.test(s)) { const d = new Date(parseInt(s)); if (!isNaN(d)) return d.toISOString().substring(0, 10); }
+      // Excel serial date (e.g. 45566 = 2024-10-05, 37685.41 = 2003-03-10)
+      if (/^\d{1,5}(\.\d+)?$/.test(s)) {
+        const serial = parseFloat(s);
+        if (serial >= 1 && serial <= 73050) {
+          const d = new Date(Math.round((serial - 25569) * 86400000));
+          if (!isNaN(d.getTime()) && d.getFullYear() >= 1900 && d.getFullYear() <= 2100) return d.toISOString().substring(0, 10);
+        }
+      }
       // Fallback: try JS Date parse
       const d = new Date(s);
       if (!isNaN(d) && d.getFullYear() > 1970 && d.getFullYear() < 2100) return d.toISOString().substring(0, 10);
@@ -97,6 +117,17 @@ class TimelineDB {
       // ISO: 2026-02-05 15:30:00 or 2026-02-05T15:30:00
       let m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
       if (m) return `${m[1]} ${m[2]}`;
+      // Excel serial date (e.g. 45566.833 = 2024-10-05 20:00)
+      if (/^\d{1,5}(\.\d+)?$/.test(s)) {
+        const serial = parseFloat(s);
+        if (serial >= 1 && serial <= 73050) {
+          const d = new Date((serial - 25569) * 86400000);
+          if (!isNaN(d.getTime()) && d.getFullYear() >= 1900 && d.getFullYear() <= 2100) {
+            const iso = d.toISOString();
+            return `${iso.substring(0, 10)} ${iso.substring(11, 16)}`;
+          }
+        }
+      }
       // Fallback: try JS Date parse
       const d = new Date(s);
       if (!isNaN(d) && d.getFullYear() > 1970 && d.getFullYear() < 2100) {
@@ -107,16 +138,17 @@ class TimelineDB {
     });
 
     // page_size MUST be set before any tables are created
-    db.pragma("page_size = 32768");
+    // 64KB pages: fewer B-tree nodes, faster bulk writes & index creation
+    db.pragma("page_size = 65536");
 
-    // Performance pragmas for bulk import
-    db.pragma("journal_mode = WAL");
+    // Performance pragmas for bulk import (maximise write throughput)
+    db.pragma("journal_mode = OFF"); // no journal — fastest writes (temp DB, crash = re-import)
     db.pragma("synchronous = OFF");
-    db.pragma("cache_size = -512000"); // 500MB cache
+    db.pragma("cache_size = -1048576"); // 1GB write cache — keep entire B-tree in memory
     db.pragma("temp_store = MEMORY");
-    db.pragma("mmap_size = 2147483648"); // 2GB mmap
+    db.pragma("mmap_size = 0"); // disable mmap during import (write-only)
     db.pragma("locking_mode = EXCLUSIVE"); // single-user, avoid lock overhead
-    db.pragma("wal_autocheckpoint = 0"); // disable auto-checkpoint during import
+    db.pragma("threads = 4"); // parallel sort for internal operations
 
     // Sanitize headers for SQL column names
     const safeCols = headers.map((h, i) => ({
@@ -164,8 +196,8 @@ class TimelineDB {
     );
 
     // Prepare multi-row INSERT for faster bulk loading
-    // SQLite limit is 32766 host parameters — size batch to stay under that
-    const multiRowCount = Math.max(1, Math.min(1000, Math.floor(32000 / safeCols.length)));
+    // SQLite limit is 32766 host parameters — use full capacity (no artificial 1000 cap)
+    const multiRowCount = Math.max(1, Math.floor(32766 / safeCols.length));
     let multiInsertStmt = null;
     if (multiRowCount > 1) {
       const singleRow = `(${placeholders})`;
@@ -174,6 +206,9 @@ class TimelineDB {
         `INSERT INTO data (${colList}) VALUES ${multiValues}`
       );
     }
+
+    // Pre-allocate flat params array (reused across all insertBatchArrays calls)
+    const insertFlat = multiRowCount > 1 ? new Array(multiRowCount * safeCols.length) : null;
 
     const meta = {
       tabId,
@@ -187,12 +222,21 @@ class TimelineDB {
       insertStmt,
       multiInsertStmt,
       multiRowCount,
+      insertFlat,
       colMap: Object.fromEntries(safeCols.map((c) => [c.original, c.safe])),
       reverseColMap: Object.fromEntries(safeCols.map((c) => [c.safe, c.original])),
     };
 
     this.databases.set(tabId, meta);
+    dbg("DB", `createTab OK`, { tabId, colCount: headers.length, tsColumns: [...tsColumns] });
     return { tabId, headers, tsColumns: [...tsColumns] };
+    } catch (err) {
+      dbg("DB", `createTab FAILED`, { tabId, error: err.message, stack: err.stack });
+      // Clean up on failure — prevent leaked DB connections and orphaned temp files
+      try { db.close(); } catch (_) {}
+      try { fs.unlinkSync(dbPath); } catch (_) {}
+      throw err;
+    }
   }
 
   /**
@@ -208,14 +252,12 @@ class TimelineDB {
     const multiStmt = meta.multiInsertStmt;
     const multiN = meta.multiRowCount;
     const colCount = meta.headers.length;
+    const flat = meta.insertFlat; // pre-allocated in createTab, reused across all calls
 
     const tx = meta.db.transaction(() => {
       let i = 0;
 
-      if (multiStmt && multiN > 1) {
-        // Pre-allocate flat params array — reused every iteration
-        const flat = new Array(multiN * colCount);
-
+      if (multiStmt && multiN > 1 && flat) {
         while (i + multiN <= rows.length) {
           for (let r = 0; r < multiN; r++) {
             const row = rows[i + r];
@@ -267,19 +309,24 @@ class TimelineDB {
   }
 
   /**
-   * Finalize import: detect column types (indexes + FTS deferred to first use)
+   * Finalize import: detect column types, switch to query mode.
+   * Indexes, FTS, and ANALYZE are all deferred to async background builds
+   * so the UI becomes interactive immediately after import completes.
    */
   finalizeImport(tabId) {
+    dbg("DB", `finalizeImport start`, { tabId });
     const meta = this.databases.get(tabId);
-    if (!meta) return;
+    if (!meta) { dbg("DB", `finalizeImport: no meta for tab`); return; }
 
     const db = meta.db;
 
     // FTS index is built lazily on first search — skip here for fast import.
     meta.ftsReady = false;
 
-    // Sort indexes are built lazily on first sort — skip here for fast import.
+    // Sort indexes are built asynchronously after import — skip here.
     meta.indexedCols = new Set();
+    meta.indexesReady = false;
+    meta.indexesBuilding = false;
 
     // Detect numeric columns (fast — only samples 100 rows)
     const sampleRows = db
@@ -301,21 +348,14 @@ class TimelineDB {
       }
     });
 
-    // Switch to normal sync mode for querying
+    // Minimal pragmas so initial queries work while background builds run.
+    // buildIndexesAsync/buildFtsAsync set their own aggressive pragmas and
+    // restore full query mode (WAL + mmap + 256MB cache) when they finish.
+    db.pragma("journal_mode = WAL"); // need WAL for concurrent reads during build
     db.pragma("synchronous = NORMAL");
-    db.pragma("wal_autocheckpoint = 5000"); // re-enable auto-checkpoint (larger = fewer interrupts during queries)
-    db.pragma("wal_checkpoint(TRUNCATE)"); // flush WAL to main DB
+    db.pragma("cache_size = -262144"); // 256MB cache for queries
 
-    // Pre-build indexes on timestamp columns (used by sort, date range filters, gap analysis)
-    for (const tsCol of meta.tsColumns) {
-      const safeCol = meta.colMap[tsCol];
-      if (safeCol && !meta.indexedCols.has(safeCol)) {
-        try {
-          db.exec(`CREATE INDEX IF NOT EXISTS idx_${safeCol} ON data(${safeCol})`);
-          meta.indexedCols.add(safeCol);
-        } catch (e) { /* ignore */ }
-      }
-    }
+    // Skip ANALYZE here — run after async index build completes
 
     return {
       rowCount: meta.rowCount,
@@ -397,8 +437,19 @@ class TimelineDB {
     }
 
     const totalRows = meta.rowCount || db.prepare("SELECT COUNT(*) as cnt FROM data").get().cnt;
-    const CHUNK = 100000; // 100k rows per chunk — ~200-500ms each
+    // 200k rows per chunk — keeps each blocking segment ~1-3s so UI stays responsive
+    const CHUNK = 200000;
     let lastRowid = 0;
+
+    // Aggressive pragmas for FTS build (temp DB — crash = re-import)
+    db.pragma("journal_mode = OFF");
+    db.pragma("synchronous = OFF");
+    db.pragma("cache_size = -1048576"); // 1GB — keep data pages in memory for fast SELECT
+    db.pragma("temp_store = MEMORY"); // FTS merge temp in memory
+    db.pragma("threads = 8"); // parallel sort/merge
+
+    // Send initial progress so the UI can show the FTS overlay immediately
+    if (onProgress) onProgress({ indexed: 0, total: totalRows, done: false });
 
     return new Promise((resolve) => {
       const insertChunk = () => {
@@ -412,23 +463,118 @@ class TimelineDB {
         lastRowid += CHUNK;
         const indexed = Math.min(lastRowid, totalRows);
 
-        if (onProgress) onProgress({ indexed, total: totalRows, done: false });
-
         if (inserted.changes < CHUNK) {
-          // All rows indexed — optimize and finalize
-          try { db.exec(`INSERT INTO data_fts(data_fts) VALUES('optimize')`); } catch (e) { /* ignore */ }
+          // All rows indexed — switch back to query mode
+          db.pragma("journal_mode = WAL");
+          db.pragma("synchronous = NORMAL");
+          db.pragma("cache_size = -262144"); // 256MB for queries
+          db.pragma("mmap_size = 536870912"); // 512MB mmap for reads
+          try { db.pragma("wal_checkpoint(PASSIVE)"); } catch (e) { /* ignore */ }
           meta.ftsReady = true;
           meta.ftsBuilding = false;
           if (onProgress) onProgress({ indexed: totalRows, total: totalRows, done: true });
           resolve();
         } else {
-          // Yield to event loop before next chunk
+          if (onProgress) onProgress({ indexed, total: totalRows, done: false });
+          // Yield to event loop before next chunk — keeps UI responsive
           setImmediate(insertChunk);
         }
       };
 
-      insertChunk();
+      // Defer first chunk — let the UI render the FTS overlay first
+      setImmediate(insertChunk);
     });
+  }
+
+  /**
+   * Build column indexes asynchronously after import.
+   * Yields to the event loop between each index so IPC queries remain responsive.
+   * Called automatically after finalizeImport — the UI is already interactive.
+   *
+   * @param {string} tabId
+   * @param {Function} onProgress - ({ built, total, done, currentCol }) callback per index
+   * @returns {Promise<void>}
+   */
+  buildIndexesAsync(tabId, onProgress) {
+    const meta = this.databases.get(tabId);
+    if (!meta || meta.indexesReady || meta.indexesBuilding) return Promise.resolve();
+    meta.indexesBuilding = true;
+
+    const cols = meta.safeCols.filter((c) => !meta.indexedCols.has(c.safe));
+    const total = cols.length;
+    let built = 0;
+
+    dbg("DB", `buildIndexesAsync start`, { tabId, total });
+
+    // Aggressive pragmas for index build (temp DB — crash = re-import)
+    meta.db.pragma("journal_mode = OFF"); // no journal overhead during CREATE INDEX
+    meta.db.pragma("synchronous = OFF");
+    meta.db.pragma("cache_size = -1048576"); // 1GB — keep entire table + index pages in memory
+    meta.db.pragma("temp_store = MEMORY"); // sort temp files in memory
+    meta.db.pragma("threads = 8"); // parallel sort for CREATE INDEX
+    meta.db.pragma("mmap_size = 0"); // disable mmap — rely on cache (write-heavy)
+
+    // Send initial progress so the UI overlay renders immediately
+    if (onProgress) onProgress({ built: 0, total, done: false, currentCol: cols[0]?.original });
+
+    return new Promise((resolve) => {
+      const buildNext = () => {
+        // Tab may have been closed while building
+        if (!this.databases.has(tabId)) { resolve(); return; }
+
+        if (built >= cols.length) {
+          // Run ANALYZE for query optimizer stats
+          try {
+            meta.db.exec("ANALYZE");
+          } catch (e) {
+            dbg("DB", `ANALYZE failed`, { error: e.message });
+          }
+
+          // Switch back to query mode
+          meta.db.pragma("journal_mode = WAL");
+          meta.db.pragma("synchronous = NORMAL");
+          meta.db.pragma("cache_size = -262144"); // 256MB for queries
+          meta.db.pragma("mmap_size = 536870912"); // 512MB mmap for reads
+          try { meta.db.pragma("wal_checkpoint(PASSIVE)"); } catch (e) { /* ignore */ }
+
+          meta.indexesReady = true;
+          meta.indexesBuilding = false;
+          dbg("DB", `buildIndexesAsync complete`, { tabId, total });
+          if (onProgress) onProgress({ built: total, total, done: true, currentCol: null });
+          resolve();
+          return;
+        }
+
+        // Build ONE index per yield — each CREATE INDEX on 1M+ rows takes 1-3s,
+        // yielding after each keeps the event loop responsive for UI updates
+        const col = cols[built];
+        try {
+          meta.db.exec(`CREATE INDEX IF NOT EXISTS idx_${col.safe} ON data(${col.safe})`);
+          meta.indexedCols.add(col.safe);
+        } catch (e) {
+          dbg("DB", `index creation failed for ${col.original}`, { error: e.message });
+        }
+        built++;
+
+        if (onProgress) onProgress({ built, total, done: false, currentCol: col.original });
+
+        // Yield to event loop after each index — keeps UI responsive
+        setImmediate(buildNext);
+      };
+
+      // Defer first index — let the UI render the overlay first
+      setImmediate(buildNext);
+    });
+  }
+
+  /**
+   * Check if background builds (indexes/FTS) are running on a tab.
+   * While builds run, the DB uses aggressive pragmas (journal_mode=OFF)
+   * that make concurrent queries unsafe.
+   */
+  _isBuilding(tabId) {
+    const meta = this.databases.get(tabId);
+    return meta && (meta.indexesBuilding || meta.ftsBuilding);
   }
 
   /**
@@ -853,7 +999,7 @@ class TimelineDB {
 
   toggleBookmark(tabId, rowId) {
     const meta = this.databases.get(tabId);
-    if (!meta) return;
+    if (!meta || this._isBuilding(tabId)) return;
     this._invalidateCountCache(tabId);
     const exists = meta.db
       .prepare("SELECT rowid FROM bookmarks WHERE rowid = ?")
@@ -874,7 +1020,7 @@ class TimelineDB {
    */
   setBookmarks(tabId, rowIds, add = true) {
     const meta = this.databases.get(tabId);
-    if (!meta) return;
+    if (!meta || this._isBuilding(tabId)) return;
     this._invalidateCountCache(tabId);
     const stmt = add
       ? meta.db.prepare("INSERT OR IGNORE INTO bookmarks (rowid) VALUES (?)")
@@ -910,13 +1056,13 @@ class TimelineDB {
 
   addTag(tabId, rowId, tag) {
     const meta = this.databases.get(tabId);
-    if (!meta) return;
+    if (!meta || this._isBuilding(tabId)) return;
     meta.db.prepare("INSERT OR IGNORE INTO tags (rowid, tag) VALUES (?, ?)").run(rowId, tag);
   }
 
   removeTag(tabId, rowId, tag) {
     const meta = this.databases.get(tabId);
-    if (!meta) return;
+    if (!meta || this._isBuilding(tabId)) return;
     meta.db.prepare("DELETE FROM tags WHERE rowid = ? AND tag = ?").run(rowId, tag);
   }
 
@@ -2520,18 +2666,39 @@ class TimelineDB {
       }
       chains.sort((a, b) => b.hops - a.hops);
 
+      // Outlier host detection — flag default/generic/suspicious hostnames
+      // Threat actor machines typically use default OS install names or pentest distro defaults
+      const OUTLIER_PATS = [
+        [/^DESKTOP-[A-Z0-9]{5,}$/, "Default Windows hostname"],
+        [/^WIN-[A-Z0-9]{5,}$/, "Default Windows hostname"],
+        [/^KALI$/i, "Kali Linux default"],
+        [/^PARROT$/i, "Parrot OS default"],
+        [/^(USER-?PC|YOURNAME|ADMIN|TEST|PC|WIN10|WIN11|OWNER-?PC|USER|WINDOWS|LOCALHOST|HACKER|ATTACKER|ROOT)$/i, "Generic hostname"],
+        [/[^\x00-\x7F]/, "Non-ASCII hostname"],
+      ];
+      const detectOutlier = (hostname) => {
+        for (const [pat, reason] of OUTLIER_PATS) {
+          if (pat.test(hostname)) return reason;
+        }
+        return null;
+      };
+
       return {
-        nodes: [...hostSet.entries()].map(([id, info]) => ({
-          id, label: id, eventCount: info.eventCount,
-          isSource: info.isSource, isTarget: info.isTarget,
-          isBoth: info.isSource && info.isTarget,
-        })),
+        nodes: [...hostSet.entries()].map(([id, info]) => {
+          const outlierReason = detectOutlier(id);
+          return {
+            id, label: id, eventCount: info.eventCount,
+            isSource: info.isSource, isTarget: info.isTarget,
+            isBoth: info.isSource && info.isTarget,
+            isOutlier: !!outlierReason, outlierReason: outlierReason || "",
+          };
+        }),
         edges: [...edgeMap.values()].map((e) => ({
           ...e, users: [...e.users], logonTypes: [...e.logonTypes],
         })),
         chains,
         stats: {
-          totalEvents: rows.length, uniqueHosts: hostSet.size,
+          totalEvents: timeOrdered.length, uniqueHosts: hostSet.size,
           uniqueUsers: new Set(timeOrdered.map((e) => e.user).filter(Boolean)).size,
           uniqueConnections: edgeMap.size,
           failedLogons: timeOrdered.filter((e) => e.logonType === "4625" || rows.find((r) => r._rowid && r.eventId === "4625")).length,
@@ -2546,8 +2713,466 @@ class TimelineDB {
   }
 
   /**
-   * Close a tab and clean up its database
+   * Persistence Analyzer — scans EVTX or registry data for persistence mechanisms
    */
+  getPersistenceAnalysis(tabId, options = {}) {
+    const meta = this.databases.get(tabId);
+    if (!meta) return { items: [], stats: {}, error: "Tab not found" };
+    const { db, headers } = meta;
+    const detect = (pats) => { for (const p of pats) { const f = headers.find(h => p.test(h)); if (f) return f; } return null; };
+
+    // Auto-detect data mode
+    const hasEventId = detect([/^EventI[dD]$/i, /^event_id$/i]);
+    const hasKeyPath = detect([/^KeyPath$/i, /^Key ?Path$/i]);
+    const hasValueName = detect([/^ValueName$/i, /^Value ?Name$/i]);
+
+    let mode = options.mode || "auto";
+    if (mode === "auto") {
+      mode = (hasKeyPath && hasValueName) ? "registry" : hasEventId ? "evtx" : null;
+    }
+    if (!mode) return { items: [], stats: {}, error: "Cannot detect data type. Need EventID column (EVTX) or KeyPath column (Registry)." };
+
+    // --- Detection rules ---
+    // Regex helper: match "Key: Value" in EvtxECmd PayloadData (pipe-delimited haystack)
+    // EvtxECmd formats vary: "Name: Svc", "Task: \Path", "ServiceName: Svc", "Image: C:\..."
+    const P = (key) => new RegExp(key + ":\\s*(.+?)(?:\\s*$|\\s*\\|)", "i"); // match until end or pipe
+    const EVTX_RULES = [
+      // --- Services ---
+      { category: "Services", name: "Service Installed", eventIds: ["7045"], channels: ["system"], severity: "high",
+        // EvtxECmd 7045 (System): PD2="Name: SvcName", PD3="StartType:", PD4="Account:", ExecutableInfo=ImagePath
+        extractors: { serviceName: [P("Name"), P("ServiceName")], startType: [P("StartType")], account: [P("Account"), P("AccountName")] },
+        topFields: ["serviceName", "imagePath", "account"], useExecInfo: "imagePath", payloadFilter: null },
+      { category: "Services", name: "Service Installed", eventIds: ["4697"], channels: ["security"], severity: "high",
+        extractors: { serviceName: [P("ServiceName")], serviceFile: [P("ServiceFileName")], serviceType: [P("ServiceType")], startType: [P("ServiceStartType")], account: [P("ServiceAccount")] },
+        topFields: ["serviceName", "serviceFile", "account"], payloadFilter: null },
+      // --- Scheduled Tasks ---
+      { category: "Scheduled Tasks", name: "Scheduled Task Created", eventIds: ["4698"], channels: ["security"], severity: "high",
+        extractors: { taskName: [P("Task"), P("TaskName"), P("Task Name")], command: [P("Command"), P("Arguments"), P("Actions")] },
+        topFields: ["taskName", "command", "executable"], useExecInfo: "executable", payloadFilter: null },
+      { category: "Scheduled Tasks", name: "Scheduled Task Deleted", eventIds: ["4699"], channels: ["security"], severity: "medium",
+        extractors: { taskName: [P("Task"), P("TaskName"), P("Task Name")] },
+        topFields: ["taskName"], payloadFilter: null },
+      { category: "Scheduled Tasks", name: "Task Registered", eventIds: ["106"], channels: ["taskscheduler"], severity: "medium",
+        // EvtxECmd 106 (TaskScheduler/Operational): PD2="Task: \Name", ExecutableInfo=empty for this event
+        extractors: { taskName: [P("Task"), P("TaskName"), P("Name")] },
+        topFields: ["taskName"], payloadFilter: null },
+      { category: "Scheduled Tasks", name: "Task Updated", eventIds: ["140"], channels: ["taskscheduler"], severity: "medium",
+        extractors: { taskName: [P("Task"), P("TaskName"), P("Name")] },
+        topFields: ["taskName"], payloadFilter: null },
+      { category: "Scheduled Tasks", name: "Task Process Created", eventIds: ["129"], channels: ["taskscheduler"], severity: "high",
+        // EvtxECmd 129 (TaskScheduler/Operational): PD2="Task: \Name", PD3="ProcessID:", ExecutableInfo=exe path
+        extractors: { taskName: [P("Task"), P("TaskName"), P("Name")], processId: [P("ProcessID"), P("ProcessId")] },
+        topFields: ["taskName", "executable", "processId"], useExecInfo: "executable", payloadFilter: null },
+      { category: "Scheduled Tasks", name: "Task Action Started", eventIds: ["200"], channels: ["taskscheduler"], severity: "medium",
+        // EvtxECmd 200 (TaskScheduler/Operational): PD2="Task: \Name", ExecutableInfo=action/handler name
+        extractors: { taskName: [P("Task"), P("TaskName"), P("Name")], instanceId: [P("Instance Id"), P("TaskInstanceId")] },
+        topFields: ["taskName", "executable"], useExecInfo: "executable", payloadFilter: null },
+      // --- WMI ---
+      { category: "WMI Persistence", name: "WMI Event Subscription", eventIds: ["5861"], channels: ["wmi-activity"], severity: "critical",
+        extractors: { namespace: [P("Namespace")], operation: [P("Operation")], query: [P("Query")], consumer: [P("Consumer")], poss_command: [P("PossibleCause"), P("Command")] },
+        topFields: ["operation", "query", "consumer"], payloadFilter: null },
+      { category: "WMI Persistence", name: "WMI EventFilter Created", eventIds: ["19"], channels: ["sysmon"], severity: "critical",
+        extractors: { name: [P("Name")], query: [P("Query")], eventNamespace: [P("EventNamespace")], operation: [P("Operation")] },
+        topFields: ["name", "query", "operation"], payloadFilter: null },
+      { category: "WMI Persistence", name: "WMI EventConsumer Created", eventIds: ["20"], channels: ["sysmon"], severity: "critical",
+        extractors: { name: [P("Name")], type: [P("Type")], destination: [P("Destination")], operation: [P("Operation")] },
+        topFields: ["name", "destination", "type"], payloadFilter: null },
+      { category: "WMI Persistence", name: "WMI Binding Created", eventIds: ["21"], channels: ["sysmon"], severity: "critical",
+        extractors: { consumer: [P("Consumer")], filter: [P("Filter")], operation: [P("Operation")] },
+        topFields: ["consumer", "filter"], payloadFilter: null },
+      // --- Registry (Sysmon) ---
+      { category: "Registry Autorun", name: "Registry Value Set", eventIds: ["13"], channels: ["sysmon"], severity: "high",
+        extractors: { targetObject: [P("TargetObject"), P("TgtObj")], details: [P("Details")], image: [P("Image")] },
+        topFields: ["targetObject", "details", "image"],
+        payloadFilter: /\\(?:Run|RunOnce|RunServices|Services\\[^\\]*\\(?:ImagePath|Parameters)|Winlogon\\(?:Shell|Userinit|Notify)|AppInit_DLLs|Image File Execution Options\\[^\\]*\\Debugger|CurrentVersion\\Explorer\\(?:Shell|User Shell)|Session Manager\\(?:BootExecute|SetupExecute)|InprocServer32|LocalServer32|ShellIconOverlay|ContextMenuHandler|Browser Helper|Active Setup|Print\\Monitors|NetworkProvider|Lsa\\)/i },
+      { category: "Registry Modification", name: "Registry Key Created/Deleted", eventIds: ["12"], channels: ["sysmon"], severity: "medium",
+        extractors: { targetObject: [P("TargetObject"), P("TgtObj")], eventType: [P("EventType")], image: [P("Image")] },
+        topFields: ["eventType", "targetObject", "image"],
+        payloadFilter: /\\(?:Run|RunOnce|Services\\|Winlogon|AppInit_DLLs|Image File Execution Options|Session Manager\\BootExecute|Active Setup|Print\\Monitors|NetworkProvider|Lsa\\)/i },
+      { category: "Registry Rename", name: "Registry Key/Value Renamed", eventIds: ["14"], channels: ["sysmon"], severity: "medium",
+        extractors: { targetObject: [P("TargetObject")], newName: [P("NewName")], eventType: [P("EventType")] },
+        topFields: ["targetObject", "newName"],
+        payloadFilter: /\\(?:Run|RunOnce|Services\\|Winlogon|Image File Execution Options)/i },
+      // --- File system (Sysmon) ---
+      { category: "Startup Folder", name: "File Created in Startup", eventIds: ["11"], channels: ["sysmon"], severity: "high",
+        extractors: { targetFilename: [P("TargetFilename")], image: [P("Image")], creationTime: [P("CreationUtcTime")] },
+        topFields: ["targetFilename", "image"],
+        payloadFilter: /Start Menu\\Programs\\Startup|ProgramData\\Microsoft\\Windows\\Start Menu|\\Startup\\[^\\]*\.(exe|dll|bat|cmd|ps1|vbs|js|lnk|url)$/i },
+      { category: "DLL Hijacking", name: "Unsigned DLL Loaded", eventIds: ["7"], channels: ["sysmon"], severity: "medium",
+        extractors: { imageLoaded: [P("ImageLoaded")], signed: [P("Signed")], signatureStatus: [P("SignatureStatus")], image: [P("Image")] },
+        topFields: ["imageLoaded", "image", "signatureStatus"],
+        payloadFilter: /Signed:\s*false/i },
+      { category: "Driver Loading", name: "Suspicious Driver Loaded", eventIds: ["6"], channels: ["sysmon"], severity: "critical",
+        extractors: { imageLoaded: [P("ImageLoaded")], signed: [P("Signed")], signatureStatus: [P("SignatureStatus")], signer: [P("Signer")] },
+        topFields: ["imageLoaded", "signatureStatus", "signer"],
+        payloadFilter: /Signed:\s*false|SignatureStatus:\s*(?:Expired|Revoked|Invalid|Unavailable)/i },
+      { category: "Process Tampering", name: "Process Tampering Detected", eventIds: ["25"], channels: ["sysmon"], severity: "critical",
+        extractors: { type: [P("Type")], image: [P("Image")] },
+        topFields: ["image", "type"], payloadFilter: null },
+      // --- Task Scheduler lifecycle (anti-forensics / trigger tracking) ---
+      { category: "Scheduled Tasks", name: "Task Deleted", eventIds: ["141"], channels: ["taskscheduler"], severity: "high",
+        extractors: { taskName: [P("Task"), P("TaskName"), P("Name")], userName: [P("UserName"), P("User")] },
+        topFields: ["taskName", "userName"], payloadFilter: null },
+      { category: "Scheduled Tasks", name: "Boot Trigger Fired", eventIds: ["118"], channels: ["taskscheduler"], severity: "medium",
+        extractors: { taskName: [P("Task"), P("TaskName"), P("Name")] },
+        topFields: ["taskName"], payloadFilter: null },
+      { category: "Scheduled Tasks", name: "Logon Trigger Fired", eventIds: ["119"], channels: ["taskscheduler"], severity: "medium",
+        extractors: { taskName: [P("Task"), P("TaskName"), P("Name")], userName: [P("UserName"), P("User")] },
+        topFields: ["taskName", "userName"], payloadFilter: null },
+    ];
+
+    const REGISTRY_RULES = [
+      { category: "Run Keys", name: "Run/RunOnce Autostart", severity: "high", description: "Standard autorun registry key",
+        keyPathPattern: /\\(?:Software|SOFTWARE)\\Microsoft\\Windows\\CurrentVersion\\(?:Run|RunOnce|RunOnceEx)(?:\\|$)/i, valueNameFilter: null },
+      { category: "Services", name: "Service ImagePath/ServiceDll", severity: "high", description: "Service executable or DLL path",
+        keyPathPattern: /\\(?:SYSTEM|System)\\(?:CurrentControlSet|ControlSet\d+)\\Services\\[^\\]+(?:\\Parameters)?$/i,
+        valueNameFilter: /^(ImagePath|ServiceDll|FailureCommand)$/i },
+      { category: "Winlogon", name: "Winlogon Shell/Userinit", severity: "critical", description: "Login-triggered execution via Winlogon",
+        keyPathPattern: /\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon$/i, valueNameFilter: /^(Shell|Userinit|Notify|VmApplet|AppSetup)$/i },
+      { category: "AppInit DLLs", name: "AppInit_DLLs", severity: "critical", description: "DLL injection on every user-mode process",
+        keyPathPattern: /\\Microsoft\\Windows NT\\CurrentVersion\\Windows$/i, valueNameFilter: /^(AppInit_DLLs|LoadAppInit_DLLs)$/i },
+      { category: "IFEO", name: "Image File Execution Options Debugger", severity: "critical", description: "Debugger hijacking of executable launch",
+        keyPathPattern: /\\Image File Execution Options\\[^\\]+$/i, valueNameFilter: /^(Debugger|GlobalFlag)$/i },
+      { category: "COM Hijacking", name: "COM Object Server", severity: "high", description: "COM object DLL/executable hijacking",
+        keyPathPattern: /\\(?:InprocServer32|LocalServer32|InprocHandler32)$/i, valueNameFilter: null },
+      { category: "Shell Extensions", name: "Shell Extension Handler", severity: "medium", description: "Explorer shell extension persistence",
+        keyPathPattern: /\\(?:ShellIconOverlayIdentifiers|ContextMenuHandlers|PropertySheetHandlers|ColumnHandlers|CopyHookHandlers|DragDropHandlers|ShellExecuteHooks)\\[^\\]+$/i, valueNameFilter: null },
+      { category: "Boot Execute", name: "Session Manager BootExecute", severity: "critical", description: "Pre-boot execution before Windows starts",
+        keyPathPattern: /\\(?:Session Manager)$/i, valueNameFilter: /^(BootExecute|SetupExecute|Execute)$/i },
+      { category: "BHO", name: "Browser Helper Object", severity: "medium", description: "Browser helper object (IE/Edge extension)",
+        keyPathPattern: /\\Browser Helper Objects\\{[0-9a-fA-F-]+}$/i, valueNameFilter: null },
+      { category: "LSA", name: "LSA Security/Auth Packages", severity: "critical", description: "Credential interception via LSA packages",
+        keyPathPattern: /\\(?:Control\\)?Lsa$/i, valueNameFilter: /^(Security Packages|Authentication Packages|Notification Packages)$/i },
+      { category: "Print Monitors", name: "Print Monitor DLL", severity: "high", description: "Spooler-based persistence via print monitor",
+        keyPathPattern: /\\Print\\Monitors\\[^\\]+$/i, valueNameFilter: /^Driver$/i },
+      { category: "Active Setup", name: "Active Setup StubPath", severity: "high", description: "Per-user execution on first login",
+        keyPathPattern: /\\Active Setup\\Installed Components\\{[0-9a-fA-F-]+}$/i, valueNameFilter: /^StubPath$/i },
+      { category: "Startup Folder", name: "Startup Folder Registry Path", severity: "high", description: "Startup folder path redirection",
+        keyPathPattern: /\\Explorer\\(?:User Shell Folders|Shell Folders)$/i, valueNameFilter: /Startup/i },
+      { category: "Scheduled Tasks (Reg)", name: "Scheduled Task in Registry", severity: "medium", description: "Task definition stored in registry",
+        keyPathPattern: /\\Schedule\\TaskCache\\(?:Tasks|Tree)\\?/i, valueNameFilter: null },
+      { category: "Network Providers", name: "Network Provider Order", severity: "high", description: "Network login interception via custom provider",
+        keyPathPattern: /\\NetworkProvider\\Order$/i, valueNameFilter: /^ProviderOrder$/i },
+    ];
+
+    // --- Apply user rule customization ---
+    const disabledRules = new Set(options.disabledRules || []);
+    let activeEvtxRules = EVTX_RULES.filter((_, i) => !disabledRules.has(`evtx-${i}`));
+    let activeRegRules = REGISTRY_RULES.filter((_, i) => !disabledRules.has(`reg-${i}`));
+
+    if (options.customRules?.length) {
+      for (const cr of options.customRules) {
+        if (cr.type === "evtx") {
+          activeEvtxRules.push({
+            category: cr.category || "Custom",
+            name: cr.name || "Custom Rule",
+            eventIds: (cr.eventIds || "").split(",").map(s => s.trim()).filter(Boolean),
+            channels: (cr.channels || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean),
+            severity: cr.severity || "medium",
+            extractors: {},
+            topFields: [],
+            payloadFilter: cr.payloadFilter ? new RegExp(cr.payloadFilter, "i") : null,
+          });
+        } else if (cr.type === "registry") {
+          activeRegRules.push({
+            category: cr.category || "Custom",
+            name: cr.name || "Custom Rule",
+            severity: cr.severity || "medium",
+            description: cr.description || "User-defined rule",
+            keyPathPattern: new RegExp(cr.keyPathPattern || ".*", "i"),
+            valueNameFilter: cr.valueNameFilter ? new RegExp(cr.valueNameFilter, "i") : null,
+          });
+        }
+      }
+    }
+
+    // --- Column mapping ---
+    const userCols = options.columns || {};
+    let columns;
+    if (mode === "evtx") {
+      columns = {
+        eventId: userCols.eventId || detect([/^EventI[dD]$/i, /^event_id$/i]),
+        channel: userCols.channel || detect([/^Channel$/i, /^SourceName$/i, /^Provider$/i]),
+        ts: userCols.ts || detect([/^TimeCreated$/i, /^datetime$/i, /^UtcTime$/i, /^Timestamp$/i]),
+        computer: userCols.computer || detect([/^Computer$/i, /^ComputerName$/i, /^Hostname$/i]),
+        payload: detect([/^PayloadData1$/i]),
+        payload2: detect([/^PayloadData2$/i]),
+        payload3: detect([/^PayloadData3$/i]),
+        payload4: detect([/^PayloadData4$/i]),
+        payload5: detect([/^PayloadData5$/i]),
+        payload6: detect([/^PayloadData6$/i]),
+        mapDesc: detect([/^MapDescription$/i]),
+        execInfo: detect([/^ExecutableInfo$/i]),
+        details: detect([/^Details$/i]),
+        ruleTitle: detect([/^RuleTitle$/i]),
+        user: userCols.user || detect([/^UserName$/i, /^User$/i]),
+      };
+    } else {
+      columns = {
+        keyPath: userCols.keyPath || detect([/^KeyPath$/i, /^Key ?Path$/i]),
+        valueName: userCols.valueName || detect([/^ValueName$/i, /^Value ?Name$/i]),
+        valueData: userCols.valueData || detect([/^ValueData$/i, /^Value ?Data$/i]),
+        valueData2: detect([/^ValueData2$/i]),
+        valueData3: detect([/^ValueData3$/i]),
+        valueType: detect([/^ValueType$/i, /^Value ?Type$/i]),
+        hivePath: detect([/^HivePath$/i, /^Hive ?Path$/i]),
+        ts: userCols.ts || detect([/^LastWriteTimestamp$/i, /^Timestamp$/i, /^datetime$/i, /^TimeCreated$/i]),
+      };
+    }
+
+    // --- Build SQL query ---
+    const { columnFilters = {}, checkboxFilters = {}, dateRangeFilters = {}, bookmarkedOnly = false, searchTerm = "", searchMode = "contains", searchCondition = "AND", advancedFilters = [] } = options;
+    const params = [];
+    const whereConditions = [];
+
+    // EVTX pre-filter: only relevant Event IDs
+    const ALL_EVTX_EIDS = [...new Set(activeEvtxRules.flatMap(r => r.eventIds))];
+    if (mode === "evtx" && columns.eventId) {
+      const safeEid = meta.colMap[columns.eventId];
+      if (safeEid) {
+        whereConditions.push(`${safeEid} IN (${ALL_EVTX_EIDS.map(() => "?").join(",")})`);
+        params.push(...ALL_EVTX_EIDS);
+      }
+    }
+
+    // Apply standard filters (same pattern as getLateralMovement)
+    for (const [cn, fv] of Object.entries(columnFilters)) {
+      if (!fv) continue;
+      const sc = meta.colMap[cn]; if (!sc) continue;
+      whereConditions.push(`${sc} LIKE ?`); params.push(`%${fv}%`);
+    }
+    for (const [cn, values] of Object.entries(checkboxFilters)) {
+      if (!values || values.length === 0) continue;
+      const sc = meta.colMap[cn]; if (!sc) continue;
+      const hasNull = values.some((v) => v === null || v === "");
+      const nonNull = values.filter((v) => v !== null && v !== "");
+      const parts = [];
+      if (hasNull) parts.push(`(${sc} IS NULL OR ${sc} = '')`);
+      if (nonNull.length === 1) { parts.push(`${sc} = ?`); params.push(nonNull[0]); }
+      else if (nonNull.length > 1) { parts.push(`${sc} IN (${nonNull.map(() => "?").join(",")})`); params.push(...nonNull); }
+      whereConditions.push(parts.length > 1 ? `(${parts.join(" OR ")})` : parts[0]);
+    }
+    for (const [cn, range] of Object.entries(dateRangeFilters)) {
+      const sc = meta.colMap[cn]; if (!sc) continue;
+      if (range.from) { whereConditions.push(`${sc} >= ?`); params.push(range.from); }
+      if (range.to) { whereConditions.push(`${sc} <= ?`); params.push(range.to); }
+    }
+    if (bookmarkedOnly) whereConditions.push(`data.rowid IN (SELECT rowid FROM bookmarks)`);
+    if (searchTerm.trim()) this._applySearch(searchTerm, searchMode, meta, whereConditions, params, searchCondition);
+    this._applyAdvancedFilters(advancedFilters, meta, whereConditions, params);
+
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
+
+    const selectParts = ["data.rowid as _rowid"];
+    for (const [key, colName] of Object.entries(columns)) {
+      if (colName && meta.colMap[colName]) selectParts.push(`${meta.colMap[colName]} as [${key}]`);
+    }
+
+    const orderCol = columns.ts ? meta.colMap[columns.ts] : null;
+    const orderClause = orderCol ? `ORDER BY ${orderCol} ASC` : "ORDER BY data.rowid ASC";
+
+    try {
+      const maxRows = 500000;
+      const sql = `SELECT ${selectParts.join(", ")} FROM data ${whereClause} ${orderClause} LIMIT ${maxRows}`;
+      const rows = db.prepare(sql).all(...params);
+
+      const items = [];
+
+      if (mode === "evtx") {
+        for (const row of rows) {
+          const eid = String(row.eventId || "").trim();
+          const haystack = [row.payload, row.payload2, row.payload3, row.payload4, row.payload5, row.payload6, row.mapDesc, row.execInfo, row.details, row.ruleTitle].filter(Boolean).join(" | ");
+
+          const channelLower = String(row.channel || "").toLowerCase();
+          for (const rule of activeEvtxRules) {
+            if (!rule.eventIds.includes(eid)) continue;
+            // Channel filter: rule.channels contains substrings to match (e.g., "system", "security", "taskscheduler", "sysmon")
+            if (rule.channels && !rule.channels.some((ch) => channelLower.includes(ch))) continue;
+            if (rule.payloadFilter && !rule.payloadFilter.test(haystack)) continue;
+
+            const details = {};
+            for (const [field, patterns] of Object.entries(rule.extractors || {})) {
+              for (const pat of patterns) {
+                const m = haystack.match(pat);
+                if (m) { details[field] = m[1].trim(); break; }
+              }
+            }
+
+            // Pull ExecutableInfo column directly into named field as fallback
+            // useExecInfo can be true (maps to "executable") or a string (specific field name)
+            if (rule.useExecInfo && row.execInfo) {
+              const targetField = typeof rule.useExecInfo === "string" ? rule.useExecInfo : "executable";
+              if (!details[targetField]) {
+                details[targetField] = row.execInfo.trim();
+              }
+            }
+
+            // Build summary from topFields (most relevant info first), fall back to raw payload
+            let detailsSummary = "";
+            const topFields = rule.topFields || Object.keys(rule.extractors || {});
+            const topParts = topFields.map((f) => details[f] ? `${f}: ${details[f]}` : null).filter(Boolean);
+            if (topParts.length > 0) {
+              detailsSummary = topParts.join(" | ");
+            } else {
+              // No extractors matched — show raw payload data for context
+              detailsSummary = [row.payload, row.payload2, row.payload3, row.payload4, row.payload5].filter(Boolean).join(" | ");
+            }
+
+            items.push({
+              rowid: row._rowid,
+              category: rule.category,
+              name: rule.name,
+              severity: rule.severity,
+              description: rule.description,
+              timestamp: row.ts || "",
+              computer: row.computer || "",
+              user: row.user || "",
+              source: `EventID ${eid}`,
+              details,
+              detailsSummary: detailsSummary.substring(0, 400),
+              mode: "evtx",
+            });
+          }
+        }
+      } else {
+        // Registry mode
+        for (const row of rows) {
+          const kp = row.keyPath || "";
+          const vn = row.valueName || "";
+          const vd = [row.valueData, row.valueData2, row.valueData3].filter(Boolean).join(" ");
+
+          for (const rule of activeRegRules) {
+            if (!rule.keyPathPattern.test(kp)) continue;
+            if (rule.valueNameFilter && !rule.valueNameFilter.test(vn)) continue;
+
+            items.push({
+              rowid: row._rowid,
+              category: rule.category,
+              name: rule.name,
+              severity: rule.severity,
+              description: rule.description,
+              timestamp: row.ts || "",
+              computer: "",
+              user: "",
+              source: "Registry",
+              details: { keyPath: kp, valueName: vn, valueData: vd, hivePath: row.hivePath || "" },
+              detailsSummary: `${vn}: ${vd}`.substring(0, 300),
+              mode: "registry",
+            });
+          }
+        }
+      }
+
+      // --- Cross-event correlation: enrich Task Registered/Updated with executable from Task Process Created/Action Started ---
+      if (mode === "evtx") {
+        const taskExecMap = {};
+        for (const item of items) {
+          if ((item.name === "Task Process Created" || item.name === "Task Action Started") && item.details.executable && item.details.taskName) {
+            const tn = item.details.taskName;
+            if (!taskExecMap[tn] || item.name === "Task Process Created") taskExecMap[tn] = item.details.executable;
+          }
+        }
+        for (const item of items) {
+          if ((item.name === "Task Registered" || item.name === "Task Updated") && !item.details.executable && item.details.taskName) {
+            const exec = taskExecMap[item.details.taskName];
+            if (exec) {
+              item.details.executable = exec;
+              // Rebuild summary with executable
+              const topParts = ["taskName", "executable"].map((f) => item.details[f] ? `${f}: ${item.details[f]}` : null).filter(Boolean);
+              if (topParts.length > 0) item.detailsSummary = topParts.join(" | ").substring(0, 400);
+            }
+          }
+        }
+      }
+
+      // --- Compute artifact + command columns from details ---
+      for (const item of items) {
+        const d = item.details;
+        if (item.mode === "evtx") {
+          item.artifact = d.taskName || d.serviceName || d.targetObject || d.targetFilename || d.name || d.imageLoaded || "";
+          item.command = d.executable || d.command || d.serviceFile || d.imagePath || d.image || d.query || d.destination || d.details || "";
+        } else {
+          item.artifact = d.keyPath || "";
+          item.command = d.valueData || "";
+        }
+      }
+
+      // --- Risk scoring + suspicious detection ---
+      const SUSPICIOUS_PATHS = /\\(?:Temp|AppData|Downloads|Users\\Public|ProgramData\\[^\\]*$|Recycle)/i;
+      const SUSPICIOUS_CMDS = /(?:powershell|pwsh|cmd\.exe\s*\/c|certutil|bitsadmin|mshta|regsvr32|wscript|cscript|rundll32|msiexec.*\/q)/i;
+      const ENCODING_INDICATORS = /(?:base64|frombase64|-[eE]nc\s|-[eE]\s|iex|invoke-expression|downloadstring|downloadfile|webclient|bitstransfer)/i;
+      const SEVERITY_SCORES = { critical: 8, high: 6, medium: 4, low: 2 };
+      // Known-legitimate task name prefixes (not suspicious)
+      const LEGIT_TASK_PREFIXES = /^\\(?:Microsoft\\|Apple\\|Google\\|Adobe\\|Mozilla\\)/i;
+
+      for (const item of items) {
+        let score = SEVERITY_SCORES[item.severity] || 4;
+        const blob = item.detailsSummary + " " + JSON.stringify(item.details);
+        if (SUSPICIOUS_PATHS.test(blob)) score += 1;
+        if (SUSPICIOUS_CMDS.test(blob)) score += 1;
+        if (ENCODING_INDICATORS.test(blob)) score += 1;
+
+        // Suspicious artifact/task indicators
+        const reasons = [];
+        const art = item.artifact || "";
+        if (art && item.category === "Scheduled Tasks") {
+          if (art.startsWith("\\") && !LEGIT_TASK_PREFIXES.test(art)) {
+            reasons.push("Non-standard task path");
+            score += 1;
+          }
+          if (/^\\{[0-9a-f-]+}$/i.test(art)) {
+            reasons.push("GUID-named task");
+            score += 1;
+          }
+        }
+        // LOLBin execution in non-Microsoft context
+        if (item.command && /powershell|pwsh|cmd\.exe|mshta|wscript|cscript/i.test(item.command) && art && !LEGIT_TASK_PREFIXES.test(art)) {
+          reasons.push("LOLBin execution");
+        }
+        // Living off the land: tasks/services executing from user-writable paths
+        if (item.command && /\\Users\\|\\Temp\\|\\AppData\\|\\Downloads\\|\\Public\\/i.test(item.command)) {
+          reasons.push("User-writable path");
+        }
+        // Anti-forensics: task deletion
+        if (item.name === "Task Deleted" && art && !LEGIT_TASK_PREFIXES.test(art)) {
+          reasons.push("Non-standard task deleted");
+          score += 1;
+        }
+
+        item.riskScore = Math.min(score, 10);
+        item.isSuspicious = reasons.length > 0;
+        item.suspiciousReasons = reasons;
+      }
+
+      items.sort((a, b) => b.riskScore - a.riskScore || (a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0));
+
+      // --- Build stats ---
+      const byCategory = {};
+      const bySeverity = { critical: 0, high: 0, medium: 0, low: 0 };
+      for (const item of items) {
+        byCategory[item.category] = (byCategory[item.category] || 0) + 1;
+        bySeverity[item.severity] = (bySeverity[item.severity] || 0) + 1;
+      }
+
+      return {
+        items,
+        stats: {
+          total: items.length,
+          byCategory,
+          bySeverity,
+          suspicious: items.filter(i => i.isSuspicious).length,
+          uniqueComputers: new Set(items.map(i => i.computer).filter(Boolean)).size,
+          categoriesFound: Object.keys(byCategory).length,
+        },
+        columns,
+        detectedMode: mode,
+        error: null,
+      };
+    } catch (e) {
+      return { items: [], stats: {}, columns, detectedMode: mode, error: e.message };
+    }
+  }
+
   /**
    * Get FTS build status for a tab (used by renderer to show indexing progress)
    */

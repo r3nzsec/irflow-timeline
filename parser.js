@@ -12,8 +12,19 @@
 const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
+const os = require("os");
 
-const BATCH_SIZE = 50000;
+const BATCH_SIZE_DEFAULT = 100000;
+const BATCH_SIZE_MAX_BYTES = 100 * 1024 * 1024; // ~100MB target max per batch
+
+// ── Debug trace logger (shared with main.js) ────────────────────
+const debugLogPath = path.join(os.homedir(), "tle-debug.log");
+function dbg(tag, msg, data) {
+  const ts = new Date().toISOString();
+  const line = `[${ts}] [${tag}] ${msg}${data !== undefined ? " " + JSON.stringify(data, null, 0) : ""}`;
+  console.error(line);
+  try { fs.appendFileSync(debugLogPath, line + "\n"); } catch {}
+}
 
 // ── CSV line parser (RFC 4180 compliant) ───────────────────────────
 function parseCSVLine(line, delimiter = ",") {
@@ -126,15 +137,17 @@ function splitToArray(line, delimiter, colCount) {
  */
 async function parseCSVStream(filePath, tabId, db, onProgress) {
   return new Promise((resolve, reject) => {
-    const stat = fs.statSync(filePath);
-    const totalBytes = stat.size;
+    let totalBytes = 0;
+    try { totalBytes = fs.statSync(filePath).size; } catch { /* proceed with 0 */ }
     let bytesRead = 0;
     let lineCount = 0;
     let headers = null;
     let colCount = 0;
     let delimiter = null;
-    let batch = [];
-    let lastProgress = 0;
+    let batch = new Array(BATCH_SIZE_DEFAULT);
+    let batchLen = 0;
+    let batchSize = BATCH_SIZE_DEFAULT;
+    let lastProgressTime = Date.now();
 
     // Buffer-level leftover — avoids string concatenation between chunks
     let leftoverBuf = null;
@@ -143,7 +156,7 @@ async function parseCSVStream(filePath, tabId, db, onProgress) {
     let fastSplit = false;
 
     const stream = fs.createReadStream(filePath, {
-      highWaterMark: 16 * 1024 * 1024, // 16MB chunks — fewer events, more work per event
+      highWaterMark: 128 * 1024 * 1024, // 128MB chunks — maximise work per event, fewer syscalls
     });
 
     stream.on("data", (chunk) => {
@@ -199,6 +212,9 @@ async function parseCSVStream(filePath, tabId, db, onProgress) {
           });
 
           colCount = headers.length;
+          // Adaptive batch size: ~100MB target / estimated row size, clamped to [5k, 100k]
+          batchSize = Math.max(5000, Math.min(BATCH_SIZE_DEFAULT, Math.floor(BATCH_SIZE_MAX_BYTES / (colCount * 80))));
+          batch = new Array(batchSize); // re-allocate to actual batch size
           db.createTab(tabId, headers);
           continue;
         }
@@ -208,16 +224,18 @@ async function parseCSVStream(filePath, tabId, db, onProgress) {
           ? splitToArray(line, delimiter, colCount)
           : parseCSVLineToArray(line, delimiter, colCount);
 
-        batch.push(values);
+        batch[batchLen++] = values;
         lineCount++;
 
-        if (batch.length >= BATCH_SIZE) {
-          db.insertBatchArrays(tabId, batch);
-          batch = [];
+        if (batchLen >= batchSize) {
+          // Slice to exact length if batch array is oversized, otherwise pass directly
+          db.insertBatchArrays(tabId, batchLen === batch.length ? batch : batch.slice(0, batchLen));
+          batchLen = 0;
 
-          // Report progress every ~10k rows
-          if (lineCount - lastProgress >= 10000) {
-            lastProgress = lineCount;
+          // Report progress every 200ms (time-based — reduces IPC overhead on large files)
+          const now = Date.now();
+          if (now - lastProgressTime >= 200) {
+            lastProgressTime = now;
             if (onProgress) onProgress(lineCount, bytesRead, totalBytes);
           }
         }
@@ -235,14 +253,14 @@ async function parseCSVStream(filePath, tabId, db, onProgress) {
           const values = fastSplit
             ? splitToArray(line, delimiter, colCount)
             : parseCSVLineToArray(line, delimiter, colCount);
-          batch.push(values);
+          batch[batchLen++] = values;
           lineCount++;
         }
       }
 
       // Insert remaining batch
-      if (batch.length > 0) {
-        db.insertBatchArrays(tabId, batch);
+      if (batchLen > 0) {
+        db.insertBatchArrays(tabId, batch.slice(0, batchLen));
       }
 
       // Finalize
@@ -275,15 +293,18 @@ async function parseCSVStream(filePath, tabId, db, onProgress) {
  */
 async function parseXLSXStream(filePath, tabId, db, onProgress, sheetName) {
   const ExcelJS = require("exceljs");
+  dbg("XLSX", `parseXLSXStream start`, { filePath, tabId, sheetName });
 
   return new Promise((resolve, reject) => {
-    const stat = fs.statSync(filePath);
-    const totalBytes = stat.size;
+    let totalBytes = 0;
+    try { totalBytes = fs.statSync(filePath).size; } catch { /* proceed with 0 */ }
+    dbg("XLSX", `file size`, { totalBytes });
     let headers = null;
     let colCount = 0;
     let lineCount = 0;
     let batch = [];
-    let lastProgress = 0;
+    let batchSize = BATCH_SIZE_DEFAULT;
+    let lastProgressTime = 0;
     let targetSheet = sheetName || 1;
     let currentSheet = null;
     let sheetFound = false;
@@ -291,11 +312,12 @@ async function parseXLSXStream(filePath, tabId, db, onProgress, sheetName) {
     const workbookReader = new ExcelJS.stream.xlsx.WorkbookReader(filePath, {
       sharedStrings: "cache",
       hyperlinks: "ignore",
-      styles: "ignore",
+      styles: "cache",
       worksheets: "emit",
     });
 
     workbookReader.on("worksheet", (worksheet) => {
+      dbg("XLSX", `worksheet event`, { name: worksheet.name, id: worksheet.id, targetSheet });
       // Match by name or index
       if (typeof targetSheet === "string") {
         if (worksheet.name !== targetSheet) return;
@@ -303,6 +325,7 @@ async function parseXLSXStream(filePath, tabId, db, onProgress, sheetName) {
         if (worksheet.id !== targetSheet) return;
       }
 
+      dbg("XLSX", `matched target sheet`, { name: worksheet.name });
       sheetFound = true;
       currentSheet = worksheet;
 
@@ -340,20 +363,25 @@ async function parseXLSXStream(filePath, tabId, db, onProgress, sheetName) {
             return h;
           });
           colCount = headers.length;
+          batchSize = Math.max(5000, Math.min(BATCH_SIZE_DEFAULT, Math.floor(BATCH_SIZE_MAX_BYTES / (colCount * 80))));
+          dbg("XLSX", `headers parsed, calling db.createTab`, { colCount, headers: headers.slice(0, 10) });
           db.createTab(tabId, headers);
+          dbg("XLSX", `db.createTab OK`);
           return;
         }
 
-        // Pad to colCount
+        // Pad or truncate to colCount
         while (values.length < colCount) values.push("");
+        if (values.length > colCount) values.length = colCount;
         batch.push(values);
         lineCount++;
 
-        if (batch.length >= BATCH_SIZE) {
+        if (batch.length >= batchSize) {
           db.insertBatchArrays(tabId, batch);
           batch = [];
-          if (lineCount - lastProgress >= 10000) {
-            lastProgress = lineCount;
+          const now = Date.now();
+          if (now - lastProgressTime >= 200) {
+            lastProgressTime = now;
             // XLSX streaming doesn't expose byte position — estimate progress
             // using an assumed ~200 bytes/row average for compressed XLSX
             const estimatedBytes = Math.min(lineCount * 200, totalBytes - 1);
@@ -364,15 +392,19 @@ async function parseXLSXStream(filePath, tabId, db, onProgress, sheetName) {
     });
 
     workbookReader.on("end", () => {
+      dbg("XLSX", `workbookReader end event`, { lineCount, batchRemaining: batch.length, hasHeaders: !!headers });
       if (batch.length > 0 && headers) {
         db.insertBatchArrays(tabId, batch);
       }
       if (!headers) {
+        dbg("XLSX", `no headers found — rejecting`);
         reject(new Error("No data found in sheet"));
         return;
       }
       if (onProgress) onProgress(lineCount, totalBytes, totalBytes);
+      dbg("XLSX", `calling finalizeImport`);
       const result = db.finalizeImport(tabId);
+      dbg("XLSX", `finalizeImport OK`, { rowCount: result.rowCount, tsColumns: result.tsColumns?.length });
       resolve({
         headers,
         rowCount: result.rowCount,
@@ -381,30 +413,126 @@ async function parseXLSXStream(filePath, tabId, db, onProgress, sheetName) {
       });
     });
 
-    workbookReader.on("error", reject);
+    workbookReader.on("error", (err) => {
+      dbg("XLSX", `workbookReader ERROR`, { message: err.message, stack: err.stack });
+      reject(err);
+    });
 
     // Start reading
     workbookReader.read();
   });
 }
 
+// ── Legacy .xls (OLE2/BIFF) parser using SheetJS ────────────────────
 /**
- * Get list of sheet names from an XLSX file
+ * Parse a legacy .xls file (binary Excel format).
+ * SheetJS reads the entire file into memory — fine for .xls (max ~65k rows).
+ */
+function parseXLSFile(filePath, tabId, db, onProgress, sheetName) {
+  const XLSX = require("xlsx");
+  dbg("XLS", `parseXLSFile start`, { filePath, tabId, sheetName });
+
+  const workbook = XLSX.readFile(filePath, { dateNF: "yyyy-mm-dd hh:mm:ss" });
+  const targetSheet = sheetName || workbook.SheetNames[0];
+  const worksheet = workbook.Sheets[targetSheet];
+  if (!worksheet) throw new Error(`Sheet "${targetSheet}" not found`);
+
+  // Convert to array-of-arrays; raw:false converts dates to formatted strings
+  const data = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false, dateNF: "yyyy-mm-dd hh:mm:ss" });
+  dbg("XLS", `sheet_to_json done`, { rows: data.length, sheet: targetSheet });
+  if (data.length === 0) throw new Error("No data found in sheet");
+
+  // First row = headers
+  let headers = data[0].map((v, i) => (v ? String(v).trim() : `Column_${i + 1}`));
+  // Deduplicate
+  const seen = new Map();
+  headers = headers.map((h) => {
+    if (seen.has(h)) {
+      const c = seen.get(h) + 1;
+      seen.set(h, c);
+      return `${h}_${c}`;
+    }
+    seen.set(h, 0);
+    return h;
+  });
+
+  const colCount = headers.length;
+  const batchSize = Math.max(5000, Math.min(BATCH_SIZE_DEFAULT, Math.floor(BATCH_SIZE_MAX_BYTES / (colCount * 80))));
+  db.createTab(tabId, headers);
+
+  let totalBytes = 0;
+  try { totalBytes = fs.statSync(filePath).size; } catch {}
+
+  let batch = [];
+  let lineCount = 0;
+
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const values = [];
+    for (let j = 0; j < colCount; j++) {
+      values.push(row[j] != null ? String(row[j]) : "");
+    }
+    batch.push(values);
+    lineCount++;
+
+    if (batch.length >= batchSize) {
+      db.insertBatchArrays(tabId, batch);
+      batch = [];
+      if (onProgress) onProgress(lineCount, Math.round((i / data.length) * totalBytes), totalBytes);
+    }
+  }
+
+  if (batch.length > 0) {
+    db.insertBatchArrays(tabId, batch);
+  }
+
+  if (onProgress) onProgress(lineCount, totalBytes, totalBytes);
+  dbg("XLS", `parsing complete`, { lineCount });
+  const result = db.finalizeImport(tabId);
+
+  return {
+    headers,
+    rowCount: result.rowCount,
+    tsColumns: result.tsColumns,
+    numericColumns: result.numericColumns,
+  };
+}
+
+/**
+ * Get list of sheet names from an Excel file (.xlsx or .xls)
  */
 async function getXLSXSheets(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  dbg("XLSX", `getXLSXSheets start`, { filePath, ext });
+
+  // Legacy .xls — use SheetJS
+  if (ext === ".xls") {
+    const XLSX = require("xlsx");
+    const workbook = XLSX.readFile(filePath);
+    const sheets = workbook.SheetNames.map((name, i) => {
+      const sheet = workbook.Sheets[name];
+      const range = sheet["!ref"] ? XLSX.utils.decode_range(sheet["!ref"]) : null;
+      return { name, id: i + 1, rowCount: range ? range.e.r : 0 };
+    });
+    dbg("XLSX", `getXLSXSheets done (xls)`, { sheetCount: sheets.length });
+    return sheets;
+  }
+
+  // .xlsx/.xlsm — use ExcelJS
   const ExcelJS = require("exceljs");
   const workbook = new ExcelJS.Workbook();
-  // Read only metadata
   await workbook.xlsx.readFile(filePath, {
     sharedStrings: "ignore",
     hyperlinks: "ignore",
     styles: "ignore",
   });
-  return workbook.worksheets.map((ws) => ({
+  const sheets = workbook.worksheets.map((ws) => ({
     name: ws.name,
     id: ws.id,
     rowCount: ws.rowCount,
   }));
+  dbg("XLSX", `getXLSXSheets done`, { sheetCount: sheets.length });
+  return sheets;
 }
 
 // ── Plaso (.plaso) SQLite parser ─────────────────────────────────────
@@ -477,8 +605,8 @@ function parsePlasoBlob(data, useZlib) {
 async function parsePlasoFile(filePath, tabId, db, onProgress) {
   const Database = require("better-sqlite3");
   const plasoDb = new Database(filePath, { readonly: true, fileMustExist: true });
-  plasoDb.pragma("mmap_size = 1073741824");
-  plasoDb.pragma("cache_size = -256000");
+  plasoDb.pragma("mmap_size = 268435456"); // 256MB mmap for read-only Plaso file
+  plasoDb.pragma("cache_size = -65536");  // 64MB cache (read-only, sequential scan)
 
   try {
     // Read compression setting
@@ -577,6 +705,7 @@ async function parsePlasoFile(filePath, tabId, db, onProgress) {
     let batch = [];
     let rowCount = 0;
     let lastProgress = 0;
+    const batchSize = Math.max(5000, Math.min(BATCH_SIZE_DEFAULT, Math.floor(BATCH_SIZE_MAX_BYTES / (colCount * 80))));
 
     for (const row of eventStmt.iterate()) {
       // Convert microseconds → ISO string "YYYY-MM-DD HH:MM:SS.ffffff"
@@ -616,7 +745,7 @@ async function parsePlasoFile(filePath, tabId, db, onProgress) {
       batch.push(values);
       rowCount++;
 
-      if (batch.length >= BATCH_SIZE) {
+      if (batch.length >= batchSize) {
         db.insertBatchArrays(tabId, batch);
         batch = [];
         if (rowCount - lastProgress >= 10000) {
@@ -696,8 +825,8 @@ function formatEvtxMessage(template, dataValues) {
  */
 async function parseEvtxFile(filePath, tabId, db, onProgress) {
   const { EvtxFile } = await import("@ts-evtx/core");
-  const stat = fs.statSync(filePath);
-  const totalBytes = stat.size;
+  let totalBytes = 0;
+  try { totalBytes = fs.statSync(filePath).size; } catch { /* proceed with 0 */ }
   const SAMPLE_LIMIT = 500;
 
   // Initialize message provider for human-readable event descriptions
@@ -795,6 +924,7 @@ async function parseEvtxFile(filePath, tabId, db, onProgress) {
   let headers = null;
   let colCount = 0;
   let batch = [];
+  let batchSize = BATCH_SIZE_DEFAULT;
   let rowCount = 0;
   let lastProgress = 0;
 
@@ -826,12 +956,13 @@ async function parseEvtxFile(filePath, tabId, db, onProgress) {
         headers = [...EVTX_FIXED_FIELDS, ...discoveredFields];
         colCount = headers.length;
         db.createTab(tabId, headers);
+        batchSize = Math.max(5000, Math.min(BATCH_SIZE_DEFAULT, Math.floor(BATCH_SIZE_MAX_BYTES / (colCount * 80))));
         schemaFinalized = true;
 
         for (const buf of earlyBuffer) batch.push(buildRow(buf));
         earlyBuffer = null;
 
-        if (batch.length >= BATCH_SIZE) {
+        if (batch.length >= batchSize) {
           db.insertBatchArrays(tabId, batch);
           batch = [];
         }
@@ -841,7 +972,7 @@ async function parseEvtxFile(filePath, tabId, db, onProgress) {
     }
 
     batch.push(buildRow(parsed));
-    if (batch.length >= BATCH_SIZE) {
+    if (batch.length >= batchSize) {
       db.insertBatchArrays(tabId, batch);
       batch = [];
       if (rowCount - lastProgress >= 10000) {
@@ -891,7 +1022,10 @@ async function parseEvtxFile(filePath, tabId, db, onProgress) {
  */
 async function parseFile(filePath, tabId, db, onProgress, sheetName) {
   const ext = path.extname(filePath).toLowerCase();
-  if (ext === ".xlsx" || ext === ".xls" || ext === ".xlsm") {
+  if (ext === ".xls") {
+    return parseXLSFile(filePath, tabId, db, onProgress, sheetName);
+  }
+  if (ext === ".xlsx" || ext === ".xlsm") {
     return parseXLSXStream(filePath, tabId, db, onProgress, sheetName);
   }
   if (ext === ".evtx") {
@@ -909,6 +1043,7 @@ async function parseFile(filePath, tabId, db, onProgress, sheetName) {
 module.exports = {
   parseCSVStream,
   parseXLSXStream,
+  parseXLSFile,
   parsePlasoFile,
   parseEvtxFile,
   validatePlasoFile,

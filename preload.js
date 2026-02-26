@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("tle", {
   getBurstAnalysis: (tabId, colName, windowMinutes, thresholdMultiplier, options) => ipcRenderer.invoke("get-burst-analysis", { tabId, colName, windowMinutes, thresholdMultiplier, options }),
   getProcessTree: (tabId, options) => ipcRenderer.invoke("get-process-tree", { tabId, options }),
   getLateralMovement: (tabId, options) => ipcRenderer.invoke("get-lateral-movement", { tabId, options }),
+  getPersistenceAnalysis: (tabId, options) => ipcRenderer.invoke("get-persistence-analysis", { tabId, options }),
   bulkTagByTimeRange: (tabId, colName, ranges) => ipcRenderer.invoke("bulk-tag-by-time-range", { tabId, colName, ranges }),
   mergeTabs: (mergedTabId, sources) => ipcRenderer.invoke("merge-tabs", { mergedTabId, sources }),
   getEmptyColumns: (tabId) => ipcRenderer.invoke("get-empty-columns", { tabId }),
@@ -62,6 +63,7 @@ contextBridge.exposeInMainWorld("tle", {
   onImportError: (cb) => ipcRenderer.on("import-error", (_, d) => cb(d)),
   onExportProgress: (cb) => ipcRenderer.on("export-progress", (_, d) => cb(d)),
   onFtsProgress: (cb) => ipcRenderer.on("fts-progress", (_, d) => cb(d)),
+  onIndexProgress: (cb) => ipcRenderer.on("index-progress", (_, d) => cb(d)),
   onSheetSelection: (cb) => ipcRenderer.on("sheet-selection", (_, d) => cb(d)),
 
   // Menu triggers
