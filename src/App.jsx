@@ -410,6 +410,7 @@ export default function App() {
   const histResizeStartH = useRef(0);
   const [histGranularity, setHistGranularity] = useState("day");
   const [histBrush, setHistBrush] = useState({ startIdx: null, endIdx: null, active: false });
+  const histBrushRef = useRef({ startIdx: null, endIdx: null, active: false });
   const [crossFind, setCrossFind] = useState(null); // { term, results: [{tabId, name, count}] }
   const [crossTabCounts, setCrossTabCounts] = useState(null); // auto inline: { term, mode, results: [{tabId, name, count}] }
   const [crossTabOpen, setCrossTabOpen] = useState(true);
@@ -2225,19 +2226,22 @@ export default function App() {
         const bucketLabel = isHourly ? "hour" : "day";
         // Brush helpers
         const getBarIdx = (e) => {
-          const r = e.currentTarget.getBoundingClientRect();
+          const el = e.currentTarget || e.target?.closest?.("svg");
+          if (!el) return 0;
+          const r = el.getBoundingClientRect();
           const cw = r.width - Y_AXIS_W;
           const bw = cw / (histogramData.length || 1);
           return Math.max(0, Math.min(histogramData.length - 1, Math.floor((e.clientX - r.left - Y_AXIS_W) / bw)));
         };
         const brushFrom = (d) => isHourly ? d + ":00:00" : d + " 00:00:00";
         const brushTo = (d) => isHourly ? d + ":59:59" : d + " 23:59:59";
-        const onSvgDown = (e) => { if (e.button !== 0 || !histogramData.length) return; const idx = getBarIdx(e); setHistBrush({ startIdx: idx, endIdx: idx, active: true }); };
-        const onSvgMove = (e) => { if (!histBrush.active) return; setHistBrush((b) => ({ ...b, endIdx: getBarIdx(e) })); };
+        const setBrush = (v) => { histBrushRef.current = v; setHistBrush(v); };
+        const onSvgDown = (e) => { if (e.button !== 0 || !histogramData.length) return; const idx = getBarIdx(e); setBrush({ startIdx: idx, endIdx: idx, active: true }); };
+        const onSvgMove = (e) => { if (!histBrushRef.current.active) return; const idx = getBarIdx(e); setBrush({ ...histBrushRef.current, endIdx: idx }); };
         const onSvgUp = (e) => {
-          if (!histBrush.active || !histogramData.length) return;
+          if (!histBrushRef.current.active || !histogramData.length) return;
           const end = getBarIdx(e);
-          const lo = Math.min(histBrush.startIdx, end), hi = Math.max(histBrush.startIdx, end);
+          const lo = Math.min(histBrushRef.current.startIdx, end), hi = Math.max(histBrushRef.current.startIdx, end);
           if (lo === hi) {
             const d = histogramData[lo];
             if (d) up("dateRangeFilters", { ...(ct.dateRangeFilters || {}), [effectiveHistCol]: { from: brushFrom(d.day), to: brushTo(d.day) } });
@@ -2245,7 +2249,7 @@ export default function App() {
             const dLo = histogramData[lo], dHi = histogramData[hi];
             if (dLo && dHi) up("dateRangeFilters", { ...(ct.dateRangeFilters || {}), [effectiveHistCol]: { from: brushFrom(dLo.day), to: brushTo(dHi.day) } });
           }
-          setHistBrush({ startIdx: null, endIdx: null, active: false });
+          setBrush({ startIdx: null, endIdx: null, active: false });
         };
         return (
           <div id="hist-container" style={{ height: HIST_H, padding: "4px 12px 0", background: `linear-gradient(180deg, ${th.panelBg}ee, ${th.panelBg}cc)`, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", borderBottom: `1px solid ${th.border}44`, flexShrink: 0, position: "relative", overflow: "hidden" }}>
@@ -2283,7 +2287,7 @@ export default function App() {
             </div>
             {histogramData.length > 0 ? (
               <svg width="100%" height={svgH} style={{ display: "block", overflow: "visible", cursor: histBrush.active ? "col-resize" : "crosshair", userSelect: "none" }}
-                onMouseDown={onSvgDown} onMouseMove={onSvgMove} onMouseUp={onSvgUp} onMouseLeave={() => { if (histBrush.active) setHistBrush({ startIdx: null, endIdx: null, active: false }); }}>
+                onMouseDown={onSvgDown} onMouseMove={onSvgMove} onMouseUp={onSvgUp} onMouseLeave={() => { if (histBrushRef.current.active) setBrush({ startIdx: null, endIdx: null, active: false }); }}>
                 {(() => {
                   const maxCnt = Math.max(...histogramData.map((d) => d.cnt), 1);
                   const rawStep = maxCnt / 4;
