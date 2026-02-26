@@ -52,11 +52,11 @@ export default defineConfig({
             { text: 'Histogram', link: '/features/histogram' },
             { text: 'Process Tree', link: '/features/process-tree' },
             { text: 'Lateral Movement', link: '/features/lateral-movement' },
+            { text: 'Persistence Analyzer', link: '/features/persistence-analyzer' },
             { text: 'Gap & Burst Analysis', link: '/features/gap-burst-analysis' },
             { text: 'IOC Matching', link: '/features/ioc-matching' },
             { text: 'Stacking', link: '/features/stacking' },
-            { text: 'Log Source Coverage', link: '/features/log-source-coverage' },
-            { text: 'Persistence Analyzer', link: '/features/persistence-analyzer' }
+            { text: 'Log Source Coverage', link: '/features/log-source-coverage' }
           ]
         }
       ],
