@@ -411,6 +411,8 @@ export default function App() {
   const [histGranularity, setHistGranularity] = useState("day");
   const [histBrush, setHistBrush] = useState({ startIdx: null, endIdx: null, active: false });
   const histBrushRef = useRef({ startIdx: null, endIdx: null, active: false });
+  const [histContainerWidth, setHistContainerWidth] = useState(0);
+  const histContainerRef = useRef(null);
   const [crossFind, setCrossFind] = useState(null); // { term, results: [{tabId, name, count}] }
   const [crossTabCounts, setCrossTabCounts] = useState(null); // auto inline: { term, mode, results: [{tabId, name, count}] }
   const [crossTabOpen, setCrossTabOpen] = useState(true);
@@ -589,6 +591,20 @@ export default function App() {
     }, 400);
     return () => { if (histogramTimer.current) clearTimeout(histogramTimer.current); };
   }, [histogramVisible, histogramCol, histGranularity, ct?.id, ct?.totalFiltered, ct?.searchTerm, ct?.searchMode, ct?.showBookmarkedOnly, JSON.stringify(ct?.dateRangeFilters), JSON.stringify(ct?.advancedFilters)]); // eslint-disable-line
+
+  // Histogram container width tracking via ResizeObserver
+  useEffect(() => {
+    const el = histContainerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = entry.contentRect.width;
+        if (w > 0) setHistContainerWidth(w);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [histogramVisible]);
 
   // ── Scroll-driven window fetch (server-side virtual scrolling) ──
   const scrollFetchTimer = useRef(null);
@@ -2252,7 +2268,7 @@ export default function App() {
           setBrush({ startIdx: null, endIdx: null, active: false });
         };
         return (
-          <div id="hist-container" style={{ height: HIST_H, padding: "4px 12px 0", background: `linear-gradient(180deg, ${th.panelBg}ee, ${th.panelBg}cc)`, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", borderBottom: `1px solid ${th.border}44`, flexShrink: 0, position: "relative", overflow: "hidden" }}>
+          <div id="hist-container" ref={histContainerRef} style={{ height: HIST_H, padding: "4px 12px 0", background: `linear-gradient(180deg, ${th.panelBg}ee, ${th.panelBg}cc)`, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", borderBottom: `1px solid ${th.border}44`, flexShrink: 0, position: "relative", overflow: "hidden" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, height: HEADER_BAR - 6 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "2px 8px", background: `${th.panelBg}88`, borderRadius: 6, border: `1px solid ${th.border}33` }}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={th.accent} strokeWidth="2"><rect x="3" y="12" width="4" height="9" rx="1" /><rect x="10" y="6" width="4" height="15" rx="1" /><rect x="17" y="3" width="4" height="18" rx="1" /></svg>
@@ -2297,7 +2313,7 @@ export default function App() {
                   for (let v = 0; v <= maxCnt; v += step) yTicks.push(v);
                   if (yTicks[yTicks.length - 1] < maxCnt) yTicks.push(yTicks[yTicks.length - 1] + step);
                   const yMax = yTicks[yTicks.length - 1] || 1;
-                  const chartW = Math.max(200, (typeof window !== "undefined" ? window.innerWidth : 800) - 24 - Y_AXIS_W);
+                  const chartW = Math.max(200, (histContainerWidth || (typeof window !== "undefined" ? window.innerWidth : 800)) - 24 - Y_AXIS_W);
                   const barW = Math.max(1, chartW / histogramData.length);
                   const gap = barW > 4 ? 1 : 0;
                   const maxLabels = Math.floor(chartW / (isHourly ? 90 : 70));
