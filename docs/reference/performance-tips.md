@@ -24,7 +24,7 @@ These are approximate times on an Apple Silicon Mac:
 | 100 MB | ~500K | 5-10 seconds |
 | 1 GB | ~5M | 30-60 seconds |
 | 10 GB | ~50M | 5-8 minutes |
-| 50 GB | ~250M | 25-40 minutes |
+| 30 GB+ | ~150M+ | 15-25 minutes |
 
 ### Tips for Faster Import
 
@@ -100,7 +100,7 @@ For large datasets, ensure you have sufficient disk space:
 |-------------|-------------------|
 | 1 GB CSV | ~1.5 GB SQLite DB |
 | 10 GB CSV | ~15 GB SQLite DB |
-| 50 GB CSV | ~75 GB SQLite DB |
+| 30 GB+ CSV | ~45 GB+ SQLite DB |
 
 ### Search Result Caching
 
