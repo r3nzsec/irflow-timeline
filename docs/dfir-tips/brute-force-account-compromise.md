@@ -75,7 +75,7 @@ If burst analysis returns too many results, increase the burst factor to 10x or 
 
 ### 3. Visualize the Attack with the Histogram
 
-Open the Histogram (`Tools > Histogram`) and set granularity to **Minute**.
+Click the **Histogram** button in the main toolbar and set granularity to **Minute**.
 
 With your authentication filter still active, the histogram will show clear spikes during the attack windows identified by Burst Analysis. Look for:
 

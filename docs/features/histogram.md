@@ -4,7 +4,7 @@ The histogram provides a visual timeline of event distribution, helping you iden
 
 ## Opening the Histogram
 
-- **Menu:** Tools > Histogram
+- Click the **Histogram** button in the main toolbar
 - The histogram panel appears above the data grid and can be resized by dragging its bottom edge
 
 ## Granularity
