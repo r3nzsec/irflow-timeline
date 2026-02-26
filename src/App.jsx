@@ -411,6 +411,7 @@ export default function App() {
   const [histGranularity, setHistGranularity] = useState("day");
   const [histBrush, setHistBrush] = useState({ startIdx: null, endIdx: null, active: false });
   const histBrushRef = useRef({ startIdx: null, endIdx: null, active: false });
+  const histSvgRectRef = useRef(null);
   const [histContainerWidth, setHistContainerWidth] = useState(0);
   const histContainerRef = useRef(null);
   const [crossFind, setCrossFind] = useState(null); // { term, results: [{tabId, name, count}] }
@@ -435,9 +436,27 @@ export default function App() {
 
   const scrollRef = useRef(null);
   const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(typeof window !== "undefined" ? window.innerHeight : 800);
+  const rafScroll = useRef(null);
+  const handleScroll = useCallback((e) => {
+    if (rafScroll.current) return;
+    const top = e.target.scrollTop;
+    rafScroll.current = requestAnimationFrame(() => {
+      rafScroll.current = null;
+      setScrollTop(top);
+    });
+  }, []);
+
+  // Track window resize / zoom changes so the grid adapts
+  useEffect(() => {
+    const onResize = () => setViewportH(window.innerHeight);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   const queryTimer = useRef(null);
   const fetchId = useRef(0); // Monotonic counter to discard stale query results
   const ctRef = useRef(null);
+  const tabScrollPos = useRef({}); // Per-tab scroll/selection state
   const displayRowsRef = useRef([]);
   const isGroupedRef = useRef(false);
   const rightClickFired = useRef(false);
@@ -532,7 +551,10 @@ export default function App() {
   }, [fetchData]);
 
   // Cleanup debounce timer on unmount to prevent stale callbacks
-  useEffect(() => () => { if (queryTimer.current) clearTimeout(queryTimer.current); }, []);
+  useEffect(() => () => {
+    if (queryTimer.current) clearTimeout(queryTimer.current);
+    if (rafScroll.current) cancelAnimationFrame(rafScroll.current);
+  }, []);
 
   // Debounced deps (typing: search term, column filters) — use useMemo to avoid JSON.stringify per render
   const debouncedDeps = useMemo(() => {
@@ -805,7 +827,7 @@ export default function App() {
 
     const allChannels = [
       "import-start", "import-progress", "import-complete", "import-error",
-      "export-progress", "sheet-selection", "fts-progress",
+      "export-progress", "sheet-selection", "fts-progress", "index-progress",
       "trigger-open", "trigger-export", "trigger-search",
       "trigger-bookmark-toggle", "trigger-column-manager",
       "trigger-color-rules", "trigger-shortcuts",
@@ -910,6 +932,11 @@ export default function App() {
       setImportingTabs((prev) => { const next = { ...prev }; delete next[tabId]; return next; });
       setTabs((prev) => prev.filter((t) => t.id !== tabId));
       alert(`Import failed: ${error}`);
+    });
+    tle.onIndexProgress(({ tabId, built, total, done, currentCol }) => {
+      setTabs((prev) => prev.map((t) =>
+        t.id === tabId ? { ...t, indexesReady: done, indexesBuilt: built, indexesTotal: total } : t
+      ));
     });
     tle.onFtsProgress(({ tabId, indexed, total, done }) => {
       setTabs((prev) => prev.map((t) =>
@@ -1038,7 +1065,7 @@ export default function App() {
   // ── Handlers ─────────────────────────────────────────────────────
   const sortTimerRef = useRef(null);
   const handleSort = (col) => {
-    if (justResizedRef.current) return;
+    if (justResizedRef.current || !ct) return;
     // Delay sort so double-click (auto-fit) can cancel it
     clearTimeout(sortTimerRef.current);
     sortTimerRef.current = setTimeout(() => {
@@ -1052,7 +1079,7 @@ export default function App() {
   };
 
   const handleBookmark = async (rowId) => {
-    if (!tle) return;
+    if (!tle || !ct) return;
     const isNowBookmarked = await tle.toggleBookmark(ct.id, rowId);
     const newSet = new Set(ct.bookmarkedSet);
     isNowBookmarked ? newSet.add(rowId) : newSet.delete(rowId);
@@ -1270,7 +1297,8 @@ export default function App() {
   const totalCount = isGrouped ? displayRows.length : (ct?.totalFiltered || 0);
   const rowOffset = ct?.rowOffset || 0;
   const totalH = totalCount * ROW_HEIGHT;
-  const vh = (typeof window !== "undefined" ? window.innerHeight - 190 : 600) - (detailVisible ? detailPanelHeight : 0);
+  // Use actual scroll container height when available (adapts to zoom/resize), fall back to estimate
+  const vh = (scrollRef.current?.clientHeight || (viewportH - 190)) - (detailVisible ? detailPanelHeight : 0);
   const si = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
   const ei = Math.min(totalCount, Math.ceil((scrollTop + vh) / ROW_HEIGHT) + OVERSCAN);
   // For grouped mode: direct slice. For flat mode: map to windowed cache via rowOffset.
@@ -1304,7 +1332,10 @@ export default function App() {
       : seg
     )}</>;
   };
-  const tw = allVisH.reduce((s, h) => s + gw(h), 0) + BKMK_COL_WIDTH + tagColWidth;
+  const tw = useMemo(
+    () => allVisH.reduce((s, h) => s + (ct?.columnWidths?.[h] || 150), 0) + BKMK_COL_WIDTH + tagColWidth,
+    [allVisH, ct?.columnWidths, tagColWidth]
+  );
 
   // Reset search match index when search term or results change
   useEffect(() => { setSearchMatchIdx(-1); }, [ct?.searchTerm, ct?.totalFiltered, ct?.searchHighlight]);
@@ -1376,7 +1407,7 @@ export default function App() {
 
   // ── Column resize ────────────────────────────────────────────────
   useEffect(() => {
-    if (!resizingCol) return;
+    if (!resizingCol || !ct) return;
     const onMove = (e) => {
       const nw = Math.max(60, resizeW + (e.clientX - resizeX));
       up("columnWidths", { ...ct.columnWidths, [resizingCol]: nw });
@@ -1489,7 +1520,7 @@ export default function App() {
         setFdValues(vals);
         if (!hasExisting) setFdSelected(new Set(vals.map((v) => v.val)));
         setFdLoading(false);
-      })();
+      })().catch(() => { setFdLoading(false); });
       return;
     }
     const existing = ct?.checkboxFilters?.[filterDropdown.colName];
@@ -1746,11 +1777,11 @@ export default function App() {
       {/* Progress */}
       <div style={{ width: 400, maxWidth: "100%" }}>
         <h3 style={{ color: th.text, fontSize: 16, marginBottom: 8, fontFamily: "-apple-system, sans-serif" }}>
-          {info.status === "indexing" ? "Building search index..." : "Importing..."}
+          {info.status === "indexing" ? "Finalizing..." : "Importing..."}
         </h3>
         <p style={{ color: th.textDim, fontSize: 13, marginBottom: 16 }}>{info.fileName}</p>
         <div style={{ height: 6, background: th.border, borderRadius: 3, overflow: "hidden", marginBottom: 12 }}>
-          <div style={{ height: "100%", width: `${Math.min(info.percent || 0, 100)}%`, background: info.status === "indexing" ? th.warning : th.borderAccent, borderRadius: 3, transition: "width 0.3s" }} />
+          <div style={{ height: "100%", width: "100%", background: info.status === "indexing" ? th.warning : th.borderAccent, borderRadius: 3, transformOrigin: "left", transform: `scaleX(${Math.min((info.percent || 0) / 100, 1)})`, transition: "transform 0.3s" }} />
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", color: th.textDim, fontSize: 12 }}>
           <span>{formatNumber(info.rowsImported || 0)} rows imported</span>
@@ -1849,6 +1880,7 @@ export default function App() {
       style={{ display: "flex", flexDirection: "column", height: "100vh", background: th.bg, color: th.text, fontFamily: "'SF Mono','Fira Code',Menlo,monospace", fontSize: fontSize, overflow: "hidden" }}>
       <style>{`
         @keyframes tle-spin { to { transform: rotate(360deg) } }
+        @keyframes tle-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(0.95); } }
         ::-webkit-scrollbar { width: 10px; height: 10px; }
         ::-webkit-scrollbar-track { background: ${th.bg}; }
         ::-webkit-scrollbar-thumb { background: ${th.border}; border-radius: 5px; border: 2px solid ${th.bg}; }
@@ -1958,6 +1990,15 @@ export default function App() {
                         domain: det([/^TargetDomainName$/i]),
                       };
                       setModal({ type: "lateralMovement", phase: "config", columns: cols, eventIds: "4624,4625,4648", excludeLocal: true, excludeService: true, data: null, loading: false, error: null, selectedNode: null, selectedEdge: null, viewTab: "graph", positions: null });
+                    }, disabled: !ct?.dataReady },
+                    { label: "Persistence Analyzer", icon: ic(<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill={(th.danger||"#f85149")+"22"} stroke={th.danger||"#f85149"}/><path d="M12 8v4M12 16h.01" stroke={th.danger||"#f85149"}/></>, th.danger || "#f85149"), action: () => {
+                      if (!ct?.dataReady) return;
+                      const det = (pats) => { for (const p of pats) { const f = ct.headers.find((h) => p.test(h)); if (f) return f; } return null; };
+                      const hasKeyPath = det([/^KeyPath$/i, /^Key ?Path$/i]);
+                      const hasValueName = det([/^ValueName$/i, /^Value ?Name$/i]);
+                      const hasEventId = det([/^EventI[dD]$/i, /^event_id$/i]);
+                      const autoMode = (hasKeyPath && hasValueName) ? "registry" : hasEventId ? "evtx" : "auto";
+                      setModal({ type: "persistence", phase: "config", mode: autoMode, columns: {}, data: null, loading: false, error: null, viewTab: "grouped", searchText: "", severityFilter: "all", categoryFilter: "all", disabledRules: new Set(), customRules: [], showRules: false, addingRule: false, newRule: {}, modalW: 1100 });
                     }, disabled: !ct?.dataReady },
                     { label: "Edit Filter", icon: ic(<><rect x="3" y="4" width="18" height="16" rx="2" fill="none"/><line x1="7" y1="9" x2="17" y2="9"/><line x1="7" y1="13" x2="14" y2="13"/><line x1="7" y1="17" x2="11" y2="17"/></>), action: () => {
                       if (ct?.dataReady) setModal({ type: "editFilter" });
@@ -2108,13 +2149,17 @@ export default function App() {
             </>)}
           </div>
         </div>
-        {/* FTS indexing indicator — shown while background search index is building */}
-        {ct && ct.dataReady && !ct.ftsReady && ct.ftsTotal > 0 && (
+        {/* Background indexing indicator — column indexes + FTS run in parallel */}
+        {ct && ct.dataReady && (!ct.indexesReady || (!ct.ftsReady && ct.ftsTotal > 0)) && (
           <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 6px", flexShrink: 0 }}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={th.warning} strokeWidth="2.5" style={{ animation: "tle-spin 1s linear infinite", flexShrink: 0 }}>
               <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" /></svg>
             <span style={{ color: th.warning, fontSize: 9, fontFamily: "-apple-system,sans-serif", whiteSpace: "nowrap" }}>
-              Indexing {Math.round((ct.ftsIndexed / ct.ftsTotal) * 100)}%
+              {!ct.indexesReady && (!ct.ftsReady && ct.ftsTotal > 0)
+                ? `Indexing cols ${ct.indexesBuilt || 0}/${ct.indexesTotal || "..."} + search ${Math.round((ct.ftsIndexed / ct.ftsTotal) * 100)}%`
+                : !ct.indexesReady
+                ? `Indexing columns ${ct.indexesBuilt || 0}/${ct.indexesTotal || "..."}`
+                : `Indexing search ${Math.round((ct.ftsIndexed / ct.ftsTotal) * 100)}%`}
             </span>
           </div>
         )}
@@ -2167,7 +2212,18 @@ export default function App() {
       {/* Tabs */}
       <div style={{ display: "flex", background: th.panelBg, borderBottom: `1px solid ${th.border}`, overflowX: "auto", flexShrink: 0 }}>
         {tabs.filter((t) => !tabFilter || t.name.toLowerCase().includes(tabFilter.toLowerCase())).map((t) => (
-          <div key={t.id} onClick={() => { setActiveTab(t.id); setScrollTop(0); setSelectedRows(new Set()); setLastClickedRow(null); setProximityFilter(null); }}
+          <div key={t.id} onClick={() => {
+            if (activeTab) tabScrollPos.current[activeTab] = { scrollTop, selectedRows, lastClickedRow };
+            const saved = tabScrollPos.current[t.id];
+            setActiveTab(t.id);
+            setScrollTop(saved?.scrollTop || 0);
+            setSelectedRows(saved?.selectedRows || new Set());
+            setLastClickedRow(saved?.lastClickedRow ?? null);
+            setProximityFilter(null);
+            if (saved?.scrollTop && scrollRef.current) {
+              requestAnimationFrame(() => { if (scrollRef.current) scrollRef.current.scrollTop = saved.scrollTop; });
+            }
+          }}
             style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", cursor: "pointer", borderRight: `1px solid ${th.border}`, color: t.id === activeTab ? th.text : th.textDim, fontSize: 11, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", background: t.id === activeTab ? th.bgAlt : th.panelBg, borderBottom: t.id === activeTab ? `2px solid ${th.borderAccent}` : "2px solid transparent", borderTop: t.id === activeTab ? `2px solid ${th.borderAccent}` : "2px solid transparent" }}>
             {t.importing && <span style={{ color: th.warning }}>⏳</span>}
             <span style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" }}>{t.name}</span>
@@ -2242,9 +2298,8 @@ export default function App() {
         const bucketLabel = isHourly ? "hour" : "day";
         // Brush helpers
         const getBarIdx = (e) => {
-          const el = e.currentTarget || e.target?.closest?.("svg");
-          if (!el) return 0;
-          const r = el.getBoundingClientRect();
+          const r = histSvgRectRef.current || (e.currentTarget || e.target?.closest?.("svg"))?.getBoundingClientRect();
+          if (!r) return 0;
           const cw = r.width - Y_AXIS_W;
           const bw = cw / (histogramData.length || 1);
           return Math.max(0, Math.min(histogramData.length - 1, Math.floor((e.clientX - r.left - Y_AXIS_W) / bw)));
@@ -2252,7 +2307,7 @@ export default function App() {
         const brushFrom = (d) => isHourly ? d + ":00:00" : d + " 00:00:00";
         const brushTo = (d) => isHourly ? d + ":59:59" : d + " 23:59:59";
         const setBrush = (v) => { histBrushRef.current = v; setHistBrush(v); };
-        const onSvgDown = (e) => { if (e.button !== 0 || !histogramData.length) return; const idx = getBarIdx(e); setBrush({ startIdx: idx, endIdx: idx, active: true }); };
+        const onSvgDown = (e) => { if (e.button !== 0 || !histogramData.length) return; if (e.currentTarget) histSvgRectRef.current = e.currentTarget.getBoundingClientRect(); const idx = getBarIdx(e); setBrush({ startIdx: idx, endIdx: idx, active: true }); };
         const onSvgMove = (e) => { if (!histBrushRef.current.active) return; const idx = getBarIdx(e); setBrush({ ...histBrushRef.current, endIdx: idx }); };
         const onSvgUp = (e) => {
           if (!histBrushRef.current.active || !histogramData.length) return;
@@ -2266,6 +2321,7 @@ export default function App() {
             if (dLo && dHi) up("dateRangeFilters", { ...(ct.dateRangeFilters || {}), [effectiveHistCol]: { from: brushFrom(dLo.day), to: brushTo(dHi.day) } });
           }
           setBrush({ startIdx: null, endIdx: null, active: false });
+          histSvgRectRef.current = null;
         };
         return (
           <div id="hist-container" ref={histContainerRef} style={{ height: HIST_H, padding: "4px 12px 0", background: `linear-gradient(180deg, ${th.panelBg}ee, ${th.panelBg}cc)`, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", borderBottom: `1px solid ${th.border}44`, flexShrink: 0, position: "relative", overflow: "hidden" }}>
@@ -2405,7 +2461,57 @@ export default function App() {
       ) : ct && ct.dataReady ? (
         <>
           {/* Grid */}
-          <div style={{ flex: 1, overflow: "auto", position: "relative", WebkitAppRegion: "no-drag" }} ref={scrollRef} onScroll={(e) => setScrollTop(e.target.scrollTop)}>
+          <div style={{ flex: 1, overflow: "auto", position: "relative", WebkitAppRegion: "no-drag", contain: "layout style paint", willChange: "transform" }} ref={scrollRef} onScroll={handleScroll}>
+            {/* Indexing overlay — blocks interaction while column/search indexes build */}
+            {ct && ct.dataReady && !ct.indexesReady && (
+              <div style={{ position: "absolute", inset: 0, zIndex: 50, background: (th.bg || "#0d1117") + "e6", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}
+                onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
+                {/* Animated shield icon */}
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke={th.accent || "#58a6ff"} strokeWidth="1.5" style={{ animation: "tle-pulse 2s ease-in-out infinite" }}>
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill={(th.accent || "#58a6ff") + "18"} />
+                  <path d="M9 12l2 2 4-4" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <div style={{ color: th.text, fontSize: 15, fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>
+                  Building Indexes
+                </div>
+                <div style={{ color: th.textMuted, fontSize: 12, fontFamily: "-apple-system, sans-serif", textAlign: "center", maxWidth: 320, lineHeight: 1.5 }}>
+                  {ct.indexesTotal
+                    ? `Column indexes: ${ct.indexesBuilt || 0} / ${ct.indexesTotal}`
+                    : "Preparing column indexes..."}
+                </div>
+                {/* Progress bar */}
+                {ct.indexesTotal > 0 && (
+                  <div style={{ width: 220, height: 4, borderRadius: 2, background: (th.textMuted || "#484f58") + "33", overflow: "hidden" }}>
+                    <div style={{ height: "100%", borderRadius: 2, background: th.accent || "#58a6ff", transition: "width 0.3s ease", width: `${Math.round(((ct.indexesBuilt || 0) / ct.indexesTotal) * 100)}%` }} />
+                  </div>
+                )}
+                <div style={{ color: th.textMuted, fontSize: 10, fontFamily: "-apple-system, sans-serif", marginTop: 4 }}>
+                  Search index will build next. Please wait...
+                </div>
+              </div>
+            )}
+            {/* FTS overlay — shown after column indexes finish, while search index builds */}
+            {ct && ct.dataReady && ct.indexesReady && ct.ftsTotal > 0 && !ct.ftsReady && (
+              <div style={{ position: "absolute", inset: 0, zIndex: 50, background: (th.bg || "#0d1117") + "e6", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}
+                onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke={th.accent || "#58a6ff"} strokeWidth="1.5" style={{ animation: "tle-pulse 2s ease-in-out infinite" }}>
+                  <circle cx="11" cy="11" r="8" fill={(th.accent || "#58a6ff") + "18"} />
+                  <path d="M21 21l-4.35-4.35" strokeLinecap="round" />
+                </svg>
+                <div style={{ color: th.text, fontSize: 15, fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>
+                  Building Search Index
+                </div>
+                <div style={{ color: th.textMuted, fontSize: 12, fontFamily: "-apple-system, sans-serif", textAlign: "center", maxWidth: 320, lineHeight: 1.5 }}>
+                  {`${Math.round((ct.ftsIndexed / ct.ftsTotal) * 100)}% — ${(ct.ftsIndexed || 0).toLocaleString()} / ${ct.ftsTotal.toLocaleString()} rows`}
+                </div>
+                <div style={{ width: 220, height: 4, borderRadius: 2, background: (th.textMuted || "#484f58") + "33", overflow: "hidden" }}>
+                  <div style={{ height: "100%", borderRadius: 2, background: th.accent || "#58a6ff", transition: "width 0.3s ease", width: `${Math.round(((ct.ftsIndexed || 0) / ct.ftsTotal) * 100)}%` }} />
+                </div>
+                <div style={{ color: th.textMuted, fontSize: 10, fontFamily: "-apple-system, sans-serif", marginTop: 4 }}>
+                  Almost there...
+                </div>
+              </div>
+            )}
             <div style={{ minWidth: tw }}>
               {/* Header */}
               <div style={{ display: "flex", position: "sticky", top: 0, zIndex: 10, background: th.headerBg, borderBottom: `2px solid ${th.borderAccent}` }}>
@@ -2654,7 +2760,7 @@ export default function App() {
               {ct.name}
             </span>
             <Sdiv /><span>Total: <b>{formatNumber(ct.totalRows)}</b></span>
-            {!isGrouped && <><Sdiv /><span>Filtered: <b style={{ color: ct.totalFiltered < ct.totalRows ? th.warning : th.success }}>{formatNumber(ct.totalFiltered)}</b></span></>}
+            {!isGrouped && <><Sdiv /><span>Filtered: <b style={{ color: ct.totalFiltered < ct.totalRows ? th.warning : th.success, opacity: searchLoading ? 0.5 : 1, transition: "opacity 0.15s" }}>{formatNumber(ct.totalFiltered)}</b>{searchLoading && <span style={{ color: th.accent, marginLeft: 3 }}>...</span>}</span></>}
             {!isGrouped && <><Sdiv /><span>Showing: <b>{formatNumber(ct.totalFiltered)}</b></span></>}
             {isGrouped && <><Sdiv /><span>Groups: <b style={{ color: th.accent }}>{ct.groupData?.length || 0}</b></span></>}
             {ct.bookmarkedSet?.size > 0 && <><Sdiv /><span>Flagged: <b style={{ color: th.warning }}>{ct.bookmarkedSet.size}</b></span></>}
@@ -4951,6 +5057,7 @@ export default function App() {
         const nodeRadius = (eventCount) => Math.max(6, Math.min(20, 6 + Math.log2(eventCount + 1) * 2));
         const nodeColor = (node) => {
           if (selectedNode === node.id) return th.accent;
+          if (node.isOutlier) return th.danger || "#f85149";
           if (node.isBoth) return "#a371f7";
           if (node.isSource && !node.isTarget) return "#3fb950";
           return "#58a6ff";
@@ -5058,7 +5165,8 @@ export default function App() {
                         { val: data.stats.uniqueHosts, label: "unique hosts", color: th.accent, icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" },
                         { val: data.stats.uniqueConnections, label: "connections", color: "#58a6ff", icon: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" },
                         { val: data.stats.uniqueUsers, label: "users", color: "#d2a8ff", icon: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8" },
-                        { val: data.stats.longestChain, label: "longest chain", color: th.danger || "#f85149", icon: "M13 17l5-5-5-5M6 17l5-5-5-5" },
+                        { val: data.stats.longestChain, label: "longest chain", color: "#d29922", icon: "M13 17l5-5-5-5M6 17l5-5-5-5" },
+                        { val: data.nodes.filter(n => n.isOutlier).length, label: "outliers", color: th.danger || "#f85149", icon: "M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" },
                         { val: data.stats.totalEvents?.toLocaleString(), label: "logon events", color: "#3fb950", icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8" },
                       ].map((c, i) => (
                         <div key={i} style={{ flex: 1, textAlign: "center", padding: "10px 6px 8px", background: `linear-gradient(160deg, ${c.color}08, ${c.color}03)`, borderRadius: 10, border: `1px solid ${c.color}20`, position: "relative", overflow: "hidden" }}>
@@ -5251,6 +5359,7 @@ export default function App() {
                               <radialGradient id="lm-grad-blue" cx="35%" cy="35%"><stop offset="0%" stopColor="#58a6ff" stopOpacity="0.35"/><stop offset="100%" stopColor="#58a6ff" stopOpacity="0.08"/></radialGradient>
                               <radialGradient id="lm-grad-purple" cx="35%" cy="35%"><stop offset="0%" stopColor="#d2a8ff" stopOpacity="0.35"/><stop offset="100%" stopColor="#d2a8ff" stopOpacity="0.08"/></radialGradient>
                               <radialGradient id="lm-grad-accent" cx="35%" cy="35%"><stop offset="0%" stopColor={th.accent} stopOpacity="0.4"/><stop offset="100%" stopColor={th.accent} stopOpacity="0.1"/></radialGradient>
+                              <radialGradient id="lm-grad-red" cx="35%" cy="35%"><stop offset="0%" stopColor={th.danger || "#f85149"} stopOpacity="0.45"/><stop offset="100%" stopColor={th.danger || "#f85149"} stopOpacity="0.12"/></radialGradient>
                             </defs>
                             <rect x={vb.x - 200} y={vb.y - 200} width={vb.w + 400} height={vb.h + 400} fill="url(#lm-grid)" />
 
@@ -5297,7 +5406,8 @@ export default function App() {
                               const col = nodeColor(n);
                               const ip = isIP(n.id);
                               const dc = isDC(n.id);
-                              const gradId = col === "#3fb950" ? "lm-grad-green" : col === "#58a6ff" ? "lm-grad-blue" : col === "#d2a8ff" ? "lm-grad-purple" : "lm-grad-accent";
+                              const dangerCol = th.danger || "#f85149";
+                              const gradId = col === dangerCol ? "lm-grad-red" : col === "#3fb950" ? "lm-grad-green" : col === "#58a6ff" ? "lm-grad-blue" : col === "#d2a8ff" ? "lm-grad-purple" : "lm-grad-accent";
                               const labelText = n.label.length > 20 ? n.label.slice(0, 18) + "\u2026" : n.label;
                               const labelW = labelText.length * 5.5 + 12;
                               const isSel = selectedNode === n.id;
@@ -5331,6 +5441,8 @@ export default function App() {
                                   )}
                                   {/* Selection ring */}
                                   {isSel && <circle cx={p.x} cy={p.y} r={r + 6} fill="none" stroke={th.accent} strokeWidth={1.5} strokeOpacity={0.5} strokeDasharray="4,3" />}
+                                  {/* Outlier pulse ring */}
+                                  {n.isOutlier && <circle cx={p.x} cy={p.y} r={r + 4} fill="none" stroke={dangerCol} strokeWidth={1.2} strokeOpacity={0.6} strokeDasharray="3,2" style={{ animation: "tle-pulse 2s ease-in-out infinite" }}><title>{n.outlierReason}</title></circle>}
                                   {/* Inner icon text */}
                                   {ip ? (
                                     <text x={p.x} y={p.y + 1} textAnchor="middle" dominantBaseline="middle" fill={col} fontSize={r * 0.6} fontWeight={600} fontFamily="-apple-system,sans-serif" fillOpacity={0.7}>IP</text>
@@ -5348,7 +5460,7 @@ export default function App() {
 
                             {/* Legend — glass panel (fixed in top-left of viewport) */}
                             <g transform={`translate(${vb.x + 10}, ${vb.y + 10})`}>
-                              <rect x={-6} y={-6} width={140} height={106} rx={8} fill={th.panelBg} fillOpacity={0.88} stroke={th.border} strokeWidth={0.5} strokeOpacity={0.3} />
+                              <rect x={-6} y={-6} width={140} height={120} rx={8} fill={th.panelBg} fillOpacity={0.88} stroke={th.border} strokeWidth={0.5} strokeOpacity={0.3} />
                               <text x={0} y={6} fill={th.textMuted} fontSize={7.5} fontWeight={600} fontFamily="-apple-system,sans-serif" letterSpacing="0.08em" textTransform="uppercase">CONNECTIONS</text>
                               {[
                                 { color: "#58a6ff", label: "RDP (type 10)" },
@@ -5375,6 +5487,10 @@ export default function App() {
                               <g transform="translate(68, 98)">
                                 <rect x={0} y={-3} width={9} height={6} rx={2} fill="url(#lm-grad-purple)" stroke="#d2a8ff" strokeWidth={0.8} />
                                 <text x={15} y={3} fill={th.textMuted} fontSize={7.5} fontFamily="-apple-system,sans-serif">Host</text>
+                              </g>
+                              <g transform="translate(4, 112)">
+                                <rect x={0} y={-3} width={9} height={6} rx={2} fill="url(#lm-grad-red)" stroke={th.danger || "#f85149"} strokeWidth={0.8} strokeDasharray="2,1.5" />
+                                <text x={15} y={3} fill={th.danger || "#f85149"} fontSize={7.5} fontWeight={600} fontFamily="-apple-system,sans-serif">Outlier</text>
                               </g>
                             </g>
                           </svg>
@@ -5628,6 +5744,771 @@ export default function App() {
         );
       })()}
 
+      {/* Persistence Analyzer Modal */}
+      {modal?.type === "persistence" && ct && (() => {
+        const { phase, data, mode: pMode } = modal;
+        const viewTab = modal.viewTab || "grouped";
+        const searchText = modal.searchText || "";
+        const severityFilter = modal.severityFilter || "all";
+        const categoryFilter = modal.categoryFilter || "all";
+
+        const SEVERITY_COLORS = { critical: "#f85149", high: "#f0883e", medium: "#d29922", low: "#8b949e" };
+        const checkedItems = modal.checkedItems || new Set();
+        const isChecked = (item) => checkedItems.has(item.rowid + "|" + item.name + "|" + item.timestamp);
+        const toggleCheck = (item, e) => {
+          e.stopPropagation();
+          const key = item.rowid + "|" + item.name + "|" + item.timestamp;
+          setModal((p) => {
+            const s = new Set(p.checkedItems || []);
+            s.has(key) ? s.delete(key) : s.add(key);
+            return { ...p, checkedItems: s };
+          });
+        };
+        const itemForKey = (key) => {
+          const items = data?.items || [];
+          return items.find((i) => (i.rowid + "|" + i.name + "|" + i.timestamp) === key);
+        };
+        const formatItemText = (i) => `[${i.severity.toUpperCase()}] ${i.name}\t${i.detailsSummary}\t${i.timestamp || "N/A"}\t${i.computer || "N/A"}\t${i.user || "N/A"}\t${i.source}\t${i.riskScore}/10`;
+
+        // Rule summaries for display (source of truth is in db.js)
+        const EVTX_SUMMARIES = [
+          { cat: "Services", name: "Service Installed", sev: "high", hint: "7045" },
+          { cat: "Services", name: "Service Installed (Security)", sev: "high", hint: "4697" },
+          { cat: "Scheduled Tasks", name: "Task Created", sev: "high", hint: "4698" },
+          { cat: "Scheduled Tasks", name: "Task Deleted", sev: "medium", hint: "4699" },
+          { cat: "Scheduled Tasks", name: "Task Registered", sev: "medium", hint: "106" },
+          { cat: "Scheduled Tasks", name: "Task Updated", sev: "medium", hint: "140" },
+          { cat: "Scheduled Tasks", name: "Task Process Created", sev: "high", hint: "129" },
+          { cat: "Scheduled Tasks", name: "Task Action Started", sev: "medium", hint: "200" },
+          { cat: "WMI Persistence", name: "WMI Event Subscription", sev: "critical", hint: "5861" },
+          { cat: "WMI Persistence", name: "WMI EventFilter Created", sev: "critical", hint: "19" },
+          { cat: "WMI Persistence", name: "WMI EventConsumer Created", sev: "critical", hint: "20" },
+          { cat: "WMI Persistence", name: "WMI Binding Created", sev: "critical", hint: "21" },
+          { cat: "Registry Autorun", name: "Registry Value Set", sev: "high", hint: "13" },
+          { cat: "Registry Modification", name: "Registry Key Created/Deleted", sev: "medium", hint: "12" },
+          { cat: "Registry Rename", name: "Registry Key/Value Renamed", sev: "medium", hint: "14" },
+          { cat: "Startup Folder", name: "File Created in Startup", sev: "high", hint: "11" },
+          { cat: "DLL Hijacking", name: "Unsigned DLL Loaded", sev: "medium", hint: "7" },
+          { cat: "Driver Loading", name: "Suspicious Driver Loaded", sev: "critical", hint: "6" },
+          { cat: "Process Tampering", name: "Process Tampering Detected", sev: "critical", hint: "25" },
+          { cat: "Scheduled Tasks", name: "Task Deleted", sev: "high", hint: "141" },
+          { cat: "Scheduled Tasks", name: "Boot Trigger Fired", sev: "medium", hint: "118" },
+          { cat: "Scheduled Tasks", name: "Logon Trigger Fired", sev: "medium", hint: "119" },
+        ];
+        const REG_SUMMARIES = [
+          { cat: "Run Keys", name: "Run/RunOnce Autostart", sev: "high", hint: "Run, RunOnce" },
+          { cat: "Services", name: "Service ImagePath/ServiceDll", sev: "high", hint: "Services\\" },
+          { cat: "Winlogon", name: "Winlogon Shell/Userinit", sev: "critical", hint: "Winlogon" },
+          { cat: "AppInit DLLs", name: "AppInit_DLLs", sev: "critical", hint: "AppInit_DLLs" },
+          { cat: "IFEO", name: "IFEO Debugger", sev: "critical", hint: "Image File Exec Opts" },
+          { cat: "COM Hijacking", name: "COM Object Server", sev: "high", hint: "InprocServer32" },
+          { cat: "Shell Extensions", name: "Shell Extension Handler", sev: "medium", hint: "Shell handlers" },
+          { cat: "Boot Execute", name: "Session Manager BootExecute", sev: "critical", hint: "Session Manager" },
+          { cat: "BHO", name: "Browser Helper Object", sev: "medium", hint: "Browser Helper" },
+          { cat: "LSA", name: "LSA Security/Auth Packages", sev: "critical", hint: "Lsa" },
+          { cat: "Print Monitors", name: "Print Monitor DLL", sev: "high", hint: "Print\\Monitors" },
+          { cat: "Active Setup", name: "Active Setup StubPath", sev: "high", hint: "Active Setup" },
+          { cat: "Startup Folder", name: "Startup Folder Registry Path", sev: "high", hint: "Shell Folders" },
+          { cat: "Scheduled Tasks (Reg)", name: "Scheduled Task in Registry", sev: "medium", hint: "TaskCache" },
+          { cat: "Network Providers", name: "Network Provider Order", sev: "high", hint: "NetworkProvider" },
+        ];
+        const toggleRule = (key) => setModal((p) => { const s = new Set(p.disabledRules || []); s.has(key) ? s.delete(key) : s.add(key); return { ...p, disabledRules: s }; });
+        const deleteCustomRule = (idx) => setModal((p) => ({ ...p, customRules: (p.customRules || []).filter((_, i) => i !== idx) }));
+        const addCustomRule = () => {
+          const nr = modal.newRule || {};
+          if (!nr.name && !nr.eventIds && !nr.keyPathPattern) return;
+          setModal((p) => ({ ...p, customRules: [...(p.customRules || []), { ...nr, type: p.addingRule }], addingRule: false, newRule: {} }));
+        };
+        const disabledSet = modal.disabledRules || new Set();
+        const evtxActive = EVTX_SUMMARIES.length - [...disabledSet].filter((k) => k.startsWith("evtx-")).length;
+        const regActive = REG_SUMMARIES.length - [...disabledSet].filter((k) => k.startsWith("reg-")).length;
+        const customCount = (modal.customRules || []).length;
+
+        const handleAnalyze = async () => {
+          const t0 = Date.now();
+          const pInt = setInterval(() => {
+            setModal((p) => {
+              if (!p || p.type !== "persistence" || p.phase !== "loading") { clearInterval(pInt); return p; }
+              const el = (Date.now() - t0) / 1000;
+              const prog = Math.min(92, 90 * (1 - Math.exp(-el / 6)));
+              const pi = prog < 15 ? 0 : prog < 50 ? 1 : prog < 80 ? 2 : 3;
+              return { ...p, progress: prog, phaseIdx: pi };
+            });
+          }, 150);
+          setModal((p) => ({ ...p, phase: "loading", loading: true, error: null, progress: 0, phaseIdx: 0, _cancelled: false }));
+          try {
+            const af = activeFilters(ct);
+            const result = await tle.getPersistenceAnalysis(ct.id, {
+              mode: pMode === "auto" ? "auto" : pMode,
+              columns: modal.columns || {},
+              searchTerm: ct.searchHighlight ? "" : ct.searchTerm, searchMode: ct.searchMode, searchCondition: ct.searchCondition || "contains",
+              columnFilters: af.columnFilters, checkboxFilters: af.checkboxFilters,
+              bookmarkedOnly: ct.showBookmarkedOnly, dateRangeFilters: ct.dateRangeFilters || {}, advancedFilters: ct.advancedFilters || [],
+              disabledRules: [...(modal.disabledRules || [])],
+              customRules: modal.customRules || [],
+            });
+            clearInterval(pInt);
+            if (result.error) {
+              setModal((p) => p?.type === "persistence" && !p._cancelled ? { ...p, phase: "config", loading: false, error: result.error, progress: 0 } : p);
+            } else {
+              setModal((p) => p?.type === "persistence" && !p._cancelled ? { ...p, progress: 100, phaseIdx: 3 } : p);
+              await new Promise((r) => setTimeout(r, 250));
+              setModal((p) => p?.type === "persistence" && !p._cancelled ? { ...p, phase: "results", data: result, loading: false } : p);
+            }
+          } catch (e) {
+            clearInterval(pInt);
+            setModal((p) => p?.type === "persistence" ? { ...p, phase: "config", loading: false, error: e.message, progress: 0 } : p);
+          }
+        };
+
+        // Filtered items for results
+        const filteredItems = data?.items?.filter((item) => {
+          if (severityFilter !== "all" && item.severity !== severityFilter) return false;
+          if (categoryFilter !== "all" && item.category !== categoryFilter) return false;
+          if (searchText) {
+            const s = searchText.toLowerCase();
+            const blob = `${item.name} ${item.detailsSummary} ${item.computer} ${item.user} ${item.source} ${item.category}`.toLowerCase();
+            if (!blob.includes(s)) return false;
+          }
+          return true;
+        }) || [];
+
+        // Group items by category
+        const grouped = {};
+        for (const item of filteredItems) {
+          if (!grouped[item.category]) grouped[item.category] = [];
+          grouped[item.category].push(item);
+        }
+
+        const categories = Object.keys(grouped).sort();
+        const allCategories = data?.stats?.byCategory ? Object.keys(data.stats.byCategory).sort() : [];
+        const collapsedCats = modal.collapsedCats || new Set();
+
+        return (
+          <div style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }} onMouseDown={(e) => { if (e.target === e.currentTarget) setModal(null); }}>
+            <div style={{ width: modal.modalW || 920, height: modal.modalH || undefined, maxWidth: "96vw", maxHeight: modal.modalH ? undefined : "92vh", display: "flex", flexDirection: "column", background: `linear-gradient(160deg, ${th.modalBg}, ${th.panelBg})`, borderRadius: 16, border: `1px solid ${th.modalBorder}44`, boxShadow: `0 25px 60px rgba(0,0,0,0.5), 0 0 0 1px ${th.border}22`, overflow: "hidden", position: "relative" }}>
+              {/* Resize handle — bottom-right corner */}
+              <div onMouseDown={(e) => {
+                e.preventDefault();
+                const startX = e.clientX, startY = e.clientY, startW = modal.modalW || 920, startH = modal.modalH || e.currentTarget.parentElement.offsetHeight;
+                document.body.style.cursor = "nwse-resize"; document.body.style.userSelect = "none";
+                const onMove = (ev) => setModal((p) => ({ ...p, modalW: Math.max(600, startW + ev.clientX - startX), modalH: Math.max(400, startH + ev.clientY - startY) }));
+                const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+              }} style={{ position: "absolute", right: 0, bottom: 0, width: 18, height: 18, cursor: "nwse-resize", zIndex: 10 }}>
+                <svg width="10" height="10" viewBox="0 0 10 10" style={{ position: "absolute", right: 4, bottom: 4, opacity: 0.3 }}><path d="M9 1L1 9M9 5L5 9M9 9L9 9" stroke={th.textMuted} strokeWidth="1.5" strokeLinecap="round"/></svg>
+              </div>
+
+              {/* Header */}
+              <div style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}22`, display: "flex", alignItems: "center", justifyContent: "space-between", background: `linear-gradient(135deg, ${th.panelBg}ee, ${th.modalBg}dd)`, backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", flexShrink: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill={(th.danger||"#f85149")+"22"} stroke={th.danger||"#f85149"} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4M12 16h.01"/></svg>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: th.text, letterSpacing: "-0.3px", fontFamily: "-apple-system, sans-serif" }}>Persistence Analyzer</div>
+                    <div style={{ fontSize: 10, color: th.textMuted, fontFamily: "-apple-system, sans-serif", marginTop: 1 }}>
+                      {phase === "results" && data ? `${data.stats.total} mechanisms found | ${data.stats.bySeverity?.critical || 0} critical | ${data.detectedMode?.toUpperCase()} mode` : "Automated persistence mechanism detection"}
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => setModal(null)} style={{ background: "none", border: "none", color: th.textMuted, cursor: "pointer", padding: 4, borderRadius: 6, fontSize: 18, lineHeight: 1 }} onMouseEnter={(e) => e.currentTarget.style.color = th.text} onMouseLeave={(e) => e.currentTarget.style.color = th.textMuted}>&times;</button>
+              </div>
+
+              {/* Body — scrollable */}
+              <div style={{ flex: 1, overflow: "auto", padding: "16px 20px" }}>
+
+                {/* Config phase */}
+                {phase === "config" && (
+                  <div>
+                    {modal.error && <div style={{ padding: "10px 14px", marginBottom: 14, background: `${(th.danger||"#f85149")}15`, border: `1px solid ${(th.danger||"#f85149")}33`, borderRadius: 8, color: th.danger||"#f85149", fontSize: 12, fontFamily: "-apple-system, sans-serif" }}>{modal.error}</div>}
+
+                    <div style={{ fontSize: 12, fontWeight: 600, color: th.text, marginBottom: 8, fontFamily: "-apple-system, sans-serif" }}>Data Source</div>
+                    <div style={{ display: "flex", gap: 6, marginBottom: 18 }}>
+                      {[
+                        { key: "auto", label: "Auto-detect", desc: "Recommended" },
+                        { key: "evtx", label: "EVTX Logs", desc: "EvtxECmd / Hayabusa" },
+                        { key: "registry", label: "Registry Export", desc: "RECmd / Registry Explorer" },
+                      ].map((opt) => (
+                        <button key={opt.key} onClick={() => setModal((p) => ({ ...p, mode: opt.key }))}
+                          style={{ flex: 1, padding: "10px 12px", borderRadius: 10, border: `1px solid ${pMode === opt.key ? th.accent : th.border}44`, background: pMode === opt.key ? `${th.accent}15` : "transparent", cursor: "pointer", textAlign: "center", transition: "all 0.15s" }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: pMode === opt.key ? th.accent : th.text, fontFamily: "-apple-system, sans-serif" }}>{opt.label}</div>
+                          <div style={{ fontSize: 10, color: th.textMuted, marginTop: 2, fontFamily: "-apple-system, sans-serif" }}>{opt.desc}</div>
+                        </button>
+                      ))}
+                    </div>
+
+                    {pMode !== "auto" && (
+                      <>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: th.text, marginBottom: 8, fontFamily: "-apple-system, sans-serif" }}>Column Mapping {pMode === "evtx" ? "(EVTX)" : "(Registry)"}</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 12px", marginBottom: 8 }}>
+                          {(pMode === "evtx"
+                            ? [["eventId","Event ID"],["channel","Channel"],["ts","Timestamp"],["computer","Computer"],["user","User"]]
+                            : [["keyPath","Key Path"],["valueName","Value Name"],["valueData","Value Data"],["hivePath","Hive Path"],["ts","Timestamp"]]
+                          ).map(([key, label]) => (
+                            <div key={key}>
+                              <div style={{ fontSize: 10, color: th.textMuted, marginBottom: 3, fontFamily: "-apple-system, sans-serif" }}>{label}</div>
+                              <select value={modal.columns?.[key] || ""} onChange={(e) => setModal((p) => ({ ...p, columns: { ...p.columns, [key]: e.target.value || undefined } }))}
+                                style={{ ...ms.sl, width: "100%", fontSize: 11, padding: "5px 8px" }}>
+                                <option value="">-- auto --</option>
+                                {(ct?.headers || []).map((h) => <option key={h} value={h}>{h}</option>)}
+                              </select>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+
+                    <div style={{ padding: "12px 14px", background: `${th.accent}08`, borderRadius: 10, border: `1px solid ${th.accent}15`, marginTop: 12 }}>
+                      <div style={{ fontSize: 11, color: th.textMuted, fontFamily: "-apple-system, sans-serif", lineHeight: 1.5 }}>
+                        <b style={{ color: th.text }}>EVTX mode</b> scans 22 persistence indicators: Services (7045/4697), Scheduled Tasks (4698/4699/106/129/140/200 + deletion 141, boot/logon triggers 118/119), WMI subscriptions (5861, Sysmon 19/20/21), Registry autorun (Sysmon 12/13/14), Startup folder drops (Sysmon 11), DLL hijacking (Sysmon 7), Driver loading (Sysmon 6), Process tampering (Sysmon 25). Suspicious items flagged with risk boost for non-Microsoft paths, GUID tasks, LOLBin execution, user-writable paths.
+                        <br/><b style={{ color: th.text }}>Registry mode</b> scans 15 persistence locations: Run/RunOnce keys, Services, Winlogon, AppInit_DLLs, IFEO, COM objects, Shell extensions, Boot Execute, BHO, LSA packages, Print Monitors, Active Setup, Startup folders, Scheduled Tasks, Network Providers.
+                      </div>
+                    </div>
+
+                    {/* Customize Rules Section */}
+                    <div style={{ marginTop: 14 }}>
+                      <button onClick={() => setModal((p) => ({ ...p, showRules: !p.showRules }))}
+                        style={{ width: "100%", padding: "10px 14px", background: `${th.accent}08`, border: `1px solid ${th.border}33`, borderRadius: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", transition: "all 0.15s" }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif", display: "flex", alignItems: "center", gap: 6 }}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={th.textMuted} strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                          Customize Rules
+                        </span>
+                        <span style={{ fontSize: 10, color: th.textMuted, fontFamily: "-apple-system, sans-serif", display: "flex", alignItems: "center", gap: 6 }}>
+                          <span>{evtxActive}/{EVTX_SUMMARIES.length} EVTX, {regActive}/{REG_SUMMARIES.length} Reg{customCount > 0 ? `, ${customCount} custom` : ""}</span>
+                          <span style={{ transform: modal.showRules ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s", fontSize: 12 }}>&#9662;</span>
+                        </span>
+                      </button>
+
+                      {modal.showRules && (
+                        <div style={{ marginTop: 8, padding: "10px 12px", background: `${th.panelBg}88`, border: `1px solid ${th.border}22`, borderRadius: 10, maxHeight: 320, overflowY: "auto" }}>
+
+                          {/* EVTX Rules */}
+                          {(pMode === "evtx" || pMode === "auto") && (
+                            <div style={{ marginBottom: 10 }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, fontFamily: "-apple-system, sans-serif" }}>
+                                EVTX Rules ({evtxActive}/{EVTX_SUMMARIES.length})
+                              </div>
+                              {EVTX_SUMMARIES.map((r, i) => {
+                                const key = `evtx-${i}`;
+                                const off = disabledSet.has(key);
+                                return (
+                                  <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", cursor: "pointer", opacity: off ? 0.45 : 1, transition: "opacity 0.15s" }}>
+                                    <input type="checkbox" checked={!off} onChange={() => toggleRule(key)} style={{ accentColor: th.accent, margin: 0, flexShrink: 0 }} />
+                                    <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: SEVERITY_COLORS[r.sev] + "22", color: SEVERITY_COLORS[r.sev], fontWeight: 600, fontFamily: "-apple-system, sans-serif", minWidth: 42, textAlign: "center", textTransform: "uppercase" }}>{r.sev}</span>
+                                    <span style={{ fontSize: 11, color: th.text, fontFamily: "-apple-system, sans-serif", flex: 1 }}>{r.cat} — {r.name}</span>
+                                    <span style={{ fontSize: 10, color: th.textDim, fontFamily: "SF Mono, monospace" }}>EID {r.hint}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          {/* Registry Rules */}
+                          {(pMode === "registry" || pMode === "auto") && (
+                            <div style={{ marginBottom: 10 }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, fontFamily: "-apple-system, sans-serif" }}>
+                                Registry Rules ({regActive}/{REG_SUMMARIES.length})
+                              </div>
+                              {REG_SUMMARIES.map((r, i) => {
+                                const key = `reg-${i}`;
+                                const off = disabledSet.has(key);
+                                return (
+                                  <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", cursor: "pointer", opacity: off ? 0.45 : 1, transition: "opacity 0.15s" }}>
+                                    <input type="checkbox" checked={!off} onChange={() => toggleRule(key)} style={{ accentColor: th.accent, margin: 0, flexShrink: 0 }} />
+                                    <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: SEVERITY_COLORS[r.sev] + "22", color: SEVERITY_COLORS[r.sev], fontWeight: 600, fontFamily: "-apple-system, sans-serif", minWidth: 42, textAlign: "center", textTransform: "uppercase" }}>{r.sev}</span>
+                                    <span style={{ fontSize: 11, color: th.text, fontFamily: "-apple-system, sans-serif", flex: 1 }}>{r.cat} — {r.name}</span>
+                                    <span style={{ fontSize: 10, color: th.textDim, fontFamily: "SF Mono, monospace" }}>{r.hint}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          {/* Custom Rules */}
+                          {(modal.customRules || []).length > 0 && (
+                            <div style={{ marginBottom: 10 }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, fontFamily: "-apple-system, sans-serif" }}>Custom Rules</div>
+                              {(modal.customRules || []).map((cr, i) => (
+                                <div key={`custom-${i}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0" }}>
+                                  <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: SEVERITY_COLORS[cr.severity || "medium"] + "22", color: SEVERITY_COLORS[cr.severity || "medium"], fontWeight: 600, fontFamily: "-apple-system, sans-serif", minWidth: 42, textAlign: "center", textTransform: "uppercase" }}>{cr.severity || "med"}</span>
+                                  <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: `${th.accent}22`, color: th.accent, fontWeight: 600, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase" }}>{cr.type}</span>
+                                  <span style={{ fontSize: 11, color: th.text, fontFamily: "-apple-system, sans-serif", flex: 1 }}>{cr.category || "Custom"} — {cr.name || "Custom Rule"}</span>
+                                  <button onClick={() => deleteCustomRule(i)} style={{ background: "none", border: "none", color: th.textMuted, cursor: "pointer", fontSize: 14, padding: "0 4px", lineHeight: 1 }} onMouseEnter={(e) => e.currentTarget.style.color = th.danger || "#f85149"} onMouseLeave={(e) => e.currentTarget.style.color = th.textMuted}>&times;</button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Add Custom Rule */}
+                          {!modal.addingRule ? (
+                            <button onClick={() => setModal((p) => ({ ...p, addingRule: pMode === "registry" ? "registry" : "evtx", newRule: {} }))}
+                              style={{ ...ms.bsm, marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                              <span style={{ fontSize: 13, lineHeight: 1 }}>+</span> Add Custom Rule
+                            </button>
+                          ) : (
+                            <div style={{ marginTop: 8, padding: "10px 12px", background: `${th.accent}08`, border: `1px solid ${th.accent}22`, borderRadius: 8 }}>
+                              <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                                {["evtx", "registry"].map((t) => (
+                                  <button key={t} onClick={() => setModal((p) => ({ ...p, addingRule: t, newRule: { ...(p.newRule || {}), type: t } }))}
+                                    style={{ padding: "3px 10px", borderRadius: 4, border: `1px solid ${modal.addingRule === t ? th.accent : th.border}44`, background: modal.addingRule === t ? `${th.accent}15` : "transparent", color: modal.addingRule === t ? th.accent : th.textMuted, fontSize: 10, fontWeight: 600, cursor: "pointer", fontFamily: "-apple-system, sans-serif" }}>
+                                    {t.toUpperCase()}
+                                  </button>
+                                ))}
+                              </div>
+                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                                <input value={(modal.newRule || {}).category || ""} onChange={(e) => setModal((p) => ({ ...p, newRule: { ...p.newRule, category: e.target.value } }))} placeholder="Category" style={{ ...ms.ip, fontSize: 11, padding: "4px 8px" }} />
+                                <input value={(modal.newRule || {}).name || ""} onChange={(e) => setModal((p) => ({ ...p, newRule: { ...p.newRule, name: e.target.value } }))} placeholder="Rule Name" style={{ ...ms.ip, fontSize: 11, padding: "4px 8px" }} />
+                                {modal.addingRule === "evtx" ? (
+                                  <>
+                                    <input value={(modal.newRule || {}).eventIds || ""} onChange={(e) => setModal((p) => ({ ...p, newRule: { ...p.newRule, eventIds: e.target.value } }))} placeholder="Event IDs (e.g. 7045,4697)" style={{ ...ms.ip, fontSize: 11, padding: "4px 8px" }} />
+                                    <input value={(modal.newRule || {}).channels || ""} onChange={(e) => setModal((p) => ({ ...p, newRule: { ...p.newRule, channels: e.target.value } }))} placeholder="Channels (e.g. system,security)" style={{ ...ms.ip, fontSize: 11, padding: "4px 8px" }} />
+                                  </>
+                                ) : (
+                                  <>
+                                    <input value={(modal.newRule || {}).keyPathPattern || ""} onChange={(e) => setModal((p) => ({ ...p, newRule: { ...p.newRule, keyPathPattern: e.target.value } }))} placeholder="Key Path Pattern (regex)" style={{ ...ms.ip, fontSize: 11, padding: "4px 8px" }} />
+                                    <input value={(modal.newRule || {}).valueNameFilter || ""} onChange={(e) => setModal((p) => ({ ...p, newRule: { ...p.newRule, valueNameFilter: e.target.value } }))} placeholder="Value Name Filter (regex, optional)" style={{ ...ms.ip, fontSize: 11, padding: "4px 8px" }} />
+                                  </>
+                                )}
+                                <select value={(modal.newRule || {}).severity || "medium"} onChange={(e) => setModal((p) => ({ ...p, newRule: { ...p.newRule, severity: e.target.value } }))}
+                                  style={{ ...ms.sl, fontSize: 11, padding: "4px 8px" }}>
+                                  <option value="critical">Critical</option>
+                                  <option value="high">High</option>
+                                  <option value="medium">Medium</option>
+                                  <option value="low">Low</option>
+                                </select>
+                                {modal.addingRule === "evtx" && (
+                                  <input value={(modal.newRule || {}).payloadFilter || ""} onChange={(e) => setModal((p) => ({ ...p, newRule: { ...p.newRule, payloadFilter: e.target.value } }))} placeholder="Payload regex filter (optional)" style={{ ...ms.ip, fontSize: 11, padding: "4px 8px" }} />
+                                )}
+                              </div>
+                              <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 8 }}>
+                                <button onClick={() => setModal((p) => ({ ...p, addingRule: false, newRule: {} }))} style={ms.bsm}>Cancel</button>
+                                <button onClick={addCustomRule} style={{ ...ms.bsm, background: th.primaryBtn, color: "#fff", border: "none" }}>Add Rule</button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Loading phase */}
+                {phase === "loading" && (() => {
+                  const prog = modal.progress || 0;
+                  const pi = modal.phaseIdx || 0;
+                  const plabels = ["Querying database...", "Scanning for persistence mechanisms...", "Scoring risk levels...", "Complete"];
+                  return (
+                    <div style={{ padding: "50px 40px 40px", textAlign: "center" }}>
+                      <style>{`@keyframes paPulse{0%,100%{opacity:.35}50%{opacity:1}}`}</style>
+                      <div style={{ marginBottom: 22 }}>
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill={(th.danger||"#f85149")+"22"} stroke={th.danger||"#f85149"} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ animation: "paPulse 1.5s ease-in-out infinite" }}>
+                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4M12 16h.01"/>
+                        </svg>
+                      </div>
+                      <div style={{ color: th.text, fontSize: 13, fontWeight: 500, marginBottom: 6, fontFamily: "-apple-system, sans-serif", letterSpacing: "-0.2px" }}>{plabels[pi]}</div>
+                      <div style={{ color: th.textMuted, fontSize: 11, fontFamily: "-apple-system, sans-serif", marginBottom: 24 }}>This may take a moment for large datasets</div>
+                      <div style={{ position: "relative", height: 4, background: th.border + "22", borderRadius: 2, overflow: "hidden", maxWidth: 360, margin: "0 auto 12px" }}>
+                        <div style={{ position: "absolute", left: 0, top: 0, height: "100%", width: `${prog}%`, background: `linear-gradient(90deg, ${th.accent}, ${th.danger || "#f85149"})`, borderRadius: 2, transition: "width 0.25s ease-out", boxShadow: `0 0 12px ${th.accent}44` }} />
+                      </div>
+                      <div style={{ color: th.textDim, fontSize: 10, fontFamily: "-apple-system, sans-serif" }}>{Math.round(prog)}%</div>
+                    </div>
+                  );
+                })()}
+
+                {/* Results phase */}
+                {phase === "results" && data && (
+                  <div>
+                    {/* Stats cards — uniform glass */}
+                    <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+                      {[
+                        { val: data.stats.total, label: "total found" },
+                        { val: data.stats.bySeverity?.critical || 0, label: "critical" },
+                        { val: data.stats.bySeverity?.high || 0, label: "high" },
+                        { val: data.stats.suspicious || 0, label: "suspicious", danger: true },
+                        { val: data.stats.categoriesFound || 0, label: "categories" },
+                      ].map((c, i) => (
+                        <div key={i} style={{ flex: 1, textAlign: "center", padding: "10px 6px 8px", background: `linear-gradient(160deg, ${th.panelBg}cc, ${th.modalBg}88)`, backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", borderRadius: 10, border: `1px solid ${th.border}33` }}>
+                          <div style={{ fontSize: 22, fontWeight: 700, color: c.danger && c.val > 0 ? (th.danger || "#f85149") : th.text, fontFamily: "-apple-system, sans-serif", letterSpacing: "-0.5px", lineHeight: 1 }}>{c.val}</div>
+                          <div style={{ fontSize: 9, color: c.danger && c.val > 0 ? (th.danger || "#f85149") + "bb" : th.textMuted, marginTop: 3, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 500 }}>{c.label}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Filter bar */}
+                    <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+                      <input type="text" placeholder="Search results..." value={searchText} onChange={(e) => setModal((p) => ({ ...p, searchText: e.target.value }))}
+                        style={{ ...ms.si, flex: 1, fontSize: 11, padding: "5px 10px" }} />
+                      <select value={severityFilter} onChange={(e) => setModal((p) => ({ ...p, severityFilter: e.target.value }))}
+                        style={{ ...ms.sl, fontSize: 11, padding: "5px 8px", minWidth: 90 }}>
+                        <option value="all">All Severity</option>
+                        <option value="critical">Critical</option>
+                        <option value="high">High</option>
+                        <option value="medium">Medium</option>
+                        <option value="low">Low</option>
+                      </select>
+                      <select value={categoryFilter} onChange={(e) => setModal((p) => ({ ...p, categoryFilter: e.target.value }))}
+                        style={{ ...ms.sl, fontSize: 11, padding: "5px 8px", minWidth: 120 }}>
+                        <option value="all">All Categories</option>
+                        {allCategories.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+
+                    {/* View tabs */}
+                    <div style={{ display: "flex", gap: 0, marginBottom: 14, background: th.border + "22", borderRadius: 8, padding: 2, width: "fit-content" }}>
+                      {["grouped", "timeline", "table"].map((tab) => (
+                        <button key={tab} onClick={() => setModal((p) => ({ ...p, viewTab: tab }))}
+                          style={{ padding: "5px 16px", fontSize: 11, fontWeight: viewTab === tab ? 600 : 400, fontFamily: "-apple-system, sans-serif", background: viewTab === tab ? th.accent + "20" : "transparent", color: viewTab === tab ? th.accent : th.textMuted, border: "none", borderRadius: 6, cursor: "pointer", textTransform: "capitalize", transition: "all 0.15s" }}>{tab}</button>
+                      ))}
+                    </div>
+
+                    {filteredItems.length === 0 && (
+                      <div style={{ textAlign: "center", padding: "40px 20px", color: th.textMuted, fontSize: 13, fontFamily: "-apple-system, sans-serif" }}>
+                        No persistence mechanisms found{searchText || severityFilter !== "all" || categoryFilter !== "all" ? " matching filters" : ""}
+                      </div>
+                    )}
+
+                    {/* Grouped view */}
+                    {viewTab === "grouped" && categories.map((cat) => (
+                      <div key={cat} style={{ marginBottom: 10 }}>
+                        <button onClick={() => setModal((p) => {
+                          const s = new Set(p.collapsedCats || []);
+                          s.has(cat) ? s.delete(cat) : s.add(cat);
+                          return { ...p, collapsedCats: s };
+                        })} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: `linear-gradient(135deg, ${th.panelBg}, ${th.modalBg})`, border: `1px solid ${th.border}33`, borderRadius: 8, cursor: "pointer", color: th.text }}>
+                          <span style={{ fontSize: 10, color: th.textMuted, transition: "transform 0.2s", transform: collapsedCats.has(cat) ? "rotate(-90deg)" : "rotate(0deg)" }}>&#9660;</span>
+                          <span style={{ fontSize: 12, fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>{cat}</span>
+                          <span style={{ fontSize: 10, padding: "1px 8px", borderRadius: 10, background: th.accent + "20", color: th.accent, fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>{grouped[cat].length}</span>
+                        </button>
+                        {!collapsedCats.has(cat) && (
+                          <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>
+                            {grouped[cat].slice(0, 200).map((item, idx) => (
+                              <div key={idx} onClick={() => {
+                                if (item.rowid && data.columns) {
+                                  const eidCol = data.columns.eventId || data.columns.keyPath;
+                                  if (eidCol) {
+                                    const cf = { ...(ct.columnFilters || {}) };
+                                    if (item.mode === "evtx") { const eid = item.source.match(/EventID (\d+)/)?.[1]; if (eid) cf[eidCol] = eid; }
+                                    else if (item.details?.keyPath) { const kpCol = data.columns.keyPath; if (kpCol) cf[kpCol] = item.details.keyPath.split("\\").pop(); }
+                                    up("columnFilters", cf);
+                                  }
+                                }
+                                setModal(null);
+                              }}
+                                style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 12px", borderRadius: 8, border: `1px solid ${th.border}22`, borderLeft: `3px solid ${SEVERITY_COLORS[item.severity] || th.textMuted}`, cursor: "pointer", transition: "background 0.1s", background: "transparent" }}
+                                onMouseEnter={(e) => e.currentTarget.style.background = `${th.accent}08`}
+                                onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
+                                <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 4, background: (SEVERITY_COLORS[item.severity] || th.textMuted) + "20", color: SEVERITY_COLORS[item.severity] || th.textMuted, fontWeight: 700, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase", flexShrink: 0, marginTop: 1 }}>{item.severity}</span>
+                                {item.isSuspicious && <span title={item.suspiciousReasons?.join(", ")} style={{ fontSize: 8, padding: "1px 5px", borderRadius: 3, background: `${th.danger || "#f85149"}22`, color: th.danger || "#f85149", fontWeight: 700, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase", flexShrink: 0, marginTop: 1 }}>SUSPICIOUS</span>}
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                                    <span style={{ fontSize: 12, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif" }}>{item.name}</span>
+                                    <span style={{ fontSize: 10, color: th.textMuted, fontFamily: "SF Mono, Menlo, monospace", flexShrink: 0 }}>{item.timestamp ? String(item.timestamp).substring(0, 19) : ""}</span>
+                                  </div>
+                                  {/* Artifact + Command as prominent fields */}
+                                  {(item.artifact || item.command) && (
+                                    <div style={{ marginTop: 3, display: "flex", flexDirection: "column", gap: 1 }}>
+                                      {item.artifact && <div style={{ fontSize: 10, fontFamily: "SF Mono, Menlo, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><span style={{ color: th.accent, fontWeight: 600 }}>artifact: </span><span style={{ color: item.isSuspicious ? (th.danger || "#f85149") : th.text, fontWeight: item.isSuspicious ? 600 : 400 }}>{item.artifact}</span></div>}
+                                      {item.command && <div style={{ fontSize: 10, fontFamily: "SF Mono, Menlo, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><span style={{ color: th.accent, fontWeight: 600 }}>command: </span><span style={{ color: th.textMuted }}>{item.command}</span></div>}
+                                    </div>
+                                  )}
+                                  {/* Additional extracted details */}
+                                  {item.details && Object.keys(item.details).length > 0 && (
+                                    <div style={{ marginTop: 2, display: "flex", flexWrap: "wrap", gap: "1px 10px" }}>
+                                      {Object.entries(item.details).filter(([k, v]) => v && !["taskName","serviceName","targetObject","targetFilename","name","imageLoaded","executable","command","serviceFile","imagePath","image","query","destination","details","keyPath","valueData"].includes(k)).slice(0, 3).map(([k, v]) => (
+                                        <div key={k} style={{ fontSize: 10, fontFamily: "SF Mono, Menlo, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
+                                          <span style={{ color: th.accent + "aa", fontWeight: 500 }}>{k}: </span>
+                                          <span style={{ color: th.textDim }}>{String(v).substring(0, 120)}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {(item.computer || item.user || item.source) && <div style={{ fontSize: 10, color: th.textDim, fontFamily: "-apple-system, sans-serif", marginTop: 2 }}>{[item.computer, item.user, item.source, item.isSuspicious ? item.suspiciousReasons.join(", ") : null].filter(Boolean).join(" | ")}</div>}
+                                </div>
+                                <span style={{ fontSize: 10, fontWeight: 700, color: item.riskScore >= 8 ? "#f85149" : item.riskScore >= 6 ? "#f0883e" : th.textMuted, fontFamily: "-apple-system, sans-serif", flexShrink: 0, marginTop: 1 }}>{item.riskScore}/10</span>
+                                <input type="checkbox" checked={isChecked(item)} onChange={(e) => toggleCheck(item, e)} onClick={(e) => e.stopPropagation()}
+                                  style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2, cursor: "pointer", accentColor: th.accent }} />
+                              </div>
+                            ))}
+                            {grouped[cat].length > 200 && <div style={{ padding: "6px 12px", fontSize: 10, color: th.textMuted, fontFamily: "-apple-system, sans-serif", fontStyle: "italic" }}>...and {grouped[cat].length - 200} more</div>}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+
+                    {/* Timeline view */}
+                    {viewTab === "timeline" && (
+                      <div style={{ position: "relative", paddingLeft: 20 }}>
+                        <div style={{ position: "absolute", left: 6, top: 0, bottom: 0, width: 2, background: th.border + "33" }} />
+                        {filteredItems.sort((a, b) => a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0).slice(0, 500).map((item, idx) => (
+                          <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer", position: "relative", background: isChecked(item) ? `${th.accent}0a` : "transparent" }}
+                            onMouseEnter={(e) => { if (!isChecked(item)) e.currentTarget.style.background = `${th.accent}08`; }}
+                            onMouseLeave={(e) => { if (!isChecked(item)) e.currentTarget.style.background = isChecked(item) ? `${th.accent}0a` : "transparent"; }}>
+                            <div style={{ position: "absolute", left: -17, width: 8, height: 8, borderRadius: 4, background: SEVERITY_COLORS[item.severity] || th.textMuted, border: `2px solid ${th.modalBg}`, zIndex: 1 }} />
+                            <input type="checkbox" checked={isChecked(item)} onChange={(e) => toggleCheck(item, e)} onClick={(e) => e.stopPropagation()} style={{ width: 13, height: 13, cursor: "pointer", accentColor: th.accent, flexShrink: 0 }} />
+                            <span style={{ fontSize: 10, color: th.textMuted, fontFamily: "SF Mono, Menlo, monospace", minWidth: 130, flexShrink: 0 }}>{item.timestamp ? String(item.timestamp).substring(0, 19) : "—"}</span>
+                            <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: (SEVERITY_COLORS[item.severity] || th.textMuted) + "20", color: SEVERITY_COLORS[item.severity] || th.textMuted, fontWeight: 700, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase", flexShrink: 0 }}>{item.severity.substring(0, 4)}</span>
+                            <span style={{ fontSize: 11, fontWeight: 500, color: th.text, fontFamily: "-apple-system, sans-serif", flexShrink: 0 }}>{item.name}</span>
+                            {item.isSuspicious && <span style={{ fontSize: 7, padding: "1px 4px", borderRadius: 2, background: `${th.danger || "#f85149"}22`, color: th.danger || "#f85149", fontWeight: 700, flexShrink: 0, textTransform: "uppercase" }}>!</span>}
+                            <span style={{ fontSize: 10, color: item.isSuspicious ? (th.danger || "#f85149") : th.textMuted, fontWeight: item.isSuspicious ? 500 : 400, fontFamily: "SF Mono, Menlo, monospace", flexShrink: 0, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.artifact || ""}</span>
+                            <span style={{ fontSize: 10, color: th.textDim, fontFamily: "SF Mono, Menlo, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.command || item.detailsSummary?.substring(0, 150) || ""}</span>
+                          </div>
+                        ))}
+                        {filteredItems.length > 500 && <div style={{ padding: "8px 0 4px 10px", fontSize: 10, color: th.textMuted, fontStyle: "italic" }}>Showing first 500 of {filteredItems.length}</div>}
+                      </div>
+                    )}
+
+                    {/* Table view */}
+                    {viewTab === "table" && (() => {
+                      const sortCol = modal.sortCol || "riskScore";
+                      const sortDir = modal.sortDir || "desc";
+                      const colFilters = modal.tableColFilters || {};
+                      // Apply per-column checkbox filters
+                      const tableFiltered = filteredItems.filter((item) => {
+                        for (const [col, allowed] of Object.entries(colFilters)) {
+                          if (!allowed || allowed.length === 0) continue;
+                          const val = String(item[col] ?? "");
+                          if (!allowed.includes(val)) return false;
+                        }
+                        return true;
+                      });
+                      const sorted = [...tableFiltered].sort((a, b) => {
+                        const av = a[sortCol] ?? "", bv = b[sortCol] ?? "";
+                        const cmp = typeof av === "number" ? av - bv : String(av).localeCompare(String(bv));
+                        return sortDir === "desc" ? -cmp : cmp;
+                      });
+                      const toggleSort = (col) => setModal((p) => ({ ...p, sortCol: col, sortDir: p.sortCol === col && p.sortDir === "asc" ? "desc" : "asc" }));
+                      const cw = modal.colWidths || {};
+                      const colDefs = [
+                        { key: "riskScore", label: "Risk", dw: 50 },
+                        { key: "severity", label: "Severity", dw: 70 },
+                        { key: "category", label: "Category", dw: 110 },
+                        { key: "name", label: "Detection", dw: 140 },
+                        { key: "artifact", label: "Artifact", dw: 170 },
+                        { key: "command", label: "Command/Path", dw: 180 },
+                        { key: "timestamp", label: "Timestamp", dw: 145 },
+                        { key: "computer", label: "Computer", dw: 90 },
+                        { key: "user", label: "User", dw: 90 },
+                        { key: "source", label: "Source", dw: 80 },
+                      ];
+                      const gw = (k) => cw[k] || colDefs.find((c) => c.key === k)?.dw || 100;
+                      // Column ordering via drag-and-drop
+                      const savedOrder = modal.colOrder || colDefs.map((c) => c.key);
+                      // Ensure all colDefs are present (append any missing)
+                      const colOrder = [...savedOrder.filter((k) => colDefs.some((c) => c.key === k)), ...colDefs.filter((c) => !savedOrder.includes(c.key)).map((c) => c.key)];
+                      const orderedCols = colOrder.map((k) => colDefs.find((c) => c.key === k)).filter(Boolean);
+                      const onColDragStart = (e, key) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", key); setModal((p) => ({ ...p, dragCol: key })); };
+                      const onColDrop = (e, targetKey) => {
+                        e.preventDefault();
+                        const fromKey = e.dataTransfer.getData("text/plain");
+                        if (fromKey && fromKey !== targetKey) {
+                          setModal((p) => {
+                            const order = [...(p.colOrder || colDefs.map((c) => c.key))];
+                            const fi = order.indexOf(fromKey), ti = order.indexOf(targetKey);
+                            if (fi >= 0 && ti >= 0) { order.splice(fi, 1); order.splice(ti, 0, fromKey); }
+                            return { ...p, colOrder: order, dragCol: null };
+                          });
+                        }
+                      };
+                      const onColResize = (colKey, e) => {
+                        e.preventDefault(); e.stopPropagation();
+                        const startX = e.clientX, startW = gw(colKey);
+                        document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none";
+                        const onMove = (ev) => setModal((p) => ({ ...p, colWidths: { ...(p.colWidths || {}), [colKey]: Math.max(40, startW + ev.clientX - startX) } }));
+                        const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                        window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+                      };
+                      // Column filter dropdown
+                      const openColFilter = (colKey, e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        // Compute unique values with counts from filteredItems (before column filters)
+                        const counts = {};
+                        for (const item of filteredItems) {
+                          const v = String(item[colKey] ?? "");
+                          counts[v] = (counts[v] || 0) + 1;
+                        }
+                        const allVals = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+                        const current = colFilters[colKey];
+                        const selected = new Set(current && current.length > 0 ? current : allVals);
+                        setModal((p) => ({ ...p, colFilterOpen: colKey, colFilterPos: { x: rect.left, y: rect.bottom + 2 }, colFilterVals: allVals, colFilterCounts: counts, colFilterSel: selected, colFilterSearch: "" }));
+                      };
+                      const renderCell = (item, col) => {
+                        if (col.key === "riskScore") return <span style={{ fontWeight: 700, color: item.riskScore >= 8 ? "#f85149" : item.riskScore >= 6 ? "#f0883e" : th.textMuted, display: "flex", alignItems: "center", gap: 3 }}>{item.riskScore}{item.isSuspicious && <span title={item.suspiciousReasons?.join(", ")} style={{ fontSize: 8, color: "#f85149" }}>!</span>}</span>;
+                        if (col.key === "severity") return <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: (SEVERITY_COLORS[item.severity] || th.textMuted) + "20", color: SEVERITY_COLORS[item.severity] || th.textMuted, fontWeight: 700, textTransform: "uppercase" }}>{item.severity}</span>;
+                        if (col.key === "timestamp") return item.timestamp ? String(item.timestamp).substring(0, 19) : "";
+                        return item[col.key] || "";
+                      };
+                      const filterOpen = modal.colFilterOpen;
+                      const filterPos = modal.colFilterPos || {};
+                      const filterVals = modal.colFilterVals || [];
+                      const filterCounts = modal.colFilterCounts || {};
+                      const filterSel = modal.colFilterSel || new Set();
+                      const filterSearch = modal.colFilterSearch || "";
+                      const displayVals = filterSearch ? filterVals.filter((v) => v.toLowerCase().includes(filterSearch.toLowerCase())) : filterVals;
+                      return (
+                        <div style={{ border: `1px solid ${th.border}22`, borderRadius: 8, overflow: "hidden", position: "relative" }}>
+                          <div style={{ overflow: "auto", maxHeight: 440 }}>
+                            <div style={{ minWidth: "fit-content" }}>
+                              <div style={{ display: "flex", background: th.panelBg, borderBottom: `1px solid ${th.border}33`, position: "sticky", top: 0, zIndex: 2 }}>
+                                <div style={{ width: 30, flexShrink: 0, padding: "6px 8px", display: "flex", alignItems: "center" }}>
+                                  <input type="checkbox" checked={sorted.length > 0 && sorted.slice(0, 500).every((i) => isChecked(i))} onChange={(e) => {
+                                    e.stopPropagation();
+                                    setModal((p) => {
+                                      const s = new Set(p.checkedItems || []);
+                                      const allChecked = sorted.slice(0, 500).every((i) => s.has(i.rowid + "|" + i.name + "|" + i.timestamp));
+                                      sorted.slice(0, 500).forEach((i) => { const k = i.rowid + "|" + i.name + "|" + i.timestamp; allChecked ? s.delete(k) : s.add(k); });
+                                      return { ...p, checkedItems: s };
+                                    });
+                                  }} style={{ width: 13, height: 13, cursor: "pointer", accentColor: th.accent }} />
+                                </div>
+                                {orderedCols.map((c) => (
+                                  <div key={c.key} draggable onDragStart={(e) => onColDragStart(e, c.key)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => onColDrop(e, c.key)} onDragEnd={() => setModal((p) => ({ ...p, dragCol: null }))}
+                                    style={{ width: gw(c.key), flexShrink: 0, padding: "6px 8px", fontSize: 10, fontWeight: 600, color: sortCol === c.key ? th.accent : th.textMuted, cursor: "grab", fontFamily: "-apple-system, sans-serif", userSelect: "none", position: "relative", opacity: modal.dragCol === c.key ? 0.4 : 1, transition: "opacity 0.15s", display: "flex", alignItems: "center", gap: 2 }}>
+                                    <span onClick={() => toggleSort(c.key)} style={{ cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      {c.label}{sortCol === c.key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                                    </span>
+                                    <span style={{ cursor: "pointer", fontSize: 7, color: colFilters[c.key] ? th.accent : th.textMuted + "66", flexShrink: 0, marginLeft: "auto" }}
+                                      onClick={(e) => { e.stopPropagation(); openColFilter(c.key, e); }}>▼</span>
+                                    <div onMouseDown={(e) => onColResize(c.key, e)} style={{ position: "absolute", right: -3, top: 0, bottom: 0, width: 6, cursor: "col-resize", zIndex: 2 }}
+                                      onClick={(e) => e.stopPropagation()}>
+                                      <div style={{ position: "absolute", right: 2, top: 4, bottom: 4, width: 2, borderRadius: 1, background: th.border + "55", transition: "background 0.15s" }}
+                                        onMouseEnter={(e) => e.currentTarget.style.background = th.accent}
+                                        onMouseLeave={(e) => e.currentTarget.style.background = th.border + "55"} />
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                              {sorted.slice(0, 500).map((item, idx) => (
+                                <div key={idx} style={{ display: "flex", borderBottom: `1px solid ${th.border}11`, borderLeft: item.isSuspicious ? `3px solid ${th.danger || "#f85149"}` : "3px solid transparent", transition: "background 0.1s", background: isChecked(item) ? `${th.accent}0a` : item.isSuspicious ? `${(th.danger || "#f85149")}06` : "transparent" }}
+                                  onMouseEnter={(e) => { if (!isChecked(item)) e.currentTarget.style.background = `${th.accent}06`; }}
+                                  onMouseLeave={(e) => { if (!isChecked(item)) e.currentTarget.style.background = isChecked(item) ? `${th.accent}0a` : item.isSuspicious ? `${(th.danger || "#f85149")}06` : "transparent"; }}>
+                                  <div style={{ width: 30, flexShrink: 0, padding: "5px 8px", display: "flex", alignItems: "center" }}>
+                                    <input type="checkbox" checked={isChecked(item)} onChange={(e) => toggleCheck(item, e)} style={{ width: 13, height: 13, cursor: "pointer", accentColor: th.accent }} />
+                                  </div>
+                                  {orderedCols.map((col) => (
+                                    <div key={col.key} title={col.key === "artifact" && item.isSuspicious ? item.suspiciousReasons?.join(", ") : undefined} style={{ width: gw(col.key), flexShrink: 0, padding: "5px 8px", fontSize: col.key === "riskScore" ? 11 : 10, color: col.key === "name" || col.key === "category" ? th.text : col.key === "artifact" && item.isSuspicious ? (th.danger || "#f85149") : th.textMuted, fontWeight: col.key === "name" ? 500 : col.key === "artifact" && item.isSuspicious ? 600 : 400, fontFamily: col.key === "artifact" || col.key === "command" || col.key === "timestamp" ? "SF Mono, Menlo, monospace" : "-apple-system, sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      {renderCell(item, col)}
+                                    </div>
+                                  ))}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          {sorted.length > 500 && <div style={{ padding: "6px 10px", fontSize: 10, color: th.textMuted, fontStyle: "italic", borderTop: `1px solid ${th.border}11` }}>Showing first 500 of {sorted.length}</div>}
+                          {/* Column filter dropdown popup */}
+                          {filterOpen && (
+                            <>
+                              <div style={{ position: "fixed", inset: 0, zIndex: 998 }} onClick={() => setModal((p) => ({ ...p, colFilterOpen: null }))} />
+                              <div style={{ position: "fixed", left: modal.colFilterX ?? Math.min(filterPos.x || 0, window.innerWidth - 340), top: modal.colFilterY ?? Math.min(filterPos.y || 0, window.innerHeight - 440), width: modal.colFilterW || 320, height: modal.colFilterH || 420, background: th.modalBg, border: `1px solid ${th.border}`, borderRadius: 8, boxShadow: "0 8px 32px rgba(0,0,0,0.5)", zIndex: 999, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                                {/* Draggable header */}
+                                <div style={{ padding: "8px 10px", borderBottom: `1px solid ${th.border}33`, display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "grab", userSelect: "none", flexShrink: 0 }}
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    const startX = e.clientX, startY = e.clientY;
+                                    const startLeft = modal.colFilterX ?? Math.min(filterPos.x || 0, window.innerWidth - 340);
+                                    const startTop = modal.colFilterY ?? Math.min(filterPos.y || 0, window.innerHeight - 440);
+                                    document.body.style.cursor = "grabbing"; document.body.style.userSelect = "none";
+                                    const onMove = (ev) => setModal((p) => ({ ...p, colFilterX: startLeft + ev.clientX - startX, colFilterY: startTop + ev.clientY - startY }));
+                                    const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                                    window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+                                  }}>
+                                  <span style={{ fontSize: 11, fontWeight: 600, color: th.text, fontFamily: "SF Mono, Menlo, monospace" }}>FILTER — {(colDefs.find((c) => c.key === filterOpen)?.label || filterOpen).toUpperCase()}</span>
+                                  <span style={{ cursor: "pointer", color: th.textMuted, fontSize: 14, lineHeight: 1 }} onClick={() => setModal((p) => ({ ...p, colFilterOpen: null }))}>×</span>
+                                </div>
+                                <div style={{ padding: "6px 10px", flexShrink: 0 }}>
+                                  <input type="text" placeholder="Search values..." value={filterSearch} onChange={(e) => setModal((p) => ({ ...p, colFilterSearch: e.target.value }))}
+                                    style={{ width: "100%", boxSizing: "border-box", padding: "5px 8px", fontSize: 11, background: th.panelBg, border: `1px solid ${th.border}55`, borderRadius: 4, color: th.text, outline: "none", fontFamily: "SF Mono, Menlo, monospace" }}
+                                    autoFocus />
+                                </div>
+                                <div style={{ padding: "2px 10px 6px", display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+                                  <button onClick={() => setModal((p) => ({ ...p, colFilterSel: new Set(filterVals) }))} style={{ padding: "2px 8px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Select All</button>
+                                  <button onClick={() => setModal((p) => ({ ...p, colFilterSel: new Set() }))} style={{ padding: "2px 8px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Clear</button>
+                                  <span style={{ marginLeft: "auto", fontSize: 10, color: th.textMuted }}>{filterVals.length} values</span>
+                                </div>
+                                <div style={{ flex: 1, overflow: "auto", padding: "0 6px", minHeight: 0 }}>
+                                  {displayVals.slice(0, 1000).map((v) => (
+                                    <div key={v} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 4px", borderRadius: 3, cursor: "pointer" }}
+                                      onClick={() => setModal((p) => { const s = new Set(p.colFilterSel || []); s.has(v) ? s.delete(v) : s.add(v); return { ...p, colFilterSel: s }; })}
+                                      onMouseEnter={(e) => e.currentTarget.style.background = `${th.accent}0a`}
+                                      onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
+                                      <input type="checkbox" checked={filterSel.has(v)} readOnly style={{ width: 13, height: 13, accentColor: th.accent, cursor: "pointer", flexShrink: 0 }} />
+                                      <span style={{ fontSize: 11, color: th.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "SF Mono, Menlo, monospace" }}>{v || "(empty)"}</span>
+                                      <span style={{ fontSize: 10, color: th.textMuted, flexShrink: 0 }}>{filterCounts[v]}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div style={{ padding: "8px 10px", borderTop: `1px solid ${th.border}33`, display: "flex", gap: 6, justifyContent: "flex-end", flexShrink: 0 }}>
+                                  <button onClick={() => setModal((p) => { const cf = { ...(p.tableColFilters || {}) }; delete cf[filterOpen]; return { ...p, tableColFilters: cf, colFilterOpen: null }; })}
+                                    style={{ padding: "4px 12px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Reset</button>
+                                  <button onClick={() => setModal((p) => ({ ...p, colFilterOpen: null }))}
+                                    style={{ padding: "4px 12px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Cancel</button>
+                                  <button onClick={() => setModal((p) => ({ ...p, tableColFilters: { ...(p.tableColFilters || {}), [filterOpen]: [...(p.colFilterSel || [])] }, colFilterOpen: null }))}
+                                    style={{ padding: "4px 12px", fontSize: 10, background: th.accent, border: "none", borderRadius: 4, color: "#fff", cursor: "pointer", fontWeight: 600 }}>Apply</button>
+                                </div>
+                                {/* Resize handle */}
+                                <div onMouseDown={(e) => {
+                                  e.preventDefault(); e.stopPropagation();
+                                  const startX = e.clientX, startY = e.clientY, startW = modal.colFilterW || 320, startH = modal.colFilterH || 420;
+                                  document.body.style.cursor = "nwse-resize"; document.body.style.userSelect = "none";
+                                  const onMove = (ev) => setModal((p) => ({ ...p, colFilterW: Math.max(240, startW + ev.clientX - startX), colFilterH: Math.max(250, startH + ev.clientY - startY) }));
+                                  const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                                  window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+                                }} style={{ position: "absolute", right: 0, bottom: 0, width: 16, height: 16, cursor: "nwse-resize", zIndex: 2 }}>
+                                  <svg width="8" height="8" viewBox="0 0 10 10" style={{ position: "absolute", right: 3, bottom: 3, opacity: 0.3 }}><path d="M9 1L1 9M9 5L5 9M9 9L9 9" stroke={th.textMuted} strokeWidth="1.5" strokeLinecap="round"/></svg>
+                                </div>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div style={{ padding: "12px 20px", borderTop: `1px solid ${th.border}22`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, background: `linear-gradient(135deg, ${th.panelBg}ee, ${th.modalBg}dd)`, backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)" }}>
+                {phase === "config" && (
+                  <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+                    <button onClick={() => setModal(null)} style={{ ...ms.bs, borderRadius: 8 }}>Cancel</button>
+                    <button onClick={handleAnalyze} style={{ ...ms.bp, borderRadius: 8, boxShadow: `0 2px 8px ${th.accent}33` }}>Analyze</button>
+                  </div>
+                )}
+                {phase === "loading" && (
+                  <div style={{ display: "flex", justifyContent: "space-between", width: "100%", alignItems: "center" }}>
+                    <span style={{ color: th.textMuted, fontSize: 11, fontFamily: "-apple-system, sans-serif" }}>{Math.round(modal.progress || 0)}% complete</span>
+                    <button onClick={() => setModal((p) => ({ ...p, phase: "config", loading: false, progress: 0, _cancelled: true }))} style={{ ...ms.bs, borderRadius: 8 }}>Cancel</button>
+                  </div>
+                )}
+                {phase === "results" && (
+                  <div style={{ display: "flex", justifyContent: "space-between", width: "100%", alignItems: "center" }}>
+                    <button onClick={() => setModal((p) => ({ ...p, phase: "config", data: null }))} style={{ ...ms.bs, borderRadius: 8 }}>Back</button>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      {checkedItems.size > 0 && (
+                        <>
+                          <span style={{ fontSize: 11, color: th.accent, fontFamily: "-apple-system, sans-serif", fontWeight: 500 }}>{checkedItems.size} selected</span>
+                          <button onClick={() => {
+                            const hdr = "Severity\tDetection\tDetails\tTimestamp\tComputer\tUser\tSource\tRisk\n";
+                            const body = [...checkedItems].map((key) => itemForKey(key)).filter(Boolean).map((i) => formatItemText(i)).join("\n");
+                            navigator.clipboard.writeText(hdr + body);
+                          }} style={{ ...ms.bp, borderRadius: 8, boxShadow: `0 2px 8px ${th.accent}33` }}>Copy Selected ({checkedItems.size})</button>
+                          <button onClick={() => setModal((p) => ({ ...p, checkedItems: new Set() }))} style={{ ...ms.bs, borderRadius: 8 }}>Clear</button>
+                        </>
+                      )}
+                      <button onClick={() => {
+                        const hdr = "Risk\tSeverity\tCategory\tDetection\tArtifact\tCommand/Path\tDetails\tTimestamp\tComputer\tUser\tSource\tSuspicious\n";
+                        const body = filteredItems.map((i) => `${i.riskScore}\t${i.severity}\t${i.category}\t${i.name}\t${i.artifact || ""}\t${i.command || ""}\t${i.detailsSummary}\t${i.timestamp}\t${i.computer}\t${i.user}\t${i.source}\t${i.suspiciousReasons?.join("; ") || ""}`).join("\n");
+                        navigator.clipboard.writeText(hdr + body);
+                      }} style={{ ...ms.bs, borderRadius: 8 }}>Copy All</button>
+                      <button onClick={() => setModal(null)} style={{ ...ms.bp, borderRadius: 8, boxShadow: `0 2px 8px ${th.accent}33` }}>Done</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Context Menu */}
       {contextMenu && (
         <>
@@ -5643,6 +6524,7 @@ export default function App() {
               null,
               { label: "Best Fit", icon: "↔", action: () => autoFitColumn(contextMenu.colName) },
               { label: "Best Fit (All Columns)", icon: "⇔", action: () => autoFitAllColumns() },
+              { label: "Reset Column Widths", icon: "↩", action: () => resetColumnWidths() },
               null,
               { label: "Sort Ascending", icon: "▲", action: () => { up("sortCol", contextMenu.colName); up("sortDir", "asc"); } },
               { label: "Sort Descending", icon: "▼", action: () => { up("sortCol", contextMenu.colName); up("sortDir", "desc"); } },

@@ -16,6 +16,52 @@ let mainWindow;
 const db = new TimelineDB();
 let tabCounter = 0;
 
+// ── Debug trace logger (writes to stderr + file) ────────────────
+const debugLogPath = path.join(require("os").homedir(), "tle-debug.log");
+function dbg(tag, msg, data) {
+  const ts = new Date().toISOString();
+  const line = `[${ts}] [${tag}] ${msg}${data !== undefined ? " " + JSON.stringify(data, null, 0) : ""}`;
+  console.error(line);
+  try { fs.appendFileSync(debugLogPath, line + "\n"); } catch {}
+}
+dbg("INIT", `IRFlow Timeline starting, debug log: ${debugLogPath}`);
+
+// ── Global crash guards ──────────────────────────────────────────
+process.on("uncaughtException", (err) => {
+  dbg("CRASH", "Uncaught exception", { message: err?.message, stack: err?.stack });
+  try {
+    dialog.showErrorBox(
+      "IRFlow Timeline Error",
+      `An unexpected error occurred:\n\n${err.message}\n\nThe application will attempt to continue.`
+    );
+  } catch (_) {}
+});
+
+process.on("unhandledRejection", (reason) => {
+  dbg("CRASH", "Unhandled rejection", { message: reason?.message || String(reason), stack: reason?.stack });
+});
+
+// ── Safe IPC helpers ─────────────────────────────────────────────
+function safeHandle(channel, handler) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    dbg("IPC", `→ ${channel}`, args?.length > 0 ? { argKeys: typeof args[0] === "object" && args[0] ? Object.keys(args[0]) : undefined } : undefined);
+    try {
+      const result = await handler(event, ...args);
+      dbg("IPC", `← ${channel} OK`);
+      return result;
+    } catch (err) {
+      dbg("IPC", `← ${channel} ERROR`, { message: err?.message, stack: err?.stack });
+      return { __ipcError: true, message: err?.message || "Unknown error" };
+    }
+  });
+}
+
+function safeSend(channel, data) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, data);
+  }
+}
+
 // ── macOS lifecycle ────────────────────────────────────────────────
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
@@ -82,7 +128,7 @@ function createWindow() {
   // so we forward from the main process where the event always fires.
   mainWindow.webContents.on("context-menu", (event, params) => {
     event.preventDefault();
-    mainWindow.webContents.send("native-context-menu", { x: params.x, y: params.y });
+    safeSend("native-context-menu", { x: params.x, y: params.y });
   });
 
   buildMenu();
@@ -93,15 +139,18 @@ async function importFile(filePath) {
   const tabId = `tab_${++tabCounter}_${Date.now()}`;
   const fileName = decodeURIComponent(path.basename(filePath));
   const ext = path.extname(filePath).toLowerCase();
+  dbg("IMPORT", `importFile called`, { filePath, tabId, ext });
 
   // For XLSX, check for multiple sheets
   let sheetName = undefined;
   if (ext === ".xlsx" || ext === ".xls" || ext === ".xlsm") {
     try {
+      dbg("IMPORT", `getXLSXSheets calling...`, { filePath });
       const sheets = await getXLSXSheets(filePath);
+      dbg("IMPORT", `getXLSXSheets returned`, { sheetCount: sheets.length, sheets: sheets.map(s => s.name) });
       if (sheets.length > 1) {
         // Ask user which sheet
-        mainWindow.webContents.send("sheet-selection", {
+        safeSend("sheet-selection", {
           tabId,
           fileName,
           filePath,
@@ -110,20 +159,24 @@ async function importFile(filePath) {
         return;
       }
     } catch (e) {
+      dbg("IMPORT", `getXLSXSheets failed`, { error: e.message, stack: e.stack });
       // Continue with default sheet
     }
   }
 
+  dbg("IMPORT", `calling startImport`, { tabId, sheetName });
   startImport(filePath, tabId, fileName, sheetName);
 }
 
 async function startImport(filePath, tabId, fileName, sheetName) {
+  dbg("IMPORT", `startImport begin`, { filePath, tabId, fileName, sheetName });
   // Get file size for large-file warnings
   let fileSize = 0;
   try { fileSize = fs.statSync(filePath).size; } catch {}
+  dbg("IMPORT", `fileSize`, { fileSize });
 
   // Notify renderer that import has started
-  mainWindow.webContents.send("import-start", {
+  safeSend("import-start", {
     tabId,
     fileName,
     filePath,
@@ -131,8 +184,9 @@ async function startImport(filePath, tabId, fileName, sheetName) {
   });
 
   try {
+    dbg("IMPORT", `calling parseFile...`);
     const result = await parseFile(filePath, tabId, db, (rows, bytesRead, totalBytes) => {
-      mainWindow.webContents.send("import-progress", {
+      safeSend("import-progress", {
         tabId,
         rowsImported: rows,
         bytesRead,
@@ -140,18 +194,22 @@ async function startImport(filePath, tabId, fileName, sheetName) {
         percent: totalBytes > 0 ? Math.round((bytesRead / totalBytes) * 100) : 0,
       });
     }, sheetName);
+    dbg("IMPORT", `parseFile complete`, { headers: result.headers?.length, rowCount: result.rowCount, tsColumns: result.tsColumns?.length });
 
     // Fetch initial window of data (windowed — not all rows)
+    dbg("IMPORT", `querying initial rows...`);
     const initialData = db.queryRows(tabId, {
       offset: 0,
       limit: 5000,
       sortCol: null,
       sortDir: "asc",
     });
+    dbg("IMPORT", `initial rows fetched`, { rowCount: initialData.rows?.length, totalFiltered: initialData.totalFiltered });
 
     const emptyColumns = db.getEmptyColumns(tabId);
+    dbg("IMPORT", `sending import-complete`);
 
-    mainWindow.webContents.send("import-complete", {
+    safeSend("import-complete", {
       tabId,
       fileName,
       headers: result.headers,
@@ -163,19 +221,23 @@ async function startImport(filePath, tabId, fileName, sheetName) {
       emptyColumns,
     });
 
-    // Start building FTS search index in background (non-blocking, chunked)
-    db.buildFtsAsync(tabId, (progress) => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send("fts-progress", { tabId, ...progress });
-      }
+    // Build column indexes FIRST, then FTS — sequential for better cache utilization
+    // (interleaved builds thrash the SQLite page cache between two different workloads)
+    db.buildIndexesAsync(tabId, (progress) => {
+      safeSend("index-progress", { tabId, ...progress });
+    }).then(() => {
+      return db.buildFtsAsync(tabId, (progress) => {
+        safeSend("fts-progress", { tabId, ...progress });
+      });
     }).catch((err) => {
-      console.error(`FTS index build failed for tab ${tabId}:`, err?.message || err);
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send("fts-progress", { tabId, indexed: 0, total: 0, done: true, error: err?.message });
-      }
+      console.error(`Index/FTS build failed for tab ${tabId}:`, err?.message || err);
+      safeSend("fts-progress", { tabId, indexed: 0, total: 0, done: true, error: err?.message });
     });
   } catch (err) {
-    mainWindow.webContents.send("import-error", {
+    dbg("IMPORT", `startImport FAILED`, { error: err.message, stack: err.stack });
+    // Clean up partially-imported tab on failure
+    try { db.closeTab(tabId); } catch (_) {}
+    safeSend("import-error", {
       tabId,
       fileName,
       error: err.message,
@@ -186,7 +248,7 @@ async function startImport(filePath, tabId, fileName, sheetName) {
 // ── IPC Handlers ───────────────────────────────────────────────────
 
 // Open file dialog
-ipcMain.handle("open-file-dialog", async () => {
+safeHandle("open-file-dialog", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openFile", "multiSelections"],
     filters: [
@@ -204,56 +266,56 @@ ipcMain.handle("open-file-dialog", async () => {
 });
 
 // Query rows (the main data fetch for virtual scrolling)
-ipcMain.handle("query-rows", (event, { tabId, options }) => {
+safeHandle("query-rows", (event, { tabId, options }) => {
   return db.queryRows(tabId, options);
 });
 
 // Toggle bookmark
-ipcMain.handle("toggle-bookmark", (event, { tabId, rowId }) => {
+safeHandle("toggle-bookmark", (event, { tabId, rowId }) => {
   return db.toggleBookmark(tabId, rowId);
 });
 
 // Bulk set bookmarks
-ipcMain.handle("set-bookmarks", (event, { tabId, rowIds, add }) => {
+safeHandle("set-bookmarks", (event, { tabId, rowIds, add }) => {
   db.setBookmarks(tabId, rowIds, add);
   return true;
 });
 
 // Get bookmark count
-ipcMain.handle("get-bookmark-count", (event, { tabId }) => {
+safeHandle("get-bookmark-count", (event, { tabId }) => {
   return db.getBookmarkCount(tabId);
 });
 
 // Tag operations
-ipcMain.handle("add-tag", (event, { tabId, rowId, tag }) => {
+safeHandle("add-tag", (event, { tabId, rowId, tag }) => {
   db.addTag(tabId, rowId, tag);
   return true;
 });
 
-ipcMain.handle("remove-tag", (event, { tabId, rowId, tag }) => {
+safeHandle("remove-tag", (event, { tabId, rowId, tag }) => {
   db.removeTag(tabId, rowId, tag);
   return true;
 });
 
-ipcMain.handle("get-all-tags", (event, { tabId }) => {
+safeHandle("get-all-tags", (event, { tabId }) => {
   return db.getAllTags(tabId);
 });
 
-ipcMain.handle("get-all-tag-data", (event, { tabId }) => {
+safeHandle("get-all-tag-data", (event, { tabId }) => {
   return db.getAllTagData(tabId);
 });
 
-ipcMain.handle("get-bookmarked-ids", (event, { tabId }) => {
+safeHandle("get-bookmarked-ids", (event, { tabId }) => {
   return db.getBookmarkedIds(tabId);
 });
 
-ipcMain.handle("bulk-add-tags", (event, { tabId, tagMap }) => {
+safeHandle("bulk-add-tags", (event, { tabId, tagMap }) => {
   db.bulkAddTags(tabId, tagMap);
   return true;
 });
 
 // IOC matching
-ipcMain.handle("load-ioc-file", async () => {
+safeHandle("load-ioc-file", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openFile"],
     filters: [
@@ -271,38 +333,38 @@ ipcMain.handle("load-ioc-file", async () => {
   }
 });
 
-ipcMain.handle("match-iocs", (event, { tabId, iocPatterns, batchSize }) => {
+safeHandle("match-iocs", (event, { tabId, iocPatterns, batchSize }) => {
   return db.matchIocs(tabId, iocPatterns, batchSize || 200);
 });
 
 // Close tab
-ipcMain.handle("close-tab", (event, { tabId }) => {
+safeHandle("close-tab", (event, { tabId }) => {
   db.closeTab(tabId);
   return true;
 });
 
 // Get column stats
-ipcMain.handle("get-column-stats", (event, { tabId, colName, options }) => {
+safeHandle("get-column-stats", (event, { tabId, colName, options }) => {
   return db.getColumnStats(tabId, colName, options);
 });
 
 // Get unique values for a column (checkbox filter dropdown)
-ipcMain.handle("get-column-unique-values", (event, { tabId, colName, options }) => {
+safeHandle("get-column-unique-values", (event, { tabId, colName, options }) => {
   return db.getColumnUniqueValues(tabId, colName, options);
 });
 
 // Get columns that are entirely empty
-ipcMain.handle("get-empty-columns", (event, { tabId }) => {
+safeHandle("get-empty-columns", (event, { tabId }) => {
   return db.getEmptyColumns(tabId);
 });
 
 // Get group values with counts (column grouping)
-ipcMain.handle("get-group-values", (event, { tabId, groupCol, options }) => {
+safeHandle("get-group-values", (event, { tabId, groupCol, options }) => {
   return db.getGroupValues(tabId, groupCol, options);
 });
 
 // Export filtered data (CSV or XLSX)
-ipcMain.handle("export-filtered", async (event, { tabId, options }) => {
+safeHandle("export-filtered", async (event, { tabId, options }) => {
   const result = await dialog.showSaveDialog(mainWindow, {
     defaultPath: `filtered_export.csv`,
     filters: [
@@ -339,7 +401,7 @@ ipcMain.handle("export-filtered", async (event, { tabId, options }) => {
       sheet.addRow(values);
       count++;
       if (count % 100000 === 0) {
-        mainWindow.webContents.send("export-progress", { count });
+        safeSend("export-progress", { count });
       }
     }
 
@@ -376,7 +438,7 @@ ipcMain.handle("export-filtered", async (event, { tabId, options }) => {
     writeStream.write(values.join(",") + "\n");
     count++;
     if (count % 100000 === 0) {
-      mainWindow.webContents.send("export-progress", { count });
+      safeSend("export-progress", { count });
     }
   }
 
@@ -385,7 +447,7 @@ ipcMain.handle("export-filtered", async (event, { tabId, options }) => {
 });
 
 // Generate HTML report from bookmarked/tagged events
-ipcMain.handle("generate-report", async (event, { tabId, fileName, tagColors }) => {
+safeHandle("generate-report", async (event, { tabId, fileName, tagColors }) => {
   const reportData = db.getReportData(tabId);
   if (!reportData) return { error: "No data available" };
 
@@ -401,77 +463,81 @@ ipcMain.handle("generate-report", async (event, { tabId, fileName, tagColors }) 
 });
 
 // Sheet selection response (for multi-sheet XLSX)
-ipcMain.handle("select-sheet", (event, { filePath, tabId, fileName, sheetName }) => {
+safeHandle("select-sheet", (event, { filePath, tabId, fileName, sheetName }) => {
   startImport(filePath, tabId, fileName, sheetName);
 });
 
 // Get tab info
-ipcMain.handle("get-tab-info", (event, { tabId }) => {
+safeHandle("get-tab-info", (event, { tabId }) => {
   return db.getTabInfo(tabId);
 });
 
 // FTS build status check
-ipcMain.handle("get-fts-status", (event, { tabId }) => {
+safeHandle("get-fts-status", (event, { tabId }) => {
   return db.getFtsStatus(tabId);
 });
 
 // Search count across a tab (for cross-tab find)
-ipcMain.handle("search-count", (event, { tabId, searchTerm, searchMode, searchCondition }) => {
+safeHandle("search-count", (event, { tabId, searchTerm, searchMode, searchCondition }) => {
   return db.searchCount(tabId, searchTerm, searchMode, searchCondition);
 });
 
 // Histogram data for timeline visualization
-ipcMain.handle("get-histogram-data", (event, { tabId, colName, options }) => {
+safeHandle("get-histogram-data", (event, { tabId, colName, options }) => {
   return db.getHistogramData(tabId, colName, options);
 });
 
-ipcMain.handle("get-stacking-data", (event, { tabId, colName, options }) => {
+safeHandle("get-stacking-data", (event, { tabId, colName, options }) => {
   return db.getStackingData(tabId, colName, options);
 });
 
-ipcMain.handle("get-gap-analysis", (event, { tabId, colName, gapThresholdMinutes, options }) => {
+safeHandle("get-gap-analysis", (event, { tabId, colName, gapThresholdMinutes, options }) => {
   return db.getGapAnalysis(tabId, colName, gapThresholdMinutes, options);
 });
 
-ipcMain.handle("get-log-source-coverage", (event, { tabId, sourceCol, tsCol, options }) => {
+safeHandle("get-log-source-coverage", (event, { tabId, sourceCol, tsCol, options }) => {
   return db.getLogSourceCoverage(tabId, sourceCol, tsCol, options);
 });
 
-ipcMain.handle("get-burst-analysis", (event, { tabId, colName, windowMinutes, thresholdMultiplier, options }) => {
+safeHandle("get-burst-analysis", (event, { tabId, colName, windowMinutes, thresholdMultiplier, options }) => {
   return db.getBurstAnalysis(tabId, colName, windowMinutes, thresholdMultiplier, options);
 });
 
-ipcMain.handle("get-process-tree", (event, { tabId, options }) => {
+safeHandle("get-process-tree", (event, { tabId, options }) => {
   return db.getProcessTree(tabId, options);
 });
 
-ipcMain.handle("get-lateral-movement", (event, { tabId, options }) => {
+safeHandle("get-lateral-movement", (event, { tabId, options }) => {
   return db.getLateralMovement(tabId, options);
 });
 
-ipcMain.handle("bulk-tag-by-time-range", (event, { tabId, colName, ranges }) => {
+safeHandle("get-persistence-analysis", (event, { tabId, options }) => {
+  return db.getPersistenceAnalysis(tabId, options);
+});
+
+safeHandle("bulk-tag-by-time-range", (event, { tabId, colName, ranges }) => {
   return db.bulkTagByTimeRange(tabId, colName, ranges);
 });
 
-ipcMain.handle("bulk-tag-filtered", (event, { tabId, tag, options }) => {
+safeHandle("bulk-tag-filtered", (event, { tabId, tag, options }) => {
   return db.bulkTagFiltered(tabId, tag, options);
 });
 
-ipcMain.handle("bulk-bookmark-filtered", (event, { tabId, add, options }) => {
+safeHandle("bulk-bookmark-filtered", (event, { tabId, add, options }) => {
   return db.bulkBookmarkFiltered(tabId, add, options);
 });
 
 // Merge multiple tabs into a single chronological timeline
-ipcMain.handle("merge-tabs", async (event, { mergedTabId, sources }) => {
+safeHandle("merge-tabs", async (event, { mergedTabId, sources }) => {
   try {
-    mainWindow.webContents.send("import-start", {
+    safeSend("import-start", {
       tabId: mergedTabId,
       fileName: "Merged Timeline",
       filePath: "(merged)",
     });
 
     const result = db.mergeTabs(mergedTabId, sources, (progress) => {
-      mainWindow.webContents.send("import-progress", {
+      safeSend("import-progress", {
         tabId: mergedTabId,
         rowsImported: progress.current,
         bytesRead: progress.current,
@@ -490,7 +556,7 @@ ipcMain.handle("merge-tabs", async (event, { mergedTabId, sources }) => {
 
     const emptyColumns = db.getEmptyColumns(mergedTabId);
 
-    mainWindow.webContents.send("import-complete", {
+    safeSend("import-complete", {
       tabId: mergedTabId,
       fileName: "Merged Timeline",
       headers: result.headers,
@@ -505,7 +571,7 @@ ipcMain.handle("merge-tabs", async (event, { mergedTabId, sources }) => {
     return { success: true, rowCount: result.rowCount };
   } catch (err) {
     try { db.closeTab(mergedTabId); } catch (_) {}
-    mainWindow.webContents.send("import-error", {
+    safeSend("import-error", {
       tabId: mergedTabId,
       fileName: "Merged Timeline",
       error: err.message,
@@ -515,7 +581,7 @@ ipcMain.handle("merge-tabs", async (event, { mergedTabId, sources }) => {
 });
 
 // Session save
-ipcMain.handle("save-session", async (event, { sessionData }) => {
+safeHandle("save-session", async (event, { sessionData }) => {
   const result = await dialog.showSaveDialog(mainWindow, {
     defaultPath: "session.tle",
     filters: [{ name: "TLE Session", extensions: ["tle"] }],
@@ -526,7 +592,7 @@ ipcMain.handle("save-session", async (event, { sessionData }) => {
 });
 
 // Session load
-ipcMain.handle("load-session", async () => {
+safeHandle("load-session", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openFile"],
     filters: [{ name: "TLE Session", extensions: ["tle"] }],
@@ -542,14 +608,14 @@ ipcMain.handle("load-session", async () => {
 
 // Import file for session restore (no dialog)
 // Import files by path (used for drag-and-drop)
-ipcMain.handle("import-files", async (event, { filePaths }) => {
+safeHandle("import-files", async (event, { filePaths }) => {
   await Promise.allSettled(
     filePaths.filter((fp) => fs.existsSync(fp)).map((fp) => importFile(fp))
   );
   return true;
 });
 
-ipcMain.handle("import-file-for-restore", async (event, { filePath, sheetName }) => {
+safeHandle("import-file-for-restore", async (event, { filePath, sheetName }) => {
   if (!fs.existsSync(filePath)) return { error: `File not found: ${filePath}` };
   const tabId = `tab_${++tabCounter}_${Date.now()}`;
   const fileName = decodeURIComponent(path.basename(filePath));
@@ -560,12 +626,12 @@ ipcMain.handle("import-file-for-restore", async (event, { filePath, sheetName })
 // ── Filter Presets (persistent storage) ─────────────────────────────
 const presetsPath = path.join(app.getPath("userData"), "filter-presets.json");
 
-ipcMain.handle("load-filter-presets", () => {
+safeHandle("load-filter-presets", () => {
   try { return JSON.parse(fs.readFileSync(presetsPath, "utf-8")); }
   catch { return []; }
 });
 
-ipcMain.handle("save-filter-presets", (event, { presets }) => {
+safeHandle("save-filter-presets", (event, { presets }) => {
   fs.writeFileSync(presetsPath, JSON.stringify(presets, null, 2));
   return true;
 });
