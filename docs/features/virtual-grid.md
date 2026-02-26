@@ -24,7 +24,7 @@ Drag the right edge of any column header to resize it. Column widths are preserv
 
 ### Pinning
 
-Right-click a column header and select **Pin Left** to pin it to the left side of the grid. Pinned columns stay visible as you scroll horizontally, which is useful for keeping timestamp or event name columns always in view.
+`Cmd+Click` a column header and select **Pin Left** to pin it to the left side of the grid. Pinned columns stay visible as you scroll horizontally, which is useful for keeping timestamp or event name columns always in view.
 
 ### Hiding / Showing
 
@@ -37,7 +37,7 @@ Open the Column Manager from the toolbar to:
 
 ### Auto-Fit
 
-Right-click a column header to auto-fit the column width to its content.
+`Cmd+Click` a column header to auto-fit the column width to its content.
 
 ## Row Selection
 
@@ -53,7 +53,7 @@ Clicking a row opens the detail panel at the bottom of the window. It displays a
 
 You can group rows by any column:
 
-1. Right-click a column header
+1. `Cmd+Click` a column header
 2. Select **Group by this column**
 
 Rows are organized into collapsible groups with:
@@ -64,7 +64,7 @@ Rows are organized into collapsible groups with:
 
 ## Context Menu
 
-Right-click any cell to access:
+`Cmd+Click` any cell to access:
 
 - **Copy cell value**
 - **Copy row**

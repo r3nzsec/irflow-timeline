@@ -32,7 +32,7 @@ Once imported, your data appears in a virtual-scrolling grid:
 - **Scroll** through millions of rows smoothly — only ~5,000 rows are loaded at a time
 - **Sort** by clicking any column header (click again to toggle ASC/DESC)
 - **Resize columns** by dragging the column header borders
-- **Pin columns** by right-clicking a header and selecting Pin Left
+- **Pin columns** by `Cmd+Click` on a header and selecting Pin Left
 - **Select rows** by clicking; hold `Shift` for range selection
 
 ## Search Your Data
@@ -65,7 +65,7 @@ Toggle `Cmd+B` to show only bookmarked rows.
 
 ## Add Tags
 
-Right-click a row and select **Add Tag** to annotate it. Tags are color-coded and can be used for filtering and reporting. Common tags include:
+`Cmd+Click` a row and select **Add Tag** to annotate it. Tags are color-coded and can be used for filtering and reporting. Common tags include:
 
 - Suspicious
 - Lateral Movement
