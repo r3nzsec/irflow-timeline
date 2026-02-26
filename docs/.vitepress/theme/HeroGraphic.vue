@@ -27,6 +27,15 @@
       </div>
     </div>
 
+    <!-- Filter tags -->
+    <div class="filter-tags">
+      <span v-for="(tag, i) in filterTags" :key="i" class="filter-tag" :style="{
+        color: tag.color,
+        background: `${tag.color}15`,
+        borderColor: `${tag.color}33`,
+      }">{{ tag.label }}</span>
+    </div>
+
     <!-- Histogram -->
     <div class="histogram-section">
       <div class="histogram-bars">
@@ -129,15 +138,6 @@
           </svg>
         </div>
       </div>
-    </div>
-
-    <!-- Filter tags -->
-    <div class="filter-tags">
-      <span v-for="(tag, i) in filterTags" :key="i" class="filter-tag" :style="{
-        color: tag.color,
-        background: `${tag.color}15`,
-        borderColor: `${tag.color}33`,
-      }">{{ tag.label }}</span>
     </div>
 
     <!-- Bottom status bar -->
@@ -485,15 +485,13 @@ onUnmounted(() => {
 /* Network graph */
 .network-svg { width: 100%; height: 120px; }
 
-/* Filter tags — overlays on stats bar */
+/* Filter tags */
 .filter-tags {
-  position: absolute;
-  top: 104px;
-  left: 24px;
   display: flex;
   gap: 6px;
-  pointer-events: none;
-  z-index: 10;
+  padding: 8px 24px !important;
+  background: #161616;
+  border-bottom: 1px solid #222;
 }
 .filter-tag {
   font-size: 9px;
