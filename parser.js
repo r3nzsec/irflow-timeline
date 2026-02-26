@@ -352,9 +352,12 @@ async function parseXLSXStream(filePath, tabId, db, onProgress, sheetName) {
         if (batch.length >= BATCH_SIZE) {
           db.insertBatchArrays(tabId, batch);
           batch = [];
-          if (lineCount - lastProgress >= 50000) {
+          if (lineCount - lastProgress >= 10000) {
             lastProgress = lineCount;
-            if (onProgress) onProgress(lineCount, 0, totalBytes);
+            // XLSX streaming doesn't expose byte position — estimate progress
+            // using an assumed ~200 bytes/row average for compressed XLSX
+            const estimatedBytes = Math.min(lineCount * 200, totalBytes - 1);
+            if (onProgress) onProgress(lineCount, estimatedBytes, totalBytes);
           }
         }
       });
