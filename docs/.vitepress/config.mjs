@@ -16,8 +16,9 @@ export default defineConfig({
       { text: 'Workflows', link: '/workflows/kape-integration' },
       { text: 'DFIR Tips', link: '/dfir-tips/ransomware-investigation' },
       { text: 'Reference', link: '/reference/keyboard-shortcuts' },
+      { text: 'Author', link: '/about/author' },
       {
-        text: 'v2.1.1',
+        text: 'v2.1.2',
         items: [
           { text: 'Changelog', link: '/about/changelog' },
           { text: 'Credits', link: '/about/credits' }
@@ -101,6 +102,7 @@ export default defineConfig({
         {
           text: 'About',
           items: [
+            { text: 'Author', link: '/about/author' },
             { text: 'Architecture', link: '/about/architecture' },
             { text: 'Changelog', link: '/about/changelog' },
             { text: 'Credits', link: '/about/credits' }
