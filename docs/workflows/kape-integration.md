@@ -59,7 +59,7 @@ When you open a CSV or XLSX file, IRFlow Timeline analyzes the column headers to
 Auto-detection sets a starting point, but you can always customize:
 
 - **Show hidden columns** via the Column Manager
-- **Unpin columns** via right-click
+- **Unpin columns** via `Cmd+Click`
 - **Change column order** via drag-and-drop
 - **Override color rules** in the Color Rules editor
 

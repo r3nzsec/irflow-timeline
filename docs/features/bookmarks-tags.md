@@ -9,7 +9,7 @@ Bookmarks let you flag individual rows as important for later review and reporti
 ### Adding Bookmarks
 
 - Click the **star icon** on any row to toggle its bookmark
-- Right-click a row and select **Bookmark**
+- `Cmd+Click` a row and select **Bookmark**
 - Bookmarks are stored per-tab in the SQLite database
 
 ### Bulk Bookmarking
@@ -33,7 +33,7 @@ Tags are free-form labels you attach to rows for categorization. Each row can ha
 
 ### Adding Tags
 
-1. Right-click a row
+1. `Cmd+Click` a row
 2. Select **Add Tag**
 3. Type a tag name or choose from presets
 4. The tag appears as a colored chip in the Tags column
@@ -72,7 +72,7 @@ Apply any combination of filters, then use **Edit > Tag All Filtered** to tag ev
 
 ### Removing Tags
 
-- Right-click a tagged row and select **Remove Tag**
+- `Cmd+Click` a tagged row and select **Remove Tag**
 - Choose which tag to remove (if multiple)
 - Use **Edit > Remove Tag from All Filtered** for bulk removal
 

@@ -34,7 +34,7 @@
 | `Cmd+R` | Reset column layout |
 | `Click` | Select row |
 | `Shift+Click` | Range select rows |
-| `Right-click` | Context menu |
+| `Cmd+Click` | Context menu |
 
 ## Tools
 
@@ -53,7 +53,7 @@
 
 ## Context Menu Shortcuts
 
-Right-click any cell or column header to access additional actions:
+`Cmd+Click` any cell or column header to access additional actions:
 
 - Copy cell / Copy row
 - Bookmark / Tag

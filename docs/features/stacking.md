@@ -5,7 +5,7 @@ Stacking provides frequency analysis of unique values in any column, presented a
 ## Opening Stacking
 
 - **Menu:** Tools > Stacking
-- Or right-click a column header and select **Stack this column**
+- Or `Cmd+Click` a column header and select **Stack this column**
 
 ## How It Works
 

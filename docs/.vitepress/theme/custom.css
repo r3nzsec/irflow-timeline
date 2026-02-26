@@ -1,0 +1,127 @@
+/* IRFlow Timeline — Unit 42 Orange Theme */
+
+:root {
+  /* Brand colors: Unit 42 Orange #E85D2A */
+  --vp-c-brand-1: #E85D2A;
+  --vp-c-brand-2: #F47B50;
+  --vp-c-brand-3: #C44D1E;
+  --vp-c-brand-soft: rgba(232, 93, 42, 0.14);
+
+  /* Tip/info boxes */
+  --vp-c-tip-1: #E85D2A;
+  --vp-c-tip-2: rgba(232, 93, 42, 0.14);
+  --vp-c-tip-3: rgba(232, 93, 42, 0.08);
+}
+
+.dark {
+  /* Dark mode — matches app dark theme */
+  --vp-c-bg: #0f1114;
+  --vp-c-bg-alt: #181b20;
+  --vp-c-bg-elv: #181b20;
+  --vp-c-bg-soft: #141720;
+
+  --vp-c-border: #2a2d33;
+  --vp-c-divider: #2a2d33;
+  --vp-c-gutter: #12151a;
+
+  --vp-c-text-1: #e0ddd8;
+  --vp-c-text-2: #9a9590;
+  --vp-c-text-3: #5c5752;
+
+  --vp-c-brand-1: #E85D2A;
+  --vp-c-brand-2: #F47B50;
+  --vp-c-brand-3: #C44D1E;
+  --vp-c-brand-soft: rgba(232, 93, 42, 0.14);
+
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(135deg, #E85D2A, #F47B50);
+  --vp-home-hero-image-background-image: linear-gradient(135deg, rgba(232, 93, 42, 0.3), rgba(244, 123, 80, 0.15));
+  --vp-home-hero-image-filter: blur(56px);
+}
+
+/* Hero name gradient */
+.VPHero .name {
+  background: linear-gradient(135deg, #E85D2A, #F47B50) !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+}
+
+/* Brand button styling */
+.VPButton.brand {
+  background-color: #E85D2A !important;
+  border-color: #E85D2A !important;
+}
+
+.VPButton.brand:hover {
+  background-color: #C44D1E !important;
+  border-color: #C44D1E !important;
+}
+
+/* Sidebar active link */
+.VPSidebar .is-active > .link > .text {
+  color: #E85D2A !important;
+}
+
+/* Nav link active */
+.VPNavBarMenuLink.active .text {
+  color: #E85D2A !important;
+}
+
+/* Custom scrollbar for dark mode */
+.dark ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.dark ::-webkit-scrollbar-track {
+  background: #0f1114;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #2a2d33;
+  border-radius: 4px;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #E85D2A;
+}
+
+/* Feature cards on home page */
+.dark .VPFeature {
+  background-color: #181b20 !important;
+  border-color: #2a2d33 !important;
+}
+
+.dark .VPFeature:hover {
+  border-color: #E85D2A !important;
+}
+
+/* Code blocks */
+.dark .vp-code-group .tabs label.active {
+  color: #E85D2A !important;
+}
+
+/* Table styling in dark mode */
+.dark table {
+  border-color: #2a2d33;
+}
+
+.dark table th {
+  background-color: #181b20;
+  color: #E85D2A;
+}
+
+.dark table td {
+  border-color: #2a2d33;
+}
+
+.dark table tr:nth-child(even) {
+  background-color: #141720;
+}
+
+/* Footer */
+.dark .VPFooter {
+  border-top-color: #2a2d33 !important;
+  background-color: #0b0d10 !important;
+}
