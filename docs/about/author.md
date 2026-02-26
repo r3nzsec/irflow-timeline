@@ -36,28 +36,6 @@ Renzon is an active contributor to the DFIR community:
 - **DFIR Analyst/Contributor** at [The DFIR Report](https://thedfirreport.com/) — providing detailed intrusion analysis write-ups used by defenders worldwide
 - **CFP Board & APT Labs Contributor** at [Xintra APT Labs](https://www.intralabs.io/) — developing hands-on APT investigation training scenarios
 
-## Speaking Engagements
-
-Renzon has spoken at major international cybersecurity conferences including:
-
-| Conference | Location |
-|------------|----------|
-| DEFCON Blue Team Village | USA |
-| Underground Economy | France |
-| VirusBulletin | Berlin |
-| DeepSec / Intel | Vienna |
-| BSides | London, Qatar, Vancouver |
-
-...and many more.
-
-## Certifications & Achievements
-
-::: tip Competitive DFIR
-**3x SANS DFIR Netwars Champion** (2022 — 2025)
-:::
-
-- **7x GIAC** certified across forensics, incident response, and security disciplines
-
 ## Why IRFlow Timeline?
 
 > After years of investigating breaches involving 30–50GB+ super-timelines, I needed a tool that could handle the scale of modern investigations without the overhead of enterprise SIEM infrastructure. IRFlow Timeline was built from real-world IR experience — every feature exists because I needed it during an actual case. From reconstructing ransomware kill chains to tracing lateral movement across hundreds of endpoints, this tool reflects the workflows that DFIR practitioners use every day.
