@@ -2,6 +2,8 @@
 
 Log Source Coverage provides a heatmap view of which log sources are present across your timeline, helping you identify collection gaps and verify evidence completeness.
 
+![Log Source Coverage Map showing coverage timeline across 138 log sources with event counts and time spans](/dfir-tips/Log-Source-Coverage.png)
+
 ## Opening Log Source Coverage
 
 - **Menu:** Tools > Log Source Coverage
