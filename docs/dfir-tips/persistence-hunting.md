@@ -3,6 +3,7 @@
 Persistence is one of the most critical phases of an intrusion to identify. Adversaries establish persistence to maintain access across reboots, credential changes, and partial remediation. This guide walks through a systematic approach to hunting for persistence mechanisms using IRFlow Timeline, covering registry run keys, scheduled tasks, services, WMI subscriptions, and DLL hijacking.
 
 ::: info Features Used
+- [Persistence Analyzer](/features/persistence-analyzer) -- automated detection of 30+ persistence techniques with risk scoring
 - [Search (Regex)](/features/search-filtering) -- pattern matching across parsed artifacts
 - [Process Tree](/features/process-tree) -- trace parent-child relationships for persistence installers
 - [Color Rules](/features/color-rules) -- highlight known persistence paths automatically
@@ -11,9 +12,28 @@ Persistence is one of the most critical phases of an intrusion to identify. Adve
 - [IOC Matching](/features/ioc-matching) -- sweep for known-bad indicators in persistence locations
 :::
 
-## Preparation
+## Automated Scan with Persistence Analyzer
 
-### 1. Load RECmd Profile Output
+### 1. Run the Persistence Analyzer
+
+Before diving into manual hunting, run the [Persistence Analyzer](/features/persistence-analyzer) for an automated first pass. Navigate to **Tools > Persistence Analyzer** and let it auto-detect your data mode (EVTX or Registry).
+
+The analyzer scans for 30+ persistence techniques across services, scheduled tasks, WMI subscriptions, registry autorun keys, and more. Each finding is assigned a risk score (0-10) based on technique severity, suspicious paths, and command-line indicators.
+
+**Recommended workflow:**
+
+1. Filter results by **Critical** and **High** severity to prioritize the most suspicious findings
+2. Switch to **Timeline View** to see the chronological order of persistence installations
+3. Use the checkbox selection to bulk-tag high-priority findings in the source timeline
+4. Click any finding to expand its details -- full registry path, command line, timestamp, and user account
+
+::: tip Combine Automated and Manual
+The Persistence Analyzer catches known patterns quickly, but manual hunting (steps below) is still valuable for uncovering novel techniques, living-off-the-land binaries with unusual arguments, or persistence mechanisms that don't match standard signatures.
+:::
+
+## Manual Hunting
+
+### 2. Load RECmd Profile Output
 
 Registry hives are a primary source of persistence artifacts. Before diving in, load the parsed registry output produced by Eric Zimmerman's RECmd using the KAPE module or standalone execution.
 
@@ -26,7 +46,7 @@ Registry hives are a primary source of persistence artifacts. Before diving in, 
 
 Load the RECmd CSV output into a dedicated tab. See [KAPE Integration](/workflows/kape-integration) for automating this step.
 
-### 2. Set Up Color Rules for Persistence Paths
+### 3. Set Up Color Rules for Persistence Paths
 
 Before beginning your hunt, configure [Color Rules](/features/color-rules) to flag common persistence registry locations automatically. This ensures that relevant entries stand out as you scroll through thousands of registry key-value pairs.
 
@@ -48,7 +68,7 @@ Save your persistence color rule set as a reusable profile. You can export it fr
 
 ## Registry Run Keys
 
-### 3. Search for Run and RunOnce Entries
+### 4. Search for Run and RunOnce Entries
 
 Use [Search (Regex)](/features/search-filtering) to locate all Run and RunOnce registry entries across loaded hives:
 
@@ -70,7 +90,7 @@ HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run
     "WindowsSecurityUpdate" = "C:\Users\Public\Downloads\svcmgr.exe -k netsvcs"
 ```
 
-### 4. Check for Service-Based Persistence
+### 5. Check for Service-Based Persistence
 
 Services are a favored persistence mechanism because they run with SYSTEM privileges and start automatically. Search for recently created or modified services:
 
@@ -88,7 +108,7 @@ Suspicious indicators in service entries include:
 | `cmd.exe /c` wrapper | `cmd.exe /c C:\Temp\payload.bat` |
 | `svchost.exe -k` with unknown group | Custom ServiceDll in Parameters subkey |
 
-### 5. Trace Service Creation with Process Tree
+### 6. Trace Service Creation with Process Tree
 
 When you identify a suspicious service, use the [Process Tree](/features/process-tree) to determine what process created it. Switch to a tab containing process execution data (Sysmon, Windows Security, or MFT timeline) and search for the service name.
 
@@ -96,7 +116,7 @@ Look for `services.exe` spawning unknown child processes, or `sc.exe` and `reg.e
 
 ## Scheduled Tasks
 
-### 6. Search Event Logs for Task Creation
+### 7. Search Event Logs for Task Creation
 
 Scheduled task creation is logged by several sources. Load Windows Security and Task Scheduler operational logs and filter for the following Event IDs:
 
@@ -108,7 +128,7 @@ Scheduled task creation is logged by several sources. Load Windows Security and 
 | 200 | Task Scheduler Operational | Task execution started |
 | 201 | Task Scheduler Operational | Task execution completed |
 
-### 7. Identify Suspicious Task Definitions
+### 8. Identify Suspicious Task Definitions
 
 Use regex search to locate task creation activity:
 
@@ -138,7 +158,7 @@ Adversaries frequently name tasks to blend in with legitimate Windows maintenanc
 
 ## WMI Event Subscriptions
 
-### 8. Hunt for WMI Persistence
+### 9. Hunt for WMI Persistence
 
 WMI event subscriptions are a stealthy persistence mechanism composed of three components: an Event Filter, an Event Consumer, and a Filter-to-Consumer Binding. Detection relies on:
 
@@ -167,7 +187,7 @@ Consumer:   CommandLineEventConsumer
 Binding:    Links the filter to the consumer
 ```
 
-### 9. Correlate WMI with Process Execution
+### 10. Correlate WMI with Process Execution
 
 Use [Cross-Tab Search](/workflows/multi-tab) to pivot from a WMI subscription event in the event log tab to the corresponding process execution in a Sysmon or process tracking tab. Search for the binary referenced in the consumer's command line template across all open tabs.
 
@@ -175,7 +195,7 @@ In the Process Tree, look for `WmiPrvSE.exe` spawning unexpected child processes
 
 ## DLL Search Order Hijacking and Startup Folder
 
-### 10. Check for DLL Hijacking
+### 11. Check for DLL Hijacking
 
 DLL search order hijacking involves placing a malicious DLL in a directory searched before the legitimate DLL location. Search for:
 
@@ -185,7 +205,7 @@ DLL search order hijacking involves placing a malicious DLL in a directory searc
 
 Cross-reference any DLL load events (Sysmon Event ID 7) in non-standard directories with the [Process Tree](/features/process-tree) to see which process loaded the DLL and what it subsequently executed.
 
-### 11. Review Startup Folder Items
+### 12. Review Startup Folder Items
 
 Search for references to the Startup folder path:
 
@@ -204,7 +224,7 @@ If the Startup path has been redirected to a non-standard location, this is a st
 
 ## Consolidation
 
-### 12. Build a Persistence Summary
+### 13. Build a Persistence Summary
 
 After completing the hunt, use [Bookmarks and Tags](/features/bookmarks-tags) to tag every confirmed persistence mechanism with a `persistence` tag. Use [Stacking](/features/stacking) on the tagged entries to group by mechanism type (registry, scheduled task, service, WMI).
 
