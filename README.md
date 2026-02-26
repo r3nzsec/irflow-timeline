@@ -11,10 +11,10 @@ Inspired by Eric Zimmerman's Timeline Explorer for Windows.
 2. Open the DMG and drag **IRFlow Timeline** to Applications
 3. On first launch, macOS will block the app because it is unsigned. Use one of these methods:
 
-**Method A — Right-click (simplest):**
+**Method A -- Right-click (simplest):**
 > Right-click the app > **Open** > click **Open** in the dialog
 
-**Method B — Terminal (if Method A shows "damaged"):**
+**Method B -- Terminal (if Method A shows "damaged"):**
 ```bash
 xattr -cr /Applications/IRFlow\ Timeline.app
 ```
@@ -22,13 +22,48 @@ Then open the app normally.
 
 **Requirements:** macOS 10.13+ (High Sierra or later). No other dependencies needed.
 
+## What's New in v2.1
+
+### Process Tree Reconstruction
+Visualize parent-child process relationships from Sysmon EventID 1 events. The tree uses GUID-preferred linking to correctly handle PID reuse, with PID fallback when GUIDs are unavailable. Features include:
+
+- Visual connector lines with expand/collapse controls and adjustable depth
+- **Process chain highlight** -- click any node to trace its full ancestry to root
+- **Suspicious pattern detection** -- Office-to-script spawns (red), LOLBins (orange), temp path execution (yellow)
+- **Click-to-filter** -- click any process node to filter the main grid to that PID
+- Resizable and draggable modal
+
+### Lateral Movement Tracker
+Network graph of host-to-host logon events from Windows Security logs (EventID 4624/4625/4648). Auto-detects columns: IpAddress, Computer, TargetUserName, LogonType, EventID.
+
+- **Interactive force-directed SVG graph** -- draggable nodes, scroll-wheel zoom, click-and-drag pan
+- **Toolbar** -- Zoom In, Zoom Out, Reset View, Redraw Layout
+- **Node shapes** -- IP addresses (dashed circle), Domain Controllers (square), Workstations (rounded rect)
+- **Edge styling** -- directional arrows, count labels, color-coded by logon type (RDP = blue, Network = green, Interactive = amber)
+- **Detail panel** -- click any node or edge for inbound/outbound connection breakdown
+- **Multi-hop chain detection** -- finds time-ordered lateral movement paths (A -> B -> C -> D)
+- **Three sub-tabs** -- Network Graph, Chains, Connections table
+- **Noise filtering** -- excludes local logons, service accounts, loopback IPs
+
+### Clear All Filters
+One-click reset for all active filters (column, checkbox, date range, advanced, search, bookmark, tag). Shows count of active filters. Available in the grouping bar and status bar.
+
+### Large File Warning
+Files over 3GB trigger a warning banner during import advising the user not to close the window or add additional files during ingestion.
+
+### Bug Fixes
+- HTML entity decoding in EVTX data (`&quot;` etc. now rendered correctly)
+- EVTX progress bar fix (was stuck at 0%)
+- URL-decoded tab names for files with encoded characters
+- Column alignment fix (box-sizing: border-box)
+
 ## Supported Formats
 
 | Format | Description |
 |--------|-------------|
 | **CSV / TSV** | Comma, tab, pipe delimited (auto-detected) |
 | **XLSX** | Excel files with multi-sheet picker |
-| **EVTX** | Windows Event Logs up to 3GB (native parsing via `@ts-evtx/core`) |
+| **EVTX** | Windows Event Logs up to 3GB (native parsing via `@ts-evtx/core`, HTML entity decoding) |
 | **Plaso** | Plaso SQLite databases (auto-detects schema version, handles zlib-compressed event data) |
 
 ## Features
@@ -37,6 +72,7 @@ Then open the app normally.
 - **Multi-file parallel import** -- drag multiple files or select via dialog; all import concurrently with per-tab progress
 - **Multi-tab workspace** -- each file gets its own tab with independent state
 - **Tab merging** -- combine 2+ tabs into a single chronological timeline with `_Source` column
+- **Large file warning** -- files over 3GB display a warning banner during ingestion
 
 ### Search
 Powered by SQLite FTS5 for near-instant search across millions of rows:
@@ -72,6 +108,7 @@ Powered by SQLite FTS5 for near-instant search across millions of rows:
 - **Advanced Edit Filter** -- multi-condition builder with AND/OR logic, 11 operators (contains, not contains, equals, not equals, starts with, ends with, greater than, less than, is empty, is not empty, regex), and live preview
 - **Filter presets** -- save and load named filter configurations
 - **Bookmarked-only view** -- show only flagged rows
+- **Clear All Filters** -- one-click reset for all active filters (column, checkbox, date range, advanced, search, bookmark, tag) with active filter count badge; available in grouping bar and status bar
 
 ### Timeline Visualization
 - **Interactive histogram** -- event density over time with heatmap coloring
@@ -88,6 +125,8 @@ Powered by SQLite FTS5 for near-instant search across millions of rows:
 | **Gap Analysis** | Detect activity sessions and quiet periods in the timeline. Auto-tag sessions. |
 | **Log Source Coverage Map** | Gantt-style visualization of which log sources are present, their time span, and event counts |
 | **Burst Detection** | Find windows with abnormally high event density. Sparkline chart, click-to-zoom, auto-tag bursts |
+| **Process Tree** | Reconstruct parent-child process relationships from Sysmon EventID 1. GUID-preferred linking, suspicious pattern detection (Office spawns, LOLBins, temp paths), click-to-filter |
+| **Lateral Movement Tracker** | Force-directed network graph of host-to-host logons (EventID 4624/4625/4648). Multi-hop chain detection, logon type color coding, node/edge detail panels |
 
 ### Tagging & Bookmarking
 - **Row bookmarking** -- flag important events
@@ -216,10 +255,10 @@ Inspired by [Eric Zimmerman's Timeline Explorer](https://ericzimmerman.github.io
 
 Thanks to the following people for testing and providing feedback:
 
-- Maddy Keller
-- Omar Jbari
-- Nicolas Bareil
-- Dominic Rathmann
+- [Maddy Keller](https://www.linkedin.com/in/madeleinekeller98/)
+- [Omar Jbari](https://www.linkedin.com/in/jbariomar/)
+- [Nicolas Bareil](https://www.linkedin.com/in/nbareil/)
+- [Dominic Rathmann](https://www.linkedin.com/in/dominic-rathmann-77664323b/)
 
 ## License
 
