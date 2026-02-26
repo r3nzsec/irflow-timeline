@@ -35,11 +35,12 @@ Renzon is an active contributor to the DFIR community:
 
 - **DFIR Analyst/Contributor** at [The DFIR Report](https://thedfirreport.com/) — providing detailed intrusion analysis write-ups used by defenders worldwide
 - **CFP Board & APT Labs Contributor** at [Xintra APT Labs](https://www.xintra.org/) — developing hands-on APT investigation training scenarios
-- - **Co-Founder/Lead Instructor** at [GuideM] — lead author of Cyber Defense & Threat Hunting, and Digital Forensics & Memory Analysis course. 
+- **Co-Founder/Lead Instructor** at [GuideM] — lead author of Cyber Defense & Threat Hunting, and Digital Forensics & Memory Analysis courses. 
 
 ## Why IRFlow Timeline?
 
 > After years of investigating breaches involving 30–50GB+ super-timelines, I needed a tool that could handle the scale of modern investigations without the overhead of enterprise SIEM infrastructure. IRFlow Timeline was built from real-world IR experience — every feature exists because I needed it during an actual case. From reconstructing ransomware kill chains to tracing lateral movement across hundreds of endpoints, this tool reflects the workflows that DFIR practitioners use every day.
 >
 > — Renzon Cruz
+
 
