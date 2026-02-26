@@ -2,6 +2,8 @@
 
 The Lateral Movement Tracker visualizes network logon activity across your environment as an interactive force-directed graph, helping you detect and trace attacker movement between systems.
 
+![Lateral Movement Tracker network graph showing host-to-host logon connections with RDP, Network, and Interactive connection types](/dfir-tips/lateral-movement-tracker.png)
+
 ## Opening the Tracker
 
 - **Menu:** Tools > Lateral Movement
