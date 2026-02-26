@@ -92,7 +92,7 @@ This filtered view is the core of your "Timeline of Events" report section.
 
 The histogram provides a visual summary of the incident timeline that is immediately understandable to non-technical stakeholders.
 
-1. Open **Tools > Histogram** on the merged tab
+1. Click the **Histogram** button in the main toolbar on the merged tab
 2. Set the granularity to match your incident scope (hours for multi-day incidents, minutes for short attacks)
 3. The multi-source coloring shows which artifact types contributed events at each point
 4. Take a screenshot of the histogram for inclusion in the Executive Summary or Timeline section
