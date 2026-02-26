@@ -16,11 +16,12 @@ The most versatile import format. IRFlow Timeline auto-detects the delimiter by 
 
 ### Features
 
-- **Streaming import** — 16MB chunks, never loads the full file into memory
+- **Streaming import** — 128MB chunks, never loads the full file into memory
 - **RFC 4180 compliant** — proper quote handling for embedded delimiters
 - **Fast-path parsing** — tab and pipe delimited files skip quote analysis for speed
 - **Header deduplication** — duplicate column names are auto-renamed with numeric suffixes
-- **Batch insertion** — 50,000 rows per SQLite batch for optimal write throughput
+- **Adaptive batch insertion** — batch size auto-tunes based on column count (up to 100,000 rows per batch) for optimal write throughput
+- **Time-based progress** — progress updates every 200ms to reduce IPC overhead on large files
 
 ### Common DFIR CSV Sources
 
@@ -34,17 +35,20 @@ The most versatile import format. IRFlow Timeline auto-detects the delimiter by 
 
 **Extensions:** `.xlsx`, `.xls`, `.xlsm`
 
-Excel files are read using a streaming reader that avoids loading the entire workbook into memory.
+Excel files are supported with format-specific parsers for modern and legacy formats.
 
 ### Features
 
 - **Sheet selection** — for multi-sheet workbooks, a dialog lets you choose which sheet to import
-- **Streaming reader** — uses ExcelJS WorkbookReader for memory efficiency
+- **XLSX streaming reader** — uses ExcelJS WorkbookReader for memory-efficient import of modern `.xlsx` files
+- **Legacy .xls support** — binary OLE2/BIFF format files (`.xls`) parsed via SheetJS, loaded in-memory (fine for .xls's 65K row limit)
+- **Excel serial date handling** — numeric serial dates (e.g., `45566` → `2024-10-05`) are automatically recognized in histogram and timeline functions
 - **Cell type handling:**
   - Dates are converted to ISO format
   - Formulas resolve to their computed values
   - Objects are converted to text representation
 - **Empty cell padding** — sparse rows are padded to match the header column count
+- **Adaptive batch sizing** — batch size auto-tunes based on column count for optimal throughput
 
 ### Common DFIR Excel Sources
 
@@ -75,7 +79,7 @@ Native binary parsing of Windows Event Log files using the `@ts-evtx` library. N
 | `UserId` | Security identifier (SID) |
 
 - **Discovered fields** — provider-specific payload fields are extracted automatically based on the events found during schema discovery
-- **Batch insertion** — 50,000 events per batch
+- **Adaptive batch insertion** — batch size auto-tunes based on column count for optimal throughput
 
 ### Supported Event Types
 
@@ -116,7 +120,8 @@ IRFlow Timeline determines the file format by extension:
 
 ```
 .csv, .tsv, .txt, .log  →  CSV/TSV Parser (auto-detect delimiter)
-.xlsx, .xls, .xlsm      →  Excel Streaming Parser
+.xlsx, .xlsm            →  Excel Streaming Parser (ExcelJS)
+.xls                    →  Legacy Excel Parser (SheetJS)
 .evtx                    →  EVTX Binary Parser
 .plaso                   →  Plaso SQLite Reader
 ```

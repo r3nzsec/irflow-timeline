@@ -92,6 +92,21 @@ A tabular view of all connections with full details:
 | Logon Type | Windows logon type |
 | Count | Number of events |
 
+## Outlier Host Detection
+
+The tracker automatically flags hosts with suspicious or default hostnames that may indicate attacker-controlled machines:
+
+| Pattern | Reason |
+|---------|--------|
+| `DESKTOP-XXXXX` | Default Windows hostname (not renamed after install) |
+| `WIN-XXXXX` | Default Windows hostname |
+| `KALI` | Kali Linux default hostname |
+| `PARROT` | Parrot OS default hostname |
+| `USER-PC`, `ADMIN`, `TEST`, `HACKER`, etc. | Generic or suspicious hostname |
+| Non-ASCII characters | Unusual encoding in hostname |
+
+Outlier nodes are visually highlighted in the graph so they stand out during investigation.
+
 ## Noise Filtering
 
 The tracker automatically excludes noise that would clutter the graph:
