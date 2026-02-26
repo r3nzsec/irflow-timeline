@@ -40,6 +40,7 @@ Thanks to the following people for testing and providing feedback:
 - Omar Jbari
 - Nicolas Bareil
 - Dominic Rathmann
+- Chip Riley
 
 ## DFIR Community
 
