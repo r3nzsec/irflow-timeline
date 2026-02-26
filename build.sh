@@ -2,7 +2,7 @@
 set -e
 
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║   IRFlow Timeline v2.0 — macOS Build (SQLite-backed)     ║"
+echo "║   IRFlow Timeline v2.1 — macOS Build (SQLite-backed)     ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
@@ -73,6 +73,12 @@ case $choice in
         echo "📦 Building .app bundle..."
         npm run build:renderer
         npx electron-builder --mac dir
+        # Ad-hoc sign to reduce Gatekeeper friction
+        APP_PATH=$(ls -d release/mac*/"IRFlow Timeline.app" 2>/dev/null | head -1)
+        if [ -n "$APP_PATH" ]; then
+            echo "🔏 Ad-hoc signing app bundle..."
+            codesign --force --deep --sign - "$APP_PATH" 2>/dev/null && echo "   Signed successfully" || echo "   Signing skipped (no Xcode CLI tools?)"
+        fi
         echo ""
         echo "✅ App bundle is in: release/mac*/"
         open release/mac* 2>/dev/null || echo "   Check the release/ folder"

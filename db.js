@@ -1,5 +1,5 @@
 /**
- * db.js — SQLite-backed data engine for Timeline Explorer
+ * db.js — SQLite-backed data engine for IRFlow Timeline
  *
  * Architecture:
  *   1. Streaming import: CSV/XLSX rows are inserted in batches via transactions
@@ -62,6 +62,48 @@ class TimelineDB {
       // Adaptive threshold: stricter for short terms, looser for long
       const threshold = s.length < 5 ? 0.7 : 0.6;
       return (hits / grams.length) >= threshold ? 1 : 0;
+    });
+
+    // Register extract_date function for histogram — normalizes any timestamp format to yyyy-MM-dd
+    const MONTH_MAP = { jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06", jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12" };
+    db.function("extract_date", { deterministic: true }, (val) => {
+      if (val == null) return null;
+      const s = String(val).trim();
+      // ISO: 2026-02-05... → substr
+      if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.substring(0, 10);
+      // US date: 02/05/2026 or 02-05-2026
+      let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+      if (m) return `${m[3]}-${m[1].padStart(2,"0")}-${m[2].padStart(2,"0")}`;
+      // Month name: "Feb 5th 2026", "February 5, 2026", "5 Feb 2026", etc.
+      m = s.match(/^([A-Za-z]+)\s+(\d{1,2})\w*[\s,]+(\d{4})/);
+      if (m) { const mo = MONTH_MAP[m[1].substring(0,3).toLowerCase()]; if (mo) return `${m[3]}-${mo}-${m[2].padStart(2,"0")}`; }
+      // "5 Feb 2026" or "05-Feb-2026"
+      m = s.match(/^(\d{1,2})[\s\-]([A-Za-z]+)[\s\-](\d{4})/);
+      if (m) { const mo = MONTH_MAP[m[2].substring(0,3).toLowerCase()]; if (mo) return `${m[3]}-${mo}-${m[1].padStart(2,"0")}`; }
+      // Unix timestamp (seconds since epoch, 10 digits)
+      if (/^\d{10}(\.\d+)?$/.test(s)) { const d = new Date(parseFloat(s) * 1000); if (!isNaN(d)) return d.toISOString().substring(0, 10); }
+      // Unix timestamp (milliseconds, 13 digits)
+      if (/^\d{13}$/.test(s)) { const d = new Date(parseInt(s)); if (!isNaN(d)) return d.toISOString().substring(0, 10); }
+      // Fallback: try JS Date parse
+      const d = new Date(s);
+      if (!isNaN(d) && d.getFullYear() > 1970 && d.getFullYear() < 2100) return d.toISOString().substring(0, 10);
+      return null;
+    });
+
+    // Register extract_datetime_minute — normalizes any timestamp to yyyy-MM-dd HH:mm
+    db.function("extract_datetime_minute", { deterministic: true }, (val) => {
+      if (val == null) return null;
+      const s = String(val).trim();
+      // ISO: 2026-02-05 15:30:00 or 2026-02-05T15:30:00
+      let m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+      if (m) return `${m[1]} ${m[2]}`;
+      // Fallback: try JS Date parse
+      const d = new Date(s);
+      if (!isNaN(d) && d.getFullYear() > 1970 && d.getFullYear() < 2100) {
+        const iso = d.toISOString();
+        return `${iso.substring(0, 10)} ${iso.substring(11, 16)}`;
+      }
+      return null;
     });
 
     // page_size MUST be set before any tables are created
@@ -1024,6 +1066,147 @@ class TimelineDB {
   }
 
   /**
+   * Bulk tag all rows matching current filters.
+   * Uses INSERT...SELECT — never materializes rowIds in JS.
+   */
+  bulkTagFiltered(tabId, tag, options = {}) {
+    const meta = this.databases.get(tabId);
+    if (!meta || !tag) return { tagged: 0 };
+
+    const {
+      searchTerm = "", searchMode = "mixed", searchCondition = "contains",
+      columnFilters = {}, checkboxFilters = {},
+      bookmarkedOnly = false, tagFilter = null,
+      dateRangeFilters = {}, advancedFilters = [],
+    } = options;
+
+    const db = meta.db;
+    const params = [];
+    const whereConditions = [];
+
+    for (const [cn, fv] of Object.entries(columnFilters)) {
+      if (!fv) continue;
+      const sc = meta.colMap[cn];
+      if (!sc) continue;
+      whereConditions.push(`${sc} LIKE ?`);
+      params.push(`%${fv}%`);
+    }
+    for (const [cn, values] of Object.entries(checkboxFilters)) {
+      if (!values || values.length === 0) continue;
+      const sc = meta.colMap[cn];
+      if (!sc) continue;
+      const hasNull = values.some((v) => v === null || v === "");
+      const nonNull = values.filter((v) => v !== null && v !== "");
+      const parts = [];
+      if (hasNull) parts.push(`(${sc} IS NULL OR ${sc} = '')`);
+      if (nonNull.length === 1) { parts.push(`${sc} = ?`); params.push(nonNull[0]); }
+      else if (nonNull.length > 1) { parts.push(`${sc} IN (${nonNull.map(() => "?").join(",")})`); params.push(...nonNull); }
+      whereConditions.push(parts.length > 1 ? `(${parts.join(" OR ")})` : parts[0]);
+    }
+    for (const [colName, range] of Object.entries(dateRangeFilters)) {
+      const sc = meta.colMap[colName];
+      if (!sc) continue;
+      if (range.from) { whereConditions.push(`${sc} >= ?`); params.push(range.from); }
+      if (range.to) { whereConditions.push(`${sc} <= ?`); params.push(range.to); }
+    }
+    if (bookmarkedOnly) {
+      whereConditions.push(`data.rowid IN (SELECT rowid FROM bookmarks)`);
+    }
+    if (tagFilter === "__any__") {
+      whereConditions.push(`data.rowid IN (SELECT DISTINCT rowid FROM tags)`);
+    } else if (Array.isArray(tagFilter) && tagFilter.length > 0) {
+      const ph = tagFilter.map(() => "?").join(",");
+      whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag IN (${ph}))`);
+      params.push(...tagFilter);
+    } else if (tagFilter && typeof tagFilter === "string") {
+      whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag = ?)`);
+      params.push(tagFilter);
+    }
+    this._applyAdvancedFilters(advancedFilters, meta, whereConditions, params);
+    if (searchTerm.trim()) {
+      this._applySearch(searchTerm, searchMode, meta, whereConditions, params, searchCondition);
+    }
+
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
+    const result = db.prepare(`INSERT OR IGNORE INTO tags (rowid, tag) SELECT data.rowid, ? FROM data ${whereClause}`).run(tag, ...params);
+    this._invalidateCountCache(tabId);
+    return { tagged: result.changes };
+  }
+
+  /**
+   * Bulk bookmark (or un-bookmark) all rows matching current filters.
+   * Uses INSERT...SELECT / DELETE...SELECT — never materializes rowIds in JS.
+   */
+  bulkBookmarkFiltered(tabId, add, options = {}) {
+    const meta = this.databases.get(tabId);
+    if (!meta) return { affected: 0 };
+
+    const {
+      searchTerm = "", searchMode = "mixed", searchCondition = "contains",
+      columnFilters = {}, checkboxFilters = {},
+      bookmarkedOnly = false, tagFilter = null,
+      dateRangeFilters = {}, advancedFilters = [],
+    } = options;
+
+    const db = meta.db;
+    const params = [];
+    const whereConditions = [];
+
+    for (const [cn, fv] of Object.entries(columnFilters)) {
+      if (!fv) continue;
+      const sc = meta.colMap[cn];
+      if (!sc) continue;
+      whereConditions.push(`${sc} LIKE ?`);
+      params.push(`%${fv}%`);
+    }
+    for (const [cn, values] of Object.entries(checkboxFilters)) {
+      if (!values || values.length === 0) continue;
+      const sc = meta.colMap[cn];
+      if (!sc) continue;
+      const hasNull = values.some((v) => v === null || v === "");
+      const nonNull = values.filter((v) => v !== null && v !== "");
+      const parts = [];
+      if (hasNull) parts.push(`(${sc} IS NULL OR ${sc} = '')`);
+      if (nonNull.length === 1) { parts.push(`${sc} = ?`); params.push(nonNull[0]); }
+      else if (nonNull.length > 1) { parts.push(`${sc} IN (${nonNull.map(() => "?").join(",")})`); params.push(...nonNull); }
+      whereConditions.push(parts.length > 1 ? `(${parts.join(" OR ")})` : parts[0]);
+    }
+    for (const [colName, range] of Object.entries(dateRangeFilters)) {
+      const sc = meta.colMap[colName];
+      if (!sc) continue;
+      if (range.from) { whereConditions.push(`${sc} >= ?`); params.push(range.from); }
+      if (range.to) { whereConditions.push(`${sc} <= ?`); params.push(range.to); }
+    }
+    if (bookmarkedOnly) {
+      whereConditions.push(`data.rowid IN (SELECT rowid FROM bookmarks)`);
+    }
+    if (tagFilter === "__any__") {
+      whereConditions.push(`data.rowid IN (SELECT DISTINCT rowid FROM tags)`);
+    } else if (Array.isArray(tagFilter) && tagFilter.length > 0) {
+      const ph = tagFilter.map(() => "?").join(",");
+      whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag IN (${ph}))`);
+      params.push(...tagFilter);
+    } else if (tagFilter && typeof tagFilter === "string") {
+      whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag = ?)`);
+      params.push(tagFilter);
+    }
+    this._applyAdvancedFilters(advancedFilters, meta, whereConditions, params);
+    if (searchTerm.trim()) {
+      this._applySearch(searchTerm, searchMode, meta, whereConditions, params, searchCondition);
+    }
+
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
+    let result;
+    if (add) {
+      result = db.prepare(`INSERT OR IGNORE INTO bookmarks (rowid) SELECT data.rowid FROM data ${whereClause}`).run(...params);
+    } else {
+      result = db.prepare(`DELETE FROM bookmarks WHERE rowid IN (SELECT data.rowid FROM data ${whereClause})`).run(...params);
+    }
+    this._invalidateCountCache(tabId);
+    return { affected: result.changes };
+  }
+
+  /**
    * Match IOC patterns against all columns using REGEXP.
    * Returns matched rowIds and per-IOC hit counts.
    */
@@ -1534,7 +1717,7 @@ class TimelineDB {
     if (searchTerm.trim()) this._applySearch(searchTerm, searchMode, meta, whereConditions, params, searchCondition);
     this._applyAdvancedFilters(advancedFilters, meta, whereConditions, params);
     const whereClause = `WHERE ${whereConditions.join(" AND ")}`;
-    const sql = `SELECT substr(${safeCol}, 1, 10) as day, COUNT(*) as cnt FROM data ${whereClause} GROUP BY day HAVING day GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' ORDER BY day`;
+    const sql = `SELECT extract_date(${safeCol}) as day, COUNT(*) as cnt FROM data ${whereClause} GROUP BY day HAVING day IS NOT NULL ORDER BY day`;
     try { return db.prepare(sql).all(...params); } catch { return []; }
   }
 
@@ -1586,7 +1769,7 @@ class TimelineDB {
     if (searchTerm.trim()) this._applySearch(searchTerm, searchMode, meta, whereConditions, params, searchCondition);
     this._applyAdvancedFilters(advancedFilters, meta, whereConditions, params);
     const whereClause = `WHERE ${whereConditions.join(" AND ")}`;
-    const sql = `SELECT substr(${safeCol}, 1, 16) as mb, COUNT(*) as cnt FROM data ${whereClause} GROUP BY mb HAVING mb GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]' ORDER BY mb`;
+    const sql = `SELECT extract_datetime_minute(${safeCol}) as mb, COUNT(*) as cnt FROM data ${whereClause} GROUP BY mb HAVING mb IS NOT NULL ORDER BY mb`;
     try {
       const buckets = db.prepare(sql).all(...params);
       if (buckets.length === 0) return { gaps: [], sessions: [], totalEvents: 0 };
@@ -1758,7 +1941,7 @@ class TimelineDB {
 
     try {
       // Step 1: Get minute-level buckets (same as gap analysis)
-      const sql = `SELECT substr(${safeCol}, 1, 16) as mb, COUNT(*) as cnt FROM data ${whereClause} GROUP BY mb HAVING mb GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]' ORDER BY mb`;
+      const sql = `SELECT extract_datetime_minute(${safeCol}) as mb, COUNT(*) as cnt FROM data ${whereClause} GROUP BY mb HAVING mb IS NOT NULL ORDER BY mb`;
       const minuteBuckets = db.prepare(sql).all(...params);
 
       if (minuteBuckets.length === 0) {
@@ -1905,6 +2088,163 @@ class TimelineDB {
       const values = db.prepare(sql).all(...params);
       return { totalRows, totalUnique, values, truncated: totalUnique > MAX_STACKING_VALUES };
     } catch { return { totalRows: 0, totalUnique: 0, values: [], truncated: false }; }
+  }
+
+  /**
+   * Build a process tree from Sysmon EventID 1 (Process Create) events.
+   * Auto-detects columns, queries filtered rows, builds parent-child map.
+   */
+  getProcessTree(tabId, options = {}) {
+    const meta = this.databases.get(tabId);
+    if (!meta) return { processes: [], stats: {}, columns: {}, error: "No database" };
+
+    const {
+      pidCol: userPidCol, ppidCol: userPpidCol,
+      guidCol: userGuidCol, parentGuidCol: userParentGuidCol,
+      imageCol: userImageCol, cmdLineCol: userCmdLineCol,
+      userCol: userUserCol, tsCol: userTsCol, eventIdCol: userEventIdCol,
+      searchTerm = "", searchMode = "mixed", searchCondition = "contains",
+      columnFilters = {}, checkboxFilters = {},
+      bookmarkedOnly = false, dateRangeFilters = {},
+      advancedFilters = [],
+      eventIdValue = "1",
+      maxRows = 200000,
+    } = options;
+
+    // Auto-detect columns (case-insensitive)
+    const detect = (patterns) => {
+      for (const pat of patterns) {
+        const found = meta.headers.find((h) => pat.test(h));
+        if (found) return found;
+      }
+      return null;
+    };
+
+    const columns = {
+      pid:         userPidCol        || detect([/^ProcessId$/i, /^pid$/i, /^process_id$/i]),
+      ppid:        userPpidCol       || detect([/^ParentProcessId$/i, /^ppid$/i, /^parent_process_id$/i, /^parent_pid$/i]),
+      guid:        userGuidCol       || detect([/^ProcessGuid$/i, /^process_guid$/i]),
+      parentGuid:  userParentGuidCol || detect([/^ParentProcessGuid$/i, /^parent_process_guid$/i]),
+      image:       userImageCol      || detect([/^Image$/i, /^process_name$/i, /^exe$/i, /^FileName$/i, /^ImagePath$/i]),
+      cmdLine:     userCmdLineCol    || detect([/^CommandLine$/i, /^command_line$/i, /^cmd$/i, /^cmdline$/i]),
+      user:        userUserCol       || detect([/^User$/i, /^UserName$/i, /^user_name$/i, /^SubjectUserName$/i]),
+      ts:          userTsCol         || detect([/^UtcTime$/i, /^datetime$/i, /^TimeCreated$/i, /^timestamp$/i]),
+      eventId:     userEventIdCol    || detect([/^EventID$/i, /^event_id$/i, /^eventid$/i]),
+    };
+
+    const useGuid = !!(columns.guid && columns.parentGuid);
+    if (!columns.pid && !columns.guid) return { processes: [], stats: {}, columns, error: "Cannot detect ProcessId or ProcessGuid column" };
+    if (!columns.ppid && !columns.parentGuid) return { processes: [], stats: {}, columns, error: "Cannot detect ParentProcessId or ParentProcessGuid column" };
+
+    const db = meta.db;
+    const params = [];
+    const whereConditions = [];
+
+    // Filter to EventID value if column exists
+    if (columns.eventId && eventIdValue) {
+      const safeEid = meta.colMap[columns.eventId];
+      if (safeEid) { whereConditions.push(`${safeEid} = ?`); params.push(eventIdValue); }
+    }
+
+    // Standard filter application
+    for (const [cn, fv] of Object.entries(columnFilters)) {
+      if (!fv) continue;
+      const sc = meta.colMap[cn]; if (!sc) continue;
+      whereConditions.push(`${sc} LIKE ?`); params.push(`%${fv}%`);
+    }
+    for (const [cn, values] of Object.entries(checkboxFilters)) {
+      if (!values || values.length === 0) continue;
+      const sc = meta.colMap[cn]; if (!sc) continue;
+      const hasNull = values.some((v) => v === null || v === "");
+      const nonNull = values.filter((v) => v !== null && v !== "");
+      const parts = [];
+      if (hasNull) parts.push(`(${sc} IS NULL OR ${sc} = '')`);
+      if (nonNull.length === 1) { parts.push(`${sc} = ?`); params.push(nonNull[0]); }
+      else if (nonNull.length > 1) { parts.push(`${sc} IN (${nonNull.map(() => "?").join(",")})`); params.push(...nonNull); }
+      whereConditions.push(parts.length > 1 ? `(${parts.join(" OR ")})` : parts[0]);
+    }
+    for (const [cn, range] of Object.entries(dateRangeFilters)) {
+      const sc = meta.colMap[cn]; if (!sc) continue;
+      if (range.from) { whereConditions.push(`${sc} >= ?`); params.push(range.from); }
+      if (range.to) { whereConditions.push(`${sc} <= ?`); params.push(range.to); }
+    }
+    if (bookmarkedOnly) whereConditions.push(`data.rowid IN (SELECT rowid FROM bookmarks)`);
+    if (searchTerm.trim()) this._applySearch(searchTerm, searchMode, meta, whereConditions, params, searchCondition);
+    this._applyAdvancedFilters(advancedFilters, meta, whereConditions, params);
+
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
+
+    // Build SELECT
+    const selectParts = ["data.rowid as _rowid"];
+    for (const [key, colName] of Object.entries(columns)) {
+      if (colName && meta.colMap[colName]) selectParts.push(`${meta.colMap[colName]} as [${key}]`);
+    }
+
+    const orderCol = columns.ts ? meta.colMap[columns.ts] : null;
+    const orderClause = orderCol ? `ORDER BY ${orderCol} ASC` : "ORDER BY data.rowid ASC";
+
+    try {
+      const sql = `SELECT ${selectParts.join(", ")} FROM data ${whereClause} ${orderClause} LIMIT ${maxRows}`;
+      const rows = db.prepare(sql).all(...params);
+
+      // Build parent-child map
+      const processes = [];
+      const byKey = new Map();
+      const childrenOf = new Map();
+
+      for (const row of rows) {
+        const key = useGuid
+          ? (row.guid || `pid:${row.pid}:${row._rowid}`)
+          : `pid:${row.pid}:${row._rowid}`;
+        const parentKey = useGuid
+          ? (row.parentGuid || `pid:${row.ppid}`)
+          : `pid:${row.ppid}`;
+
+        const imagePath = row.image || "";
+        const processName = imagePath.split("\\").pop().split("/").pop() || "(unknown)";
+
+        const node = {
+          key, parentKey, rowid: row._rowid,
+          pid: row.pid || "", ppid: row.ppid || "",
+          guid: row.guid || "", parentGuid: row.parentGuid || "",
+          image: imagePath, processName,
+          cmdLine: row.cmdLine || "", user: row.user || "", ts: row.ts || "",
+          childCount: 0, depth: 0,
+        };
+        processes.push(node);
+        byKey.set(key, node);
+        if (!childrenOf.has(parentKey)) childrenOf.set(parentKey, []);
+        childrenOf.get(parentKey).push(key);
+      }
+
+      // Child counts
+      for (const node of processes) node.childCount = (childrenOf.get(node.key) || []).length;
+
+      // Compute depth via BFS from roots
+      const roots = processes.filter((p) => !byKey.has(p.parentKey));
+      const visited = new Set();
+      const queue = roots.map((r) => ({ key: r.key, depth: 0 }));
+      while (queue.length > 0) {
+        const { key, depth } = queue.shift();
+        if (visited.has(key)) continue; // guard against cycles
+        visited.add(key);
+        const node = byKey.get(key);
+        if (node) node.depth = depth;
+        for (const ck of (childrenOf.get(key) || [])) queue.push({ key: ck, depth: depth + 1 });
+      }
+
+      return {
+        processes, columns, useGuid,
+        stats: {
+          totalProcesses: processes.length,
+          rootCount: roots.length,
+          maxDepth: processes.length > 0 ? Math.max(...processes.map((p) => p.depth)) : 0,
+          truncated: rows.length >= maxRows,
+        },
+      };
+    } catch (e) {
+      return { processes: [], stats: {}, columns, error: e.message };
+    }
   }
 
   /**

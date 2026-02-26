@@ -644,9 +644,43 @@ async function parsePlasoFile(filePath, tabId, db, onProgress) {
 
 // ── EVTX (.evtx) parser ─────────────────────────────────────────
 
+const EVTX_FIXED_FIELDS = ["datetime", "RecordId", "EventID", "Provider", "Level", "Channel", "Computer", "Message"];
+const EVTX_FIXED_COUNT = EVTX_FIXED_FIELDS.length;
+const EVTX_LEVEL_MAP = { "0": "LogAlways", "1": "Critical", "2": "Error", "3": "Warning", "4": "Information", "5": "Verbose" };
+const XML_ENTITIES = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&apos;": "'" };
+const decodeXmlEntities = (s) => s.replace(/&(?:amp|lt|gt|quot|apos|#(\d+)|#x([0-9a-fA-F]+));/g, (m, dec, hex) => {
+  if (dec) return String.fromCharCode(parseInt(dec, 10));
+  if (hex) return String.fromCharCode(parseInt(hex, 16));
+  return XML_ENTITIES[m] || m;
+});
+
+/**
+ * Format a Windows event message template by substituting %1, %2, ... with data values.
+ * Also replaces %n (newline) and %t (tab) with spaces for compact display.
+ */
+function formatEvtxMessage(template, dataValues) {
+  if (!template) return "";
+  let result = template;
+  // Replace %N!format! and %N with data values (1-indexed)
+  for (let i = 0; i < dataValues.length; i++) {
+    result = result.replace(new RegExp(`%${i + 1}(?:![^!]*!)?`, "g"), dataValues[i]);
+  }
+  // Replace format specifiers
+  result = result.replace(/%n/g, " ").replace(/%t/g, " ").replace(/%%/g, "%");
+  // Remove remaining unreplaced %N references
+  result = result.replace(/%\d+(?:![^!]*!)?/g, "");
+  // Collapse multiple spaces
+  return result.replace(/\s{2,}/g, " ").trim();
+}
+
 /**
  * Parse a Windows EVTX file using @ts-evtx/core.
  * ESM-only library loaded via dynamic import() since app is CJS.
+ *
+ * Uses EvtxFile.open() + records() + renderXml() to extract system fields
+ * and EventData from rendered XML. This bypasses the library's template
+ * resolution which currently fails to extract EventID, Channel, Computer,
+ * and Level from the structured API (returns 0/undefined for all files).
  *
  * Single-pass approach: buffer first 500 events for schema discovery,
  * finalize schema, flush buffer, then continue streaming.
@@ -658,13 +692,99 @@ async function parsePlasoFile(filePath, tabId, db, onProgress) {
  * @returns {Promise<{headers, rowCount, tsColumns, numericColumns}>}
  */
 async function parseEvtxFile(filePath, tabId, db, onProgress) {
-  const { evtx } = await import("@ts-evtx/core");
+  const { EvtxFile } = await import("@ts-evtx/core");
   const stat = fs.statSync(filePath);
   const totalBytes = stat.size;
-
-  const FIXED_FIELDS = ["datetime", "RecordId", "EventID", "Provider", "Level", "Channel", "Computer"];
-  const FIXED_COUNT = FIXED_FIELDS.length;
   const SAMPLE_LIMIT = 500;
+
+  // Initialize message provider for human-readable event descriptions
+  let msgProvider = null;
+  try {
+    const { SmartManagedMessageProvider } = await import("@ts-evtx/messages");
+    const provider = new SmartManagedMessageProvider({ preload: true });
+    await provider.ensure();
+    msgProvider = provider.provider; // SqliteMessageProvider with sync lookup
+  } catch { /* @ts-evtx/messages not available, skip */ }
+
+  const parseXmlRecord = (xml, record) => {
+    // Timestamp from the Record object (always reliable)
+    let datetime = "";
+    try {
+      const d = record.timestampAsDate();
+      if (!isNaN(d.getTime())) {
+        datetime = d.toISOString().replace("T", " ").replace("Z", "");
+      }
+    } catch { /* leave empty */ }
+
+    const recordId = String(record.recordNum());
+
+    // System fields from XML
+    const eventIdMatch = xml.match(/<EventID[^>]*>(\d+)<\/EventID>/i);
+    const eventId = eventIdMatch ? eventIdMatch[1] : "";
+
+    const providerMatch = xml.match(/<Provider\s[^>]*Name="([^"]*)"/i);
+    const provider = providerMatch ? providerMatch[1] : "";
+
+    const levelMatch = xml.match(/<Level>(\d+)<\/Level>/i);
+    const levelNum = levelMatch ? levelMatch[1] : "";
+    const level = EVTX_LEVEL_MAP[levelNum] || levelNum;
+
+    const channelMatch = xml.match(/<Channel>([^<]*)<\/Channel>/i);
+    const channel = channelMatch ? channelMatch[1] : "";
+
+    const computerMatch = xml.match(/<Computer>([^<]*)<\/Computer>/i);
+    const computer = computerMatch ? computerMatch[1] : "";
+
+    // EventData fields — collect both map (for columns) and ordered values (for message substitution)
+    const dataMap = {};
+    const dataValues = [];
+    let paramIdx = 0;
+
+    // Named: <Data Name="key">value</Data>
+    const namedRegex = /<Data\s+Name="([^"]*)"[^>]*?>([^<]*)<\/Data>/gi;
+    let m;
+    while ((m = namedRegex.exec(xml)) !== null) {
+      const val = decodeXmlEntities(m[2]);
+      dataMap[m[1]] = val;
+      dataValues.push(val);
+      paramIdx++;
+    }
+
+    // Unnamed: <Data>value</Data> (no Name attribute)
+    const unnamedRegex = /<Data>([^<]+)<\/Data>/g;
+    while ((m = unnamedRegex.exec(xml)) !== null) {
+      const val = decodeXmlEntities(m[1]);
+      dataMap[`param${paramIdx}`] = val;
+      dataValues.push(val);
+      paramIdx++;
+    }
+
+    // UserData: extract leaf elements (some EVTX files use UserData instead of EventData)
+    const userDataMatch = xml.match(/<UserData>([\s\S]*?)<\/UserData>/i);
+    if (userDataMatch && paramIdx === 0) {
+      const udContent = userDataMatch[1];
+      const leafRegex = /<(\w+)>([^<]+)<\/\1>/g;
+      while ((m = leafRegex.exec(udContent)) !== null) {
+        if (!dataMap[m[1]]) {
+          const val = decodeXmlEntities(m[2]);
+          dataMap[m[1]] = val;
+          dataValues.push(val);
+        }
+      }
+    }
+
+    // Look up and format message from catalog
+    let message = "";
+    if (msgProvider && eventId && provider) {
+      const template = msgProvider.getMessageSync(provider, parseInt(eventId));
+      if (template) message = formatEvtxMessage(template, dataValues);
+    }
+
+    return {
+      fixed: [datetime, recordId, eventId, provider, level, channel, computer, message],
+      dataMap,
+    };
+  };
 
   const fieldSet = new Set();
   let earlyBuffer = [];
@@ -675,110 +795,77 @@ async function parseEvtxFile(filePath, tabId, db, onProgress) {
   let rowCount = 0;
   let lastProgress = 0;
 
-  // Extract fixed + data fields from a ResolvedEvent
-  const extractEvent = (event) => {
-    let datetime = "";
-    if (event.timestamp) {
-      try {
-        const d = new Date(event.timestamp);
-        if (!isNaN(d.getTime())) {
-          datetime = d.toISOString().replace("T", " ").replace("Z", "");
-        }
-      } catch { /* leave empty */ }
-    }
-
-    // Flatten data.items array into a key-value map
-    const dataMap = {};
-    if (event.data?.items) {
-      let paramIdx = 0;
-      for (const item of event.data.items) {
-        const key = item.name || `param${paramIdx}`;
-        dataMap[key] = item.value != null ? String(item.value) : "";
-        paramIdx++;
-      }
-    }
-
-    return {
-      fixed: [
-        datetime,
-        event.id != null ? String(event.id) : "",
-        event.eventId != null ? String(event.eventId) : "",
-        event.provider?.name || "",
-        event.levelName || (event.level != null ? String(event.level) : ""),
-        event.channel || "",
-        event.computer || "",
-      ],
-      dataMap,
-    };
-  };
-
   const buildRow = (parsed) => {
     const values = new Array(colCount);
-    for (let f = 0; f < FIXED_COUNT; f++) values[f] = parsed.fixed[f];
-    for (let i = FIXED_COUNT; i < colCount; i++) {
+    for (let f = 0; f < EVTX_FIXED_COUNT; f++) values[f] = parsed.fixed[f];
+    for (let i = EVTX_FIXED_COUNT; i < colCount; i++) {
       const val = parsed.dataMap[headers[i]];
       values[i] = val != null ? val : "";
     }
     return values;
   };
 
-  const parser = evtx(filePath);
-  await parser.forEach((event) => {
+  const evtxFile = await EvtxFile.open(filePath);
+
+  for (const record of evtxFile.records()) {
+    let xml;
+    try { xml = record.renderXml(); } catch { continue; }
+
     rowCount++;
-    const parsed = extractEvent(event);
+    const parsed = parseXmlRecord(xml, record);
 
     if (!schemaFinalized) {
-      // Phase 1: collecting data field keys
-      for (const key of Object.keys(parsed.dataMap)) {
-        fieldSet.add(key);
-      }
+      for (const key of Object.keys(parsed.dataMap)) fieldSet.add(key);
       earlyBuffer.push(parsed);
 
       if (rowCount >= SAMPLE_LIMIT) {
-        // Finalize schema
         const discoveredFields = [...fieldSet].sort();
-        headers = [...FIXED_FIELDS, ...discoveredFields];
+        headers = [...EVTX_FIXED_FIELDS, ...discoveredFields];
         colCount = headers.length;
         db.createTab(tabId, headers);
         schemaFinalized = true;
 
-        // Flush buffered events
-        for (const buf of earlyBuffer) {
-          batch.push(buildRow(buf));
-        }
+        for (const buf of earlyBuffer) batch.push(buildRow(buf));
         earlyBuffer = null;
 
         if (batch.length >= BATCH_SIZE) {
           db.insertBatchArrays(tabId, batch);
           batch = [];
         }
-        if (onProgress) onProgress(rowCount, 0, 0);
+        if (onProgress) { let eo = 0; try { eo = record.offset ? Number(record.offset) : 0; } catch {} onProgress(rowCount, eo, totalBytes); }
       }
-      return;
+      continue;
     }
 
-    // Phase 2: streaming insert
     batch.push(buildRow(parsed));
     if (batch.length >= BATCH_SIZE) {
       db.insertBatchArrays(tabId, batch);
       batch = [];
       if (rowCount - lastProgress >= 10000) {
         lastProgress = rowCount;
-        if (onProgress) onProgress(rowCount, 0, 0);
+        // Estimate bytes read from record offset when available
+        let estBytes = 0;
+        try { estBytes = record.offset ? Number(record.offset) : 0; } catch {}
+        if (onProgress) onProgress(rowCount, estBytes, totalBytes);
       }
     }
-  });
+  }
 
   // Handle files with fewer than SAMPLE_LIMIT events
   if (!schemaFinalized) {
-    const discoveredFields = [...fieldSet].sort();
-    headers = [...FIXED_FIELDS, ...discoveredFields];
-    colCount = headers.length;
-    db.createTab(tabId, headers);
-    for (const buf of earlyBuffer) {
-      batch.push(buildRow(buf));
+    if (rowCount === 0) {
+      // No events at all
+      headers = [...EVTX_FIXED_FIELDS];
+      colCount = headers.length;
+      db.createTab(tabId, headers);
+    } else {
+      const discoveredFields = [...fieldSet].sort();
+      headers = [...EVTX_FIXED_FIELDS, ...discoveredFields];
+      colCount = headers.length;
+      db.createTab(tabId, headers);
+      for (const buf of earlyBuffer) batch.push(buildRow(buf));
+      earlyBuffer = null;
     }
-    earlyBuffer = null;
   }
 
   if (batch.length > 0) {

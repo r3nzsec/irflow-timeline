@@ -9,7 +9,16 @@ Inspired by Eric Zimmerman's Timeline Explorer for Windows.
 
 1. Download the latest DMG from [Releases](https://github.com/r3nzsec/irflow-timeline/releases)
 2. Open the DMG and drag **IRFlow Timeline** to Applications
-3. On first launch: right-click the app > **Open** > **Open** (required because the app is unsigned)
+3. On first launch, macOS will block the app because it is unsigned. Use one of these methods:
+
+**Method A — Right-click (simplest):**
+> Right-click the app > **Open** > click **Open** in the dialog
+
+**Method B — Terminal (if Method A shows "damaged"):**
+```bash
+xattr -cr /Applications/IRFlow\ Timeline.app
+```
+Then open the app normally.
 
 **Requirements:** macOS 10.13+ (High Sierra or later). No other dependencies needed.
 

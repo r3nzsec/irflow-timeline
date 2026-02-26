@@ -396,6 +396,7 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState(null);
   const [rowContextMenu, setRowContextMenu] = useState(null);
   const [groupDragOver, setGroupDragOver] = useState(false);
+  const [groupReorderDrag, setGroupReorderDrag] = useState(null); // col name being dragged within group bar
   const [dateTimeFormat, setDateTimeFormat] = useState("yyyy-MM-dd HH:mm:ss");
   const [timezone, setTimezone] = useState("UTC");
   const [themeName, setThemeName] = useState("dark");
@@ -403,6 +404,7 @@ export default function App() {
   const [histogramCol, setHistogramCol] = useState(null);
   const [histogramData, setHistogramData] = useState([]);
   const histogramCache = useRef({}); // { [tabId]: { sig, data } }
+  const searchCache = useRef({}); // { [tabId]: { [sig]: { rows, rowOffset, totalFiltered, bookmarkedSet, rowTags } } }
   const [histogramHeight, setHistogramHeight] = useState(160);
   const histResizeStartY = useRef(0);
   const histResizeStartH = useRef(0);
@@ -468,6 +470,8 @@ export default function App() {
     const rawSearch = tab.searchHighlight ? "" : tab.searchTerm;
     const effectiveSearch = rawSearch && rawSearch.trim().length < 2 ? "" : rawSearch;
     const { columnFilters, checkboxFilters } = activeFilters(tab);
+    // Build cache key for this query configuration
+    const cacheKey = `${effectiveSearch}|${tab.searchMode}|${tab.sortCol}|${tab.sortDir}|${tab.showBookmarkedOnly}|${tab.searchCondition || "contains"}|${tab.tagFilter || ""}|${JSON.stringify(tab.dateRangeFilters)}|${JSON.stringify(tab.advancedFilters)}|${JSON.stringify(columnFilters)}|${JSON.stringify(checkboxFilters)}`;
     if (tab.groupByColumns?.length > 0) {
       const groupCol = tab.groupByColumns[0];
       const groupData = await tle.getGroupValues(tab.id, groupCol, {
@@ -484,6 +488,16 @@ export default function App() {
       setSearchLoading(false);
       return;
     }
+    // Check search cache (instant FL/HL toggle and tab switching)
+    const tabCache = searchCache.current[tab.id];
+    if (tabCache && tabCache[cacheKey] && centerRow === 0) {
+      const cached = tabCache[cacheKey];
+      setTabs((prev) => prev.map((t) =>
+        t.id === tab.id ? { ...t, rows: cached.rows, rowOffset: cached.rowOffset, totalFiltered: cached.totalFiltered, bookmarkedSet: cached.bookmarkedSet, rowTags: cached.rowTags, dataReady: true } : t
+      ));
+      setSearchLoading(false);
+      return;
+    }
     const fetchOffset = Math.max(0, centerRow - Math.floor(VIRTUAL_WINDOW / 2));
     const result = await tle.queryRows(tab.id, {
       offset: fetchOffset, limit: VIRTUAL_WINDOW,
@@ -495,6 +509,12 @@ export default function App() {
       dateRangeFilters: tab.dateRangeFilters || {}, advancedFilters: tab.advancedFilters || [],
     });
     if (fetchId.current !== myFetchId) return; // Stale — newer fetch in flight
+    // Cache the result (keep max 4 entries per tab to limit memory)
+    if (!searchCache.current[tab.id]) searchCache.current[tab.id] = {};
+    const tc = searchCache.current[tab.id];
+    const keys = Object.keys(tc);
+    if (keys.length >= 4) delete tc[keys[0]];
+    tc[cacheKey] = { rows: result.rows, rowOffset: fetchOffset, totalFiltered: result.totalFiltered, bookmarkedSet: new Set(result.bookmarkedRows), rowTags: result.rowTags || {} };
     setTabs((prev) => prev.map((t) =>
       t.id === tab.id ? { ...t, rows: result.rows, rowOffset: fetchOffset, totalFiltered: result.totalFiltered, bookmarkedSet: new Set(result.bookmarkedRows), rowTags: result.rowTags || {}, dataReady: true } : t
     ));
@@ -1034,6 +1054,7 @@ export default function App() {
   const closeTab = async (id) => {
     if (tle) await tle.closeTab(id);
     delete histogramCache.current[id];
+    delete searchCache.current[id];
     const rem = tabs.filter((t) => t.id !== id);
     setTabs(rem);
     if (activeTab === id) setActiveTab(rem.length ? rem[rem.length - 1].id : null);
@@ -1421,7 +1442,13 @@ export default function App() {
       const vals = result || [];
       setFdValues(vals);
       // Pre-select all values when no existing filter (so user unchecks to exclude)
-      if (preselectAll) setFdSelected(new Set(vals.map((v) => v.val)));
+      if (preselectAll) {
+        setFdSelected(new Set(vals.map((v) => v.val)));
+      } else if (searchText) {
+        // When searching, trim selection to only visible values so Apply works correctly
+        const visible = new Set(vals.map((v) => v.val));
+        setFdSelected((prev) => new Set([...prev].filter((v) => visible.has(v))));
+      }
     } catch { setFdValues([]); }
     setFdLoading(false);
   }, [tle]);
@@ -1467,7 +1494,7 @@ export default function App() {
     if (colName === "__tags__") {
       setTabs((prev) => prev.map((t) => {
         if (t.id !== activeTab) return t;
-        if (fdSelected.size === 0 || fdSelected.size === fdValues.length) return { ...t, tagFilter: null };
+        if (fdSelected.size === 0) return { ...t, tagFilter: null };
         return { ...t, tagFilter: [...fdSelected] };
       }));
       setFilterDropdown(null);
@@ -1476,7 +1503,8 @@ export default function App() {
     setTabs((prev) => prev.map((t) => {
       if (t.id !== activeTab) return t;
       const newCbf = { ...t.checkboxFilters };
-      if (fdSelected.size === 0 || fdSelected.size === fdValues.length) delete newCbf[colName];
+      // "All selected = no filter" only when NOT searching (search narrows the list, so all-checked means the user wants only those values)
+      if (fdSelected.size === 0 || (!fdSearch && fdSelected.size === fdValues.length)) delete newCbf[colName];
       else newCbf[colName] = [...fdSelected];
       return { ...t, checkboxFilters: newCbf };
     }));
@@ -1773,6 +1801,20 @@ export default function App() {
   // ── Main render ──────────────────────────────────────────────────
   const isImporting = ct?.importing && importingTabs[ct?.id];
   const activeCheckboxCount = ct ? Object.keys(ct.checkboxFilters || {}).filter(k => ct.checkboxFilters[k]?.length > 0).length : 0;
+  const activeColumnFilterCount = ct ? Object.values(ct.columnFilters || {}).filter(Boolean).length : 0;
+  const activeDateFilterCount = ct ? Object.keys(ct.dateRangeFilters || {}).length : 0;
+  const activeAdvFilterCount = ct?.advancedFilters?.length || 0;
+  const hasSearch = ct?.searchTerm?.trim() && !ct?.searchHighlight;
+  const hasBookmarkFilter = !!ct?.showBookmarkedOnly;
+  const hasTagFilter = !!ct?.tagFilter;
+  const totalActiveFilters = activeCheckboxCount + activeColumnFilterCount + activeDateFilterCount + activeAdvFilterCount + (hasSearch ? 1 : 0) + (hasBookmarkFilter ? 1 : 0) + (hasTagFilter ? 1 : 0);
+  const clearAllFilters = () => {
+    setTabs((prev) => prev.map((t) => t.id !== ct.id ? t : {
+      ...t, searchTerm: "", columnFilters: {}, checkboxFilters: {},
+      dateRangeFilters: {}, advancedFilters: [], showBookmarkedOnly: false,
+      tagFilter: null, searchHighlight: false, disabledFilters: new Set(),
+    }));
+  };
 
   return (
     <div onContextMenu={(e) => e.preventDefault()}
@@ -1807,6 +1849,7 @@ export default function App() {
           <button onClick={handleExport} style={tb}>Export</button>
           <div style={tdv} />
           <button onClick={() => ct && up("showBookmarkedOnly", !ct.showBookmarkedOnly)} style={{ ...tb, color: ct?.showBookmarkedOnly ? th.warning : th.textDim }}>{ct?.showBookmarkedOnly ? "★" : "☆"} Flagged</button>
+          <button onClick={() => { if (ct?.dataReady) setModal({ type: "bulkActions", tagName: "", tagColor: "#E85D2A", result: null }); }} style={{ ...tb, opacity: ct?.dataReady ? 1 : 0.4 }} disabled={!ct?.dataReady}>Bulk Actions</button>
           <div style={{ position: "relative" }}>
             <button onClick={() => setToolsOpen((v) => !v)} style={{ ...tb, color: toolsOpen ? th.accent : th.textDim }}>Tools ▾</button>
             {toolsOpen && (<>
@@ -1848,6 +1891,22 @@ export default function App() {
                     { label: "Burst Detection", icon: ic(<><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill={th.accent+"33"}/></>, th.danger || "#f85149"), action: () => {
                       if (ct?.dataReady && ct?.tsColumns?.size) setModal({ type: "burstAnalysis", phase: "config", colName: [...ct.tsColumns][0], windowMinutes: 5, thresholdMultiplier: 5, data: null, loading: false });
                     }, disabled: !ct?.dataReady || !ct?.tsColumns?.size },
+                    { label: "Process Tree", icon: ic(<><circle cx="5" cy="12" r="2.5" fill={th.success+"33"}/><circle cx="18" cy="6" r="2.5" fill={th.success+"33"}/><circle cx="18" cy="18" r="2.5" fill={th.success+"33"}/><line x1="7.5" y1="11" x2="15.5" y2="6.5"/><line x1="7.5" y1="13" x2="15.5" y2="17.5"/></>, th.success || "#3fb950"), action: () => {
+                      if (!ct?.dataReady) return;
+                      const det = (pats) => { for (const p of pats) { const f = ct.headers.find((h) => p.test(h)); if (f) return f; } return null; };
+                      const cols = {
+                        pid: det([/^ProcessId$/i, /^pid$/i, /^process_id$/i]),
+                        ppid: det([/^ParentProcessId$/i, /^ppid$/i, /^parent_process_id$/i]),
+                        guid: det([/^ProcessGuid$/i, /^process_guid$/i]),
+                        parentGuid: det([/^ParentProcessGuid$/i, /^parent_process_guid$/i]),
+                        image: det([/^Image$/i, /^process_name$/i, /^exe$/i]),
+                        cmdLine: det([/^CommandLine$/i, /^command_line$/i, /^cmdline$/i]),
+                        user: det([/^User$/i, /^UserName$/i]),
+                        ts: det([/^UtcTime$/i, /^datetime$/i, /^TimeCreated$/i]),
+                        eventId: det([/^EventID$/i, /^event_id$/i]),
+                      };
+                      setModal({ type: "processTree", phase: "config", columns: cols, eventIdValue: "1", data: null, loading: false, expandedNodes: {}, searchText: "", error: null });
+                    }, disabled: !ct?.dataReady },
                     { label: "Edit Filter", icon: ic(<><rect x="3" y="4" width="18" height="16" rx="2" fill="none"/><line x1="7" y1="9" x2="17" y2="9"/><line x1="7" y1="13" x2="14" y2="13"/><line x1="7" y1="17" x2="11" y2="17"/></>), action: () => {
                       if (ct?.dataReady) setModal({ type: "editFilter" });
                     }, disabled: !ct?.dataReady },
@@ -2094,7 +2153,12 @@ export default function App() {
             {(ct.groupByColumns || []).map((col, i) => (
               <span key={col} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
                 {i > 0 && <span style={{ color: th.textMuted, fontSize: 9 }}>›</span>}
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", background: `${th.accent}22`, border: `1px solid ${th.accent}4D`, borderRadius: 4, color: th.accent, fontSize: 10, fontWeight: 500, fontFamily: "-apple-system, sans-serif" }}>
+                <span draggable
+                  onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData("text/group-reorder", col); setGroupReorderDrag(col); }}
+                  onDragEnd={() => setGroupReorderDrag(null)}
+                  onDragOver={(e) => { if (groupReorderDrag && groupReorderDrag !== col) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
+                  onDrop={(e) => { e.preventDefault(); e.stopPropagation(); const dragCol = e.dataTransfer.getData("text/group-reorder"); if (dragCol && dragCol !== col) { setTabs((prev) => prev.map((t) => { if (t.id !== ct.id) return t; const cols = [...(t.groupByColumns || [])]; const fromIdx = cols.indexOf(dragCol); const toIdx = cols.indexOf(col); if (fromIdx < 0 || toIdx < 0) return t; cols.splice(fromIdx, 1); cols.splice(toIdx, 0, dragCol); return { ...t, groupByColumns: cols, expandedGroups: {}, groupData: [] }; })); setGroupReorderDrag(null); } }}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", background: groupReorderDrag === col ? `${th.accent}44` : `${th.accent}22`, border: `1px solid ${th.accent}4D`, borderRadius: 4, color: th.accent, fontSize: 10, fontWeight: 500, fontFamily: "-apple-system, sans-serif", cursor: "grab" }}>
                   {col}
                   <button onClick={() => removeGroupBy(col)} style={{ background: "none", border: "none", color: th.accent, cursor: "pointer", fontSize: 9, padding: 0, lineHeight: 1, opacity: 0.7 }} title={`Remove ${col} grouping`}>✕</button>
                 </span>
@@ -2104,9 +2168,13 @@ export default function App() {
           </>) : (
             <span style={{ color: th.textMuted, fontSize: 10, fontFamily: "-apple-system, sans-serif" }}>Drag a column header here to group</span>
           )}
-          {activeCheckboxCount > 0 && (
-            <span style={{ marginLeft: "auto", color: th.borderAccent, fontSize: 10, fontFamily: "-apple-system, sans-serif" }}>
-              {activeCheckboxCount} value filter{activeCheckboxCount > 1 ? "s" : ""} active
+          {totalActiveFilters > 0 && (
+            <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8, fontSize: 10, fontFamily: "-apple-system, sans-serif" }}>
+              <span style={{ color: th.borderAccent }}>
+                {totalActiveFilters} filter{totalActiveFilters > 1 ? "s" : ""} active
+                {activeCheckboxCount > 0 ? ` (${activeCheckboxCount} value)` : ""}
+              </span>
+              <button onClick={clearAllFilters} style={{ background: (th.danger || "#f85149") + "18", border: `1px solid ${(th.danger || "#f85149")}55`, borderRadius: 4, color: th.danger || "#f85149", cursor: "pointer", fontSize: 10, padding: "1px 8px", fontFamily: "-apple-system, sans-serif", fontWeight: 600 }}>Clear All</button>
             </span>
           )}
         </div>
@@ -2270,7 +2338,7 @@ export default function App() {
                     onClick={() => handleSort(h)}
                     onDoubleClick={() => handleHeaderDblClick(h)}
                     onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, colName: h }); }}
-                    style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: gw(h), minWidth: gw(h), padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: h === pinnedH[pinnedH.length - 1] ? `2px solid ${th.borderAccent}` : `1px solid ${th.border}`, position: "sticky", left: pinnedOffsets.offsets[h], zIndex: 12, background: headerDragOver === h ? th.selection : th.headerBg, overflow: "hidden" }}>
+                    style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: h === pinnedH[pinnedH.length - 1] ? `2px solid ${th.borderAccent}` : `1px solid ${th.border}`, position: "sticky", left: pinnedOffsets.offsets[h], zIndex: 12, background: headerDragOver === h ? th.selection : th.headerBg, overflow: "hidden" }}>
                     <span onClick={(e) => { e.stopPropagation(); unpinColumn(h); }} style={{ fontSize: 8, marginRight: 3, cursor: "pointer", opacity: 0.7, flexShrink: 0 }} title="Unpin">📌</span>
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{h}</span>
                     {ct.tsColumns.has(h) && <span style={{ fontSize: 8, marginRight: 2, opacity: 0.7 }}>⏱</span>}
@@ -2289,7 +2357,7 @@ export default function App() {
                     onClick={() => handleSort(h)}
                     onDoubleClick={() => handleHeaderDblClick(h)}
                     onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, colName: h }); }}
-                    style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: gw(h), minWidth: gw(h), padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: `1px solid ${th.border}`, position: "relative", overflow: "hidden", background: headerDragOver === h ? th.selection : undefined }}>
+                    style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: `1px solid ${th.border}`, position: "relative", overflow: "hidden", background: headerDragOver === h ? th.selection : undefined }}>
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{h}</span>
                     {ct.tsColumns.has(h) && <span style={{ fontSize: 8, marginRight: 2, opacity: 0.7 }}>⏱</span>}
                     {ct.sortCol === h && <span style={{ fontSize: 9, color: th.accent, marginLeft: 3 }}>{ct.sortDir === "asc" ? "▲" : "▼"}</span>}
@@ -2328,7 +2396,7 @@ export default function App() {
                   const hasFilter = !!(ct.columnFilters[h] || hasCbf);
                   const isDis = ct.disabledFilters?.has(h);
                   return (
-                    <div key={h} style={{ width: gw(h), minWidth: gw(h), padding: "0 2px", display: "flex", alignItems: "center", height: FILTER_HEIGHT, borderRight: h === pinnedH[pinnedH.length - 1] ? `2px solid ${th.borderAccent}` : `1px solid ${th.border}`, position: "sticky", left: pinnedOffsets.offsets[h], zIndex: 11, background: th.bg }}>
+                    <div key={h} style={{ width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 2px", display: "flex", alignItems: "center", height: FILTER_HEIGHT, borderRight: h === pinnedH[pinnedH.length - 1] ? `2px solid ${th.borderAccent}` : `1px solid ${th.border}`, position: "sticky", left: pinnedOffsets.offsets[h], zIndex: 11, background: th.bg }}>
                       {hasFilter && <button onClick={() => { const s = new Set(ct.disabledFilters || []); if (s.has(h)) s.delete(h); else s.add(h); up("disabledFilters", s); }}
                         style={{ background: "none", border: "none", cursor: "pointer", padding: "1px 2px", color: isDis ? th.danger : th.success, fontSize: 9, flexShrink: 0, lineHeight: 1, opacity: 0.8 }} title={isDis ? "Enable filter" : "Disable filter"}>{isDis ? "⊘" : "⊙"}</button>}
                       <input value={ct.columnFilters[h] || ""} onChange={(e) => up("columnFilters", { ...ct.columnFilters, [h]: e.target.value })} placeholder="Filter..."
@@ -2348,7 +2416,7 @@ export default function App() {
                   const hasFilter = !!(ct.columnFilters[h] || hasCbf);
                   const isDis = ct.disabledFilters?.has(h);
                   return (
-                    <div key={h} style={{ width: gw(h), minWidth: gw(h), padding: "0 2px", display: "flex", alignItems: "center", height: FILTER_HEIGHT, borderRight: `1px solid ${th.border}` }}>
+                    <div key={h} style={{ width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 2px", display: "flex", alignItems: "center", height: FILTER_HEIGHT, borderRight: `1px solid ${th.border}` }}>
                       {hasFilter && <button onClick={() => { const s = new Set(ct.disabledFilters || []); if (s.has(h)) s.delete(h); else s.add(h); up("disabledFilters", s); }}
                         style={{ background: "none", border: "none", cursor: "pointer", padding: "1px 2px", color: isDis ? th.danger : th.success, fontSize: 9, flexShrink: 0, lineHeight: 1, opacity: 0.8 }} title={isDis ? "Enable filter" : "Disable filter"}>{isDis ? "⊘" : "⊙"}</button>}
                       <input value={ct.columnFilters[h] || ""} onChange={(e) => up("columnFilters", { ...ct.columnFilters, [h]: e.target.value })} placeholder="Filter..."
@@ -2428,7 +2496,7 @@ export default function App() {
                       {pinnedH.map((h) => (
                         <div key={h} data-cell-col={h} onDoubleClick={() => setCellPopup({ column: h, value: row[h] || "" })} title={fmtCell(h, row[h])}
                           onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setRowContextMenu({ x: e.clientX, y: e.clientY, rowId: row.__idx, rowIndex: ai, currentTags: rTags, row, cellColumn: h, cellValue: row[h] || "" }); }}
-                          style={{ width: gw(h), minWidth: gw(h), padding: "0 8px", display: "flex", alignItems: "center", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", borderRight: h === pinnedH[pinnedH.length - 1] ? `2px solid ${th.borderAccent}44` : `1px solid ${th.cellBorder}`, fontSize: fontSize - 0.5, position: "sticky", left: pinnedOffsets.offsets[h], zIndex: 2, background: stickyBase, boxShadow: stickyOverlay }}>
+                          style={{ width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 8px", display: "flex", alignItems: "center", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", borderRight: h === pinnedH[pinnedH.length - 1] ? `2px solid ${th.borderAccent}44` : `1px solid ${th.cellBorder}`, fontSize: fontSize - 0.5, position: "sticky", left: pinnedOffsets.offsets[h], zIndex: 2, background: stickyBase, boxShadow: stickyOverlay }}>
                           {renderCell(h, row[h])}
                         </div>
                       ))}
@@ -2436,7 +2504,7 @@ export default function App() {
                       {scrollH.map((h) => (
                         <div key={h} data-cell-col={h} onDoubleClick={() => setCellPopup({ column: h, value: row[h] || "" })} title={fmtCell(h, row[h])}
                           onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setRowContextMenu({ x: e.clientX, y: e.clientY, rowId: row.__idx, rowIndex: ai, currentTags: rTags, row, cellColumn: h, cellValue: row[h] || "" }); }}
-                          style={{ width: gw(h), minWidth: gw(h), padding: "0 8px", display: "flex", alignItems: "center", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", borderRight: `1px solid ${th.cellBorder}`, fontSize: fontSize - 0.5 }}>
+                          style={{ width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 8px", display: "flex", alignItems: "center", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", borderRight: `1px solid ${th.cellBorder}`, fontSize: fontSize - 0.5 }}>
                           {renderCell(h, row[h])}
                         </div>
                       ))}
@@ -2510,6 +2578,7 @@ export default function App() {
             {(ct.advancedFilters?.length > 0) && <span style={{ color: th.accent }}>{ct.advancedFilters.length} advanced filter{ct.advancedFilters.length > 1 ? "s" : ""}</span>}
             {ct.searchHighlight && ct.searchTerm && <span style={{ color: th.warning }}>Highlight mode</span>}
             {ct._detectedProfile && <span style={{ color: th.success }}>{ct._detectedProfile}</span>}
+            {totalActiveFilters > 0 && <span onClick={clearAllFilters} style={{ cursor: "pointer", color: th.danger || "#f85149", fontWeight: 600, textDecoration: "underline", textDecorationStyle: "dotted" }} title={`Clear all ${totalActiveFilters} active filter${totalActiveFilters > 1 ? "s" : ""}`}>Clear All ({totalActiveFilters})</span>}
             <span onClick={() => { if (ct?.dataReady) setModal({ type: "editFilter" }); }} style={{ cursor: ct?.dataReady ? "pointer" : "default", color: ct?.advancedFilters?.length > 0 ? th.accent : th.textMuted, textDecoration: ct?.dataReady ? "underline" : "none" }}>Edit Filter</span>
             <span style={{ color: th.textMuted }}>SQLite-backed</span>
           </div>
@@ -4130,7 +4199,7 @@ export default function App() {
           setModal(null);
         };
 
-        const selectStyle = { background: th.inputBg, color: th.text, border: `1px solid ${th.border}`, borderRadius: 4, padding: "5px 8px", fontSize: 12, fontFamily: "-apple-system, sans-serif", outline: "none" };
+        const selectStyle = { background: th.bgInput, color: th.text, border: `1px solid ${th.border}`, borderRadius: 4, padding: "5px 8px", fontSize: 12, fontFamily: "-apple-system, sans-serif", outline: "none" };
         const inputStyle = { ...selectStyle, flex: 1, minWidth: 80 };
 
         return (
@@ -4187,7 +4256,7 @@ export default function App() {
                 </button>
 
                 {/* Preview */}
-                <div style={{ marginTop: 16, padding: "10px 12px", background: th.inputBg, border: `1px solid ${th.border}`, borderRadius: 6, fontSize: 11, fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", color: th.textDim, wordBreak: "break-word", lineHeight: 1.6 }}>
+                <div style={{ marginTop: 16, padding: "10px 12px", background: th.bgInput, border: `1px solid ${th.border}`, borderRadius: 6, fontSize: 11, fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", color: th.textDim, wordBreak: "break-word", lineHeight: 1.6 }}>
                   {buildPreview()}
                 </div>
               </div>
@@ -4198,6 +4267,456 @@ export default function App() {
                 <button onClick={() => setModal(null)} style={{ background: "none", border: `1px solid ${th.border}`, borderRadius: 6, padding: "6px 14px", color: th.textDim, fontSize: 12, cursor: "pointer", fontFamily: "-apple-system, sans-serif" }}>Cancel</button>
                 <button onClick={handleApply} style={{ background: th.accent, border: "none", borderRadius: 6, padding: "6px 14px", color: "#fff", fontSize: 12, cursor: "pointer", fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>Apply</button>
               </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Bulk Actions Modal */}
+      {modal?.type === "bulkActions" && ct && (() => {
+        const af = activeFilters(ct);
+        const filterOpts = {
+          searchTerm: ct.searchHighlight ? "" : ct.searchTerm,
+          searchMode: ct.searchMode, searchCondition: ct.searchCondition || "contains",
+          columnFilters: af.columnFilters, checkboxFilters: af.checkboxFilters,
+          bookmarkedOnly: ct.showBookmarkedOnly, tagFilter: ct.tagFilter || null,
+          dateRangeFilters: ct.dateRangeFilters || {}, advancedFilters: ct.advancedFilters || [],
+        };
+        const tagName = modal.tagName || "";
+        const tagColor = modal.tagColor || "#E85D2A";
+        const result = modal.result;
+        const busy = modal.busy || false;
+        const existingTags = Object.keys(ct.tagColors || {});
+
+        const handleTag = async () => {
+          if (!tagName.trim() || busy) return;
+          setModal((p) => p?.type === "bulkActions" ? { ...p, busy: true, result: null } : p);
+          try {
+            const res = await tle.bulkTagFiltered(ct.id, tagName.trim(), filterOpts);
+            up("tagColors", { ...(ct.tagColors || {}), [tagName.trim()]: tagColor });
+            await fetchData(ct);
+            setModal((p) => p?.type === "bulkActions" ? { ...p, busy: false, result: { type: "success", msg: `Tagged ${formatNumber(res.tagged)} rows as "${tagName.trim()}"` } } : p);
+          } catch (e) {
+            setModal((p) => p?.type === "bulkActions" ? { ...p, busy: false, result: { type: "error", msg: e.message } } : p);
+          }
+        };
+        const handleBookmark = async (add) => {
+          if (busy) return;
+          setModal((p) => p?.type === "bulkActions" ? { ...p, busy: true, result: null } : p);
+          try {
+            const res = await tle.bulkBookmarkFiltered(ct.id, add, filterOpts);
+            await fetchData(ct);
+            const msg = add ? `Bookmarked ${formatNumber(res.affected)} rows` : `Removed bookmarks from ${formatNumber(res.affected)} rows`;
+            setModal((p) => p?.type === "bulkActions" ? { ...p, busy: false, result: { type: "success", msg } } : p);
+          } catch (e) {
+            setModal((p) => p?.type === "bulkActions" ? { ...p, busy: false, result: { type: "error", msg: e.message } } : p);
+          }
+        };
+
+        const sectionStyle = { background: th.bgInput, border: `1px solid ${th.border}`, borderRadius: 8, padding: "12px 14px", marginBottom: 12 };
+        const labelStyle = { fontSize: 11, color: th.textDim, marginBottom: 6, fontWeight: 500 };
+        const btnStyle = { padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: busy ? "wait" : "pointer", fontFamily: "-apple-system, sans-serif", border: "none" };
+
+        return (
+          <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 480, maxWidth: "94vw", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
+              {/* Header */}
+              <div style={{ padding: "16px 20px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif" }}>Bulk Actions</h3>
+                  <div style={{ fontSize: 11, color: th.textDim, marginTop: 2, fontFamily: "-apple-system, sans-serif" }}>
+                    Applies to <b style={{ color: ct.totalFiltered < ct.totalRows ? th.warning : th.text }}>{formatNumber(ct.totalFiltered)}</b> filtered rows
+                  </div>
+                </div>
+                <button onClick={() => setModal(null)} style={{ background: "none", border: "none", color: th.textDim, fontSize: 18, cursor: "pointer", padding: "2px 6px" }}>✕</button>
+              </div>
+
+              <div style={{ padding: "12px 20px 16px" }}>
+                {/* Tag section */}
+                <div style={sectionStyle}>
+                  <div style={labelStyle}>Tag Filtered Rows</div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input type="text" value={tagName} onChange={(e) => setModal((p) => p?.type === "bulkActions" ? { ...p, tagName: e.target.value } : p)}
+                      onKeyDown={(e) => { if (e.key === "Enter") handleTag(); }}
+                      placeholder="Tag name..." list="bulk-tag-suggestions"
+                      style={{ flex: 1, background: th.modalBg, color: th.text, border: `1px solid ${th.border}`, borderRadius: 4, padding: "6px 8px", fontSize: 12, outline: "none", fontFamily: "-apple-system, sans-serif" }} />
+                    <datalist id="bulk-tag-suggestions">
+                      {existingTags.map((t) => <option key={t} value={t} />)}
+                    </datalist>
+                    <input type="color" value={tagColor} onChange={(e) => setModal((p) => p?.type === "bulkActions" ? { ...p, tagColor: e.target.value } : p)}
+                      title="Tag color" style={{ width: 30, height: 30, border: `1px solid ${th.border}`, borderRadius: 4, padding: 0, cursor: "pointer", background: "none" }} />
+                    <button onClick={handleTag} disabled={!tagName.trim() || busy}
+                      style={{ ...btnStyle, background: tagName.trim() && !busy ? th.accent : th.btnBg, color: tagName.trim() && !busy ? "#fff" : th.textMuted, fontWeight: 600 }}>
+                      {busy ? "..." : "Apply Tag"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Bookmark section */}
+                <div style={sectionStyle}>
+                  <div style={labelStyle}>Bookmark Filtered Rows</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => handleBookmark(true)} disabled={busy}
+                      style={{ ...btnStyle, background: busy ? th.btnBg : th.accent + "22", color: busy ? th.textMuted : th.accent, border: `1px solid ${busy ? th.border : th.accent}44`, flex: 1, fontWeight: 500 }}>
+                      ★ Bookmark All
+                    </button>
+                    <button onClick={() => handleBookmark(false)} disabled={busy}
+                      style={{ ...btnStyle, background: busy ? th.btnBg : (th.danger || "#f85149") + "18", color: busy ? th.textMuted : (th.danger || "#f85149"), border: `1px solid ${busy ? th.border : (th.danger || "#f85149")}44`, flex: 1, fontWeight: 500 }}>
+                      ☆ Remove Bookmarks
+                    </button>
+                  </div>
+                </div>
+
+                {/* Result message */}
+                {result && (
+                  <div style={{ padding: "8px 12px", borderRadius: 6, fontSize: 12, fontFamily: "-apple-system, sans-serif",
+                    background: result.type === "success" ? (th.success + "18") : (th.danger + "18"),
+                    color: result.type === "success" ? th.success : (th.danger || "#f85149"),
+                    border: `1px solid ${result.type === "success" ? th.success : (th.danger || "#f85149")}44` }}>
+                    {result.type === "success" ? "✓ " : "✗ "}{result.msg}
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div style={{ padding: "10px 20px", borderTop: `1px solid ${th.border}`, display: "flex", justifyContent: "flex-end" }}>
+                <button onClick={() => setModal(null)} style={{ ...btnStyle, background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}` }}>Close</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Process Tree Modal */}
+      {modal?.type === "processTree" && ct && (() => {
+        const { phase, columns: cols, eventIdValue, data, expandedNodes, searchText } = modal;
+        const hasCols = (cols.pid && cols.ppid) || (cols.guid && cols.parentGuid);
+
+        const SUSPICIOUS_PARENTS = /^(winword|excel|powerpnt|outlook|onenote|msaccess)(\.exe)?$/i;
+        const SCRIPT_KIDS = /^(powershell|pwsh|cmd|wscript|cscript|mshta|bash)(\.exe)?$/i;
+        const LOLBINS = /^(certutil|bitsadmin|msiexec|regsvr32|rundll32|msbuild|installutil|cmstp)(\.exe)?$/i;
+        const SUS_PATHS = /(\\temp\\|\\tmp\\|\\appdata\\|\\downloads\\|\\public\\)/i;
+        const NORMAL_LOLBIN_PARENTS = /^(explorer|svchost|services|cmd|powershell|mmc)(\.exe)?$/i;
+
+        const getSusLevel = (node, parentNode) => {
+          const n = (node.processName || "").toLowerCase();
+          const pn = (parentNode?.processName || "").toLowerCase();
+          if (SCRIPT_KIDS.test(n) && SUSPICIOUS_PARENTS.test(pn)) return 3;
+          if (LOLBINS.test(n) && pn && !NORMAL_LOLBIN_PARENTS.test(pn)) return 2;
+          if (SUS_PATHS.test(node.image)) return 1;
+          return 0;
+        };
+        const susColors = { 3: th.danger || "#f85149", 2: "#f0883e", 1: "#d29922", 0: null };
+
+        const handleBuild = async () => {
+          setModal((p) => ({ ...p, phase: "loading", loading: true, error: null }));
+          try {
+            const af = activeFilters(ct);
+            const result = await tle.getProcessTree(ct.id, {
+              pidCol: cols.pid, ppidCol: cols.ppid, guidCol: cols.guid, parentGuidCol: cols.parentGuid,
+              imageCol: cols.image, cmdLineCol: cols.cmdLine, userCol: cols.user, tsCol: cols.ts, eventIdCol: cols.eventId,
+              eventIdValue: eventIdValue || null,
+              searchTerm: ct.searchHighlight ? "" : ct.searchTerm,
+              searchMode: ct.searchMode, searchCondition: ct.searchCondition || "contains",
+              columnFilters: af.columnFilters, checkboxFilters: af.checkboxFilters,
+              bookmarkedOnly: ct.showBookmarkedOnly, dateRangeFilters: ct.dateRangeFilters || {}, advancedFilters: ct.advancedFilters || [],
+            });
+            if (result.error) {
+              setModal((p) => p?.type === "processTree" ? { ...p, phase: "config", loading: false, error: result.error } : p);
+            } else {
+              setModal((p) => p?.type === "processTree" ? { ...p, phase: "results", loading: false, data: result, expandedNodes: {}, searchText: "" } : p);
+            }
+          } catch (e) {
+            setModal((p) => p?.type === "processTree" ? { ...p, phase: "config", loading: false, error: e.message } : p);
+          }
+        };
+
+        // Build flat visible list from tree data, with connector metadata
+        const buildFlat = () => {
+          if (!data?.processes?.length) return [];
+          const procs = data.processes;
+          const byKey = new Map();
+          const childMap = new Map();
+          for (const p of procs) {
+            byKey.set(p.key, p);
+            if (!childMap.has(p.parentKey)) childMap.set(p.parentKey, []);
+            childMap.get(p.parentKey).push(p.key);
+          }
+          const st = (searchText || "").toLowerCase();
+          if (st) {
+            return procs.filter((p) =>
+              (p.processName || "").toLowerCase().includes(st) ||
+              (p.pid || "").toLowerCase().includes(st) ||
+              (p.cmdLine || "").toLowerCase().includes(st) ||
+              (p.user || "").toLowerCase().includes(st)
+            ).map((p) => ({ ...p, connectors: [], isLast: false }));
+          }
+          const roots = procs.filter((p) => !byKey.has(p.parentKey));
+          roots.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
+          const flat = [];
+          // activeLines[depth] = true means a vertical continuation line at that depth
+          const activeLines = {};
+          const dfs = (keys, depth) => {
+            const sorted = keys.map((k) => byKey.get(k)).filter(Boolean);
+            sorted.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
+            for (let si = 0; si < sorted.length; si++) {
+              const node = sorted[si];
+              const isLast = si === sorted.length - 1;
+              // Build connector array: for each depth 0..depth-1, is there a vertical line?
+              const connectors = [];
+              for (let d = 0; d < depth; d++) connectors.push(!!activeLines[d]);
+              flat.push({ ...node, depth, connectors, isLast: depth > 0 && isLast });
+              if (expandedNodes[node.key]) {
+                activeLines[depth] = !isLast; // vertical line continues if not last sibling
+                dfs(childMap.get(node.key) || [], depth + 1);
+                delete activeLines[depth];
+              }
+            }
+          };
+          dfs(roots.map((r) => r.key), 0);
+          return flat;
+        };
+
+        const flatNodes = phase === "results" ? buildFlat() : [];
+        const byKeyMap = phase === "results" && data ? new Map(data.processes.map((p) => [p.key, p])) : new Map();
+
+        // Chain highlight: walk from selected node to root
+        const selectedKey = modal.selectedKey || null;
+        const chainKeys = new Set();
+        if (selectedKey && byKeyMap.size > 0) {
+          let cur = selectedKey;
+          while (cur) {
+            chainKeys.add(cur);
+            const node = byKeyMap.get(cur);
+            if (!node || !byKeyMap.has(node.parentKey)) break;
+            cur = node.parentKey;
+          }
+        }
+
+        // Expand helpers
+        const childMap = (() => {
+          if (!data?.processes?.length) return new Map();
+          const m = new Map();
+          for (const p of data.processes) {
+            if (!m.has(p.parentKey)) m.set(p.parentKey, []);
+            m.get(p.parentKey).push(p.key);
+          }
+          return m;
+        })();
+        const expandAll = () => {
+          const en = {};
+          for (const p of (data?.processes || [])) { if (p.childCount > 0) en[p.key] = true; }
+          setModal((p) => p ? { ...p, expandedNodes: en } : p);
+        };
+        const collapseAll = () => setModal((p) => p ? { ...p, expandedNodes: {} } : p);
+        const expandToDepth = (maxD) => {
+          const en = {};
+          for (const p of (data?.processes || [])) { if (p.childCount > 0 && p.depth < maxD) en[p.key] = true; }
+          setModal((p) => p ? { ...p, expandedNodes: en } : p);
+        };
+
+        const selStyle = { background: th.bgInput, color: th.text, border: `1px solid ${th.border}`, borderRadius: 5, padding: "4px 8px", fontSize: 12, fontFamily: "monospace" };
+
+        // Draggable + resizable panel state
+        const pw = modal.ptW || 900, ph_ = modal.ptH || 550;
+        const px = modal.ptX ?? Math.round((window.innerWidth - pw) / 2);
+        const py = modal.ptY ?? Math.round((window.innerHeight - ph_) / 2);
+
+        const startDrag = (e) => {
+          e.preventDefault();
+          const sx = e.clientX - px, sy = e.clientY - py;
+          const onMove = (ev) => setModal((p) => p ? { ...p, ptX: Math.max(0, Math.min(window.innerWidth - 100, ev.clientX - sx)), ptY: Math.max(0, Math.min(window.innerHeight - 40, ev.clientY - sy)) } : p);
+          const onUp = () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+          window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+        };
+
+        const startResize = (e, edge) => {
+          e.preventDefault(); e.stopPropagation();
+          const sx = e.clientX, sy = e.clientY, sw = pw, sh = ph_, sleft = px, stop = py;
+          const onMove = (ev) => {
+            const dx = ev.clientX - sx, dy = ev.clientY - sy;
+            setModal((p) => {
+              if (!p) return p;
+              let nw = sw, nh = sh, nx = sleft, ny = stop;
+              if (edge.includes("r")) nw = Math.max(480, sw + dx);
+              if (edge.includes("b")) nh = Math.max(300, sh + dy);
+              if (edge.includes("l")) { nw = Math.max(480, sw - dx); nx = sleft + sw - nw; }
+              if (edge.includes("t")) { nh = Math.max(300, sh - dy); ny = stop + sh - nh; }
+              return { ...p, ptW: nw, ptH: nh, ptX: nx, ptY: ny };
+            });
+          };
+          const onUp = () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+          window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+        };
+
+        const edgeStyle = (cursor, pos) => ({ position: "absolute", ...pos, zIndex: 2, cursor });
+
+        return (
+          <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, zIndex: 100, backdropFilter: "blur(4px)" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute", left: px, top: py, width: pw, height: ph_, background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)", overflow: "hidden" }}>
+              {/* Resize handles — edges */}
+              <div onMouseDown={(e) => startResize(e, "t")} style={edgeStyle("ns-resize", { top: 0, left: 8, right: 8, height: 5 })} />
+              <div onMouseDown={(e) => startResize(e, "b")} style={edgeStyle("ns-resize", { bottom: 0, left: 8, right: 8, height: 5 })} />
+              <div onMouseDown={(e) => startResize(e, "l")} style={edgeStyle("ew-resize", { left: 0, top: 8, bottom: 8, width: 5 })} />
+              <div onMouseDown={(e) => startResize(e, "r")} style={edgeStyle("ew-resize", { right: 0, top: 8, bottom: 8, width: 5 })} />
+              {/* Resize handles — corners */}
+              <div onMouseDown={(e) => startResize(e, "tl")} style={edgeStyle("nwse-resize", { top: 0, left: 0, width: 10, height: 10 })} />
+              <div onMouseDown={(e) => startResize(e, "tr")} style={edgeStyle("nesw-resize", { top: 0, right: 0, width: 10, height: 10 })} />
+              <div onMouseDown={(e) => startResize(e, "bl")} style={edgeStyle("nesw-resize", { bottom: 0, left: 0, width: 10, height: 10 })} />
+              <div onMouseDown={(e) => startResize(e, "br")} style={edgeStyle("nwse-resize", { bottom: 0, right: 0, width: 10, height: 10 })} />
+
+              {/* Header — draggable */}
+              <div onMouseDown={startDrag} style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}`, cursor: "move", flexShrink: 0, userSelect: "none" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif" }}>Process Tree</h3>
+                  <button onClick={() => setModal(null)} style={{ background: "none", border: "none", color: th.textDim, fontSize: 18, cursor: "pointer", padding: "0 4px" }}>x</button>
+                </div>
+                {phase === "results" && data?.stats && (
+                  <div style={{ display: "flex", gap: 16, marginTop: 8, fontSize: 12, color: th.textDim, fontFamily: "-apple-system, sans-serif" }}>
+                    <span>{data.stats.totalProcesses.toLocaleString()} processes</span>
+                    <span>{data.stats.rootCount} roots</span>
+                    <span>Max depth: {data.stats.maxDepth}</span>
+                    {data.useGuid && <span style={{ color: th.success || "#3fb950" }}>GUID-linked</span>}
+                    {data.stats.truncated && <span style={{ color: th.danger || "#f85149" }}>Truncated (limit reached)</span>}
+                  </div>
+                )}
+              </div>
+
+              {/* Config phase */}
+              {phase === "config" && (
+                <div style={{ padding: 20, overflowY: "auto", flex: 1, minHeight: 0 }}>
+                  <div style={{ fontSize: 12, color: th.textDim, marginBottom: 12, fontFamily: "-apple-system, sans-serif" }}>Map columns for process tree reconstruction. Auto-detected from headers.</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "130px 1fr 130px 1fr", gap: "8px 12px", alignItems: "center", fontSize: 12, fontFamily: "-apple-system, sans-serif" }}>
+                    {[["Process ID", "pid"], ["Parent Process ID", "ppid"], ["Process GUID", "guid"], ["Parent GUID", "parentGuid"],
+                      ["Image / Exe", "image"], ["Command Line", "cmdLine"], ["User", "user"], ["Timestamp", "ts"], ["Event ID", "eventId"]].map(([label, key]) => (
+                      <div key={key} style={{ display: "contents" }}>
+                        <label style={{ color: th.textDim, textAlign: "right" }}>{label}:</label>
+                        <select value={cols[key] || ""} onChange={(e) => setModal((p) => ({ ...p, columns: { ...p.columns, [key]: e.target.value || null } }))} style={selStyle}>
+                          <option value="">— none —</option>
+                          {ct.headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                        </select>
+                      </div>
+                    ))}
+                    <label style={{ color: th.textDim, textAlign: "right" }}>EventID value:</label>
+                    <input value={eventIdValue || ""} onChange={(e) => setModal((p) => ({ ...p, eventIdValue: e.target.value }))} placeholder="1 (blank = all rows)" style={{ ...selStyle, width: 120 }} />
+                  </div>
+                  {modal.error && <div style={{ marginTop: 12, padding: "8px 12px", background: (th.danger || "#f85149") + "22", borderRadius: 6, fontSize: 12, color: th.danger || "#f85149" }}>{modal.error}</div>}
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+                    <button onClick={() => setModal(null)} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif" }}>Cancel</button>
+                    <button onClick={handleBuild} disabled={!hasCols} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: hasCols ? "pointer" : "not-allowed", background: hasCols ? (th.accent) : th.border, color: "#fff", border: "none", fontFamily: "-apple-system, sans-serif" }}>Build Tree</button>
+                  </div>
+                </div>
+              )}
+
+              {/* Loading phase */}
+              {phase === "loading" && (
+                <div style={{ padding: 40, textAlign: "center", color: th.textDim, fontSize: 13, fontFamily: "-apple-system, sans-serif", flex: 1 }}>Building process tree...</div>
+              )}
+
+              {/* Results phase */}
+              {phase === "results" && data && (
+                <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+                  {/* Toolbar: search + expand/collapse */}
+                  <div style={{ padding: "8px 20px", borderBottom: `1px solid ${th.border}`, flexShrink: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                    <input value={searchText || ""} onChange={(e) => setModal((p) => ({ ...p, searchText: e.target.value }))} placeholder="Search by process name, PID, command line, or user..." style={{ flex: 1, background: th.bgInput, color: th.text, border: `1px solid ${th.border}`, borderRadius: 5, padding: "6px 10px", fontSize: 12, fontFamily: "monospace", outline: "none", boxSizing: "border-box" }} />
+                    <button onClick={expandAll} style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0 }} title="Expand all nodes">Expand All</button>
+                    <button onClick={collapseAll} style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0 }} title="Collapse all nodes">Collapse</button>
+                    <select onChange={(e) => { if (e.target.value) expandToDepth(parseInt(e.target.value)); }} value="" style={{ padding: "4px 4px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: th.bgInput, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif", flexShrink: 0 }}>
+                      <option value="">Depth...</option>
+                      {[1, 2, 3, 4, 5].filter((d) => d <= (data.stats.maxDepth || 5)).map((d) => <option key={d} value={d}>Depth {d}</option>)}
+                    </select>
+                    {selectedKey && <button onClick={() => setModal((p) => p ? { ...p, selectedKey: null } : p)} style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: (th.accent || "#58a6ff") + "22", color: th.accent || "#58a6ff", border: `1px solid ${(th.accent || "#58a6ff")}55`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0 }}>Clear Chain</button>}
+                  </div>
+
+                  {/* Tree with connector lines */}
+                  <div style={{ flex: 1, overflowY: "auto", overflowX: "auto", padding: "4px 0", minHeight: 0 }}>
+                    {flatNodes.length === 0 && (
+                      <div style={{ padding: 20, textAlign: "center", color: th.textDim, fontSize: 12 }}>{searchText ? "No matching processes" : "No process creation events found"}</div>
+                    )}
+                    {flatNodes.map((node, i) => {
+                      const parentNode = byKeyMap.get(node.parentKey);
+                      const sus = getSusLevel(node, parentNode);
+                      const susColor = susColors[sus];
+                      const hasChildren = node.childCount > 0;
+                      const isExpanded = !!expandedNodes[node.key];
+                      const tsShort = (node.ts || "").replace(/^\d{4}-\d{2}-\d{2}\s*/, "").substring(0, 12);
+                      const inChain = chainKeys.has(node.key);
+                      const isSelected = node.key === selectedKey;
+                      const lineColor = th.textMuted || th.textDim || "#888";
+                      const chainColor = th.accent || "#58a6ff";
+                      const ROW_H = 28, INDENT = 20, LEFT_PAD = 16;
+
+                      return (
+                        <div key={node.key + ":" + i}
+                          onClick={() => setModal((p) => p ? { ...p, selectedKey: p.selectedKey === node.key ? null : node.key } : p)}
+                          style={{ display: "flex", alignItems: "center", gap: 6, height: ROW_H, paddingRight: 12, fontSize: 12, fontFamily: "-apple-system, sans-serif", cursor: "pointer", position: "relative", background: isSelected ? (th.accent || "#58a6ff") + "18" : "transparent", borderBottom: `1px solid ${th.border}11` }}
+                          onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = th.bgHover || th.border + "44"; }}
+                          onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}>
+
+                          {/* Connector lines */}
+                          {node.depth > 0 && (node.connectors || []).map((active, d) => (
+                            active ? <div key={`vl${d}`} style={{ position: "absolute", left: LEFT_PAD + d * INDENT + INDENT / 2, top: 0, bottom: 0, width: 1, background: chainKeys.has(node.key) && d >= 0 ? chainColor + "66" : lineColor + "44" }} /> : null
+                          ))}
+                          {node.depth > 0 && (
+                            <>
+                              {/* Vertical line from parent down to this node */}
+                              <div style={{ position: "absolute", left: LEFT_PAD + (node.depth - 1) * INDENT + INDENT / 2, top: 0, height: node.isLast ? ROW_H / 2 : ROW_H, width: 1, background: inChain ? chainColor + "88" : lineColor + "44" }} />
+                              {/* Horizontal branch from vertical line to node */}
+                              <div style={{ position: "absolute", left: LEFT_PAD + (node.depth - 1) * INDENT + INDENT / 2, top: ROW_H / 2, width: INDENT / 2 + 2, height: 1, background: inChain ? chainColor + "88" : lineColor + "44" }} />
+                            </>
+                          )}
+
+                          {/* Spacer for tree indent */}
+                          <div style={{ width: LEFT_PAD + node.depth * INDENT, minWidth: LEFT_PAD + node.depth * INDENT, flexShrink: 0 }} />
+
+                          {/* Chevron */}
+                          <span onClick={(e) => { e.stopPropagation(); if (hasChildren) setModal((p) => { const en = { ...p.expandedNodes }; if (en[node.key]) delete en[node.key]; else en[node.key] = true; return { ...p, expandedNodes: en }; }); }}
+                            style={{ width: 14, textAlign: "center", color: hasChildren ? (inChain ? chainColor : th.textDim) : "transparent", fontSize: 10, flexShrink: 0, userSelect: "none" }}>
+                            {hasChildren ? (isExpanded ? "\u25BC" : "\u25B6") : "\u00B7"}
+                          </span>
+                          {/* Chain dot for highlighted ancestry */}
+                          {inChain && <div style={{ width: 6, height: 6, borderRadius: "50%", background: chainColor, flexShrink: 0 }} />}
+                          {/* Suspicious indicator */}
+                          {susColor && !inChain && <span style={{ width: 7, height: 7, borderRadius: "50%", background: susColor, flexShrink: 0 }} title={sus === 3 ? "Script from Office app" : sus === 2 ? "LOLBin from unusual parent" : "Suspicious path"} />}
+                          {/* Process name */}
+                          <span style={{ fontWeight: 600, color: isSelected ? (chainColor) : susColor || th.text, minWidth: 100, flexShrink: 0 }} title={node.image}>{node.processName}</span>
+                          {/* PID */}
+                          <span style={{ fontFamily: "monospace", color: inChain ? chainColor + "cc" : th.textDim, fontSize: 11, minWidth: 60, flexShrink: 0 }}>PID {node.pid}</span>
+                          {/* User */}
+                          {node.user && <span style={{ color: th.textDim, fontSize: 11, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flexShrink: 0 }}>{node.user}</span>}
+                          {/* Timestamp */}
+                          {tsShort && <span style={{ fontFamily: "monospace", color: th.textDim, fontSize: 11, flexShrink: 0 }}>{tsShort}</span>}
+                          {/* Child count */}
+                          {node.childCount > 0 && <span style={{ fontSize: 10, color: th.accent, flexShrink: 0 }}>({node.childCount})</span>}
+                          {/* Command line (truncated) */}
+                          <span style={{ color: th.textDim, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }} title={node.cmdLine}>{node.cmdLine}</span>
+                          {/* Filter grid button */}
+                          <button onClick={(e) => {
+                            e.stopPropagation();
+                            if (cols.pid && node.pid) {
+                              const cbf = { ...(ct.checkboxFilters || {}) };
+                              cbf[cols.pid] = [node.pid];
+                              if (cols.eventId) delete cbf[cols.eventId];
+                              up("checkboxFilters", cbf);
+                            }
+                            setModal(null);
+                          }} title="Filter grid to this process" style={{ background: "none", border: `1px solid ${th.border}`, borderRadius: 4, color: th.textDim, fontSize: 10, padding: "2px 6px", cursor: "pointer", flexShrink: 0 }}>Filter</button>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Footer */}
+                  <div style={{ padding: "10px 20px", borderTop: `1px solid ${th.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+                    <button onClick={() => setModal((p) => ({ ...p, phase: "config" }))} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif" }}>Back</button>
+                    <span style={{ fontSize: 11, color: th.textDim }}>
+                      {flatNodes.length.toLocaleString()} visible
+                      {selectedKey && ` \u00B7 Chain: ${chainKeys.size} nodes`}
+                    </span>
+                    <button onClick={() => setModal(null)} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif" }}>Close</button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         );
