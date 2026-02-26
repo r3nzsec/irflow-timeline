@@ -2,6 +2,8 @@
 
 IRFlow Timeline provides multiple search modes and filter types to help you find exactly what you need in massive timelines.
 
+![Search and Filtering interface showing a search for cmd.exe with forensic regex patterns panel](/dfir-tips/Search-Filtering.png)
+
 ## Search Modes
 
 Access the search bar with `Cmd+F`. Select a search mode from the dropdown next to the search input.

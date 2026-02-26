@@ -2,6 +2,8 @@
 
 Bookmarks and tags are the core annotation tools for building your investigation narrative within IRFlow Timeline.
 
+![Bookmarks and Tags showing tagged rows with context menu for applying DFIR tags like Suspicious, Lateral Movement, and C2](/dfir-tips/Bookmarks-Tags.png)
+
 ## Bookmarks
 
 Bookmarks let you flag individual rows as important for later review and reporting.

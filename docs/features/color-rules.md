@@ -2,6 +2,8 @@
 
 Color rules apply conditional formatting to grid cells, making patterns and anomalies visually obvious at a glance.
 
+![Color Rules dialog showing conditional formatting with DFIR presets for PowerShell, Mimikatz, PsExec, LSASS, and more](/dfir-tips/Color-Rules.png)
+
 ## Creating Color Rules
 
 1. Open **Tools > Color Rules** or `Cmd+Click` a cell and select **Create Color Rule**
