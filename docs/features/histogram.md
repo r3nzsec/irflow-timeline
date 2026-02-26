@@ -2,6 +2,8 @@
 
 The histogram provides a visual timeline of event distribution, helping you identify activity patterns, quiet periods, and suspicious bursts at a glance.
 
+![Histogram showing daily event distribution with multi-source coloring across a 37-day Sysmon timeline](/dfir-tips/Histogram.png)
+
 ## Opening the Histogram
 
 - Click the **Histogram** button in the main toolbar

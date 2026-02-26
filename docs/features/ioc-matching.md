@@ -2,6 +2,8 @@
 
 IRFlow Timeline can scan your timeline data for Indicators of Compromise (IOCs), automatically identifying network indicators, file hashes, and other forensic artifacts.
 
+![Known-Bad IOC Matching dialog with IOC list input supporting IPs, domains, hashes, and file paths](/dfir-tips/IOC-Matching.png)
+
 ## Opening IOC Matching
 
 - **Menu:** Tools > IOC Match
