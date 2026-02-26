@@ -2,6 +2,8 @@
 
 The data grid is the primary interface for viewing and interacting with timeline data. It uses virtual scrolling backed by SQLite pagination to handle millions of rows without performance degradation.
 
+![Virtual Grid displaying EvtxECmd timeline data with sortable columns, row detail panel, and histogram](/dfir-tips/Virtual-Grid.png)
+
 ## How It Works
 
 Rather than loading all rows into memory, the grid maintains a window of approximately 5,000 rows. As you scroll, new rows are fetched from SQLite using `LIMIT`/`OFFSET` queries. This means:
