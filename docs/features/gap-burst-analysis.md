@@ -2,6 +2,8 @@
 
 Gap and burst analysis help you identify temporal anomalies in your timeline — periods of unusual inactivity or suspicious spikes of activity.
 
+![Event Burst Detection showing 9 detected bursts with event rate over time chart and burst multipliers](/dfir-tips/Burst-Detection.png)
+
 ## Gap Analysis
 
 ### What It Detects
