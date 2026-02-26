@@ -18,7 +18,7 @@ export default defineConfig({
       { text: 'Reference', link: '/reference/keyboard-shortcuts' },
       { text: 'Author', link: '/about/author' },
       {
-        text: 'v2.1.3',
+        text: 'v2.1.4',
         items: [
           { text: 'Changelog', link: '/about/changelog' },
           { text: 'Credits', link: '/about/credits' }

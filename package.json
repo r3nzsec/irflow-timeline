@@ -1,6 +1,6 @@
 {
   "name": "irflow-timeline",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "description": "IRFlow Timeline — High-performance DFIR timeline viewer for macOS (30-50GB+ CSV/XLSX)",
   "main": "main.js",
   "author": "DFIR Community",
