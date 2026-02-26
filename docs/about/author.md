@@ -39,7 +39,7 @@ Renzon is an active contributor to the DFIR community:
 
 ## Why IRFlow Timeline?
 
-> After years of investigating breaches involving 30–50GB+ super-timelines, I needed a tool that could handle the scale of modern investigations without the overhead of enterprise SIEM infrastructure. IRFlow Timeline was built from real-world IR experience — every feature exists because I needed it during an actual case. From reconstructing ransomware kill chains to tracing lateral movement across hundreds of endpoints, this tool reflects the workflows that DFIR practitioners use every day.
+> Born out of pure frustration with Windows-only forensic tools, so I'm about to release this personal project for DFIR analysts running macOS as their main daily driver. And for incident responders who need to triage timelines in the field without booting up a Windows VM. IRFlow Timeline was built from real-world IR experience — every feature exists because I needed it during an actual case. This tool reflects the workflows that DFIR practitioners use every day.
 >
 > — Renzon Cruz
 
