@@ -32,6 +32,15 @@ IRFlow Timeline is built on the shoulders of incredible open source projects and
 - [Hayabusa](https://github.com/Yamato-Security/hayabusa) — Windows event log analysis tool
 - [Chainsaw](https://github.com/WithSecureLabs/chainsaw) — Windows event log detection tool
 
+## Beta Testers
+
+Thanks to the following people for testing and providing feedback:
+
+- Maddy Keller
+- Omar Jbari
+- Nicolas Bareil
+- Dominic Rathmann
+
 ## DFIR Community
 
 Special thanks to the digital forensics and incident response community for feedback, testing, and ongoing support.
