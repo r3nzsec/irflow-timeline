@@ -65,13 +65,13 @@
 - **Progress bar animation** — CSS `transform: scaleX()` for smoother progress rendering
 - **Indexing status indicator** — Toolbar shows column index + FTS build progress with phase labels
 
-## v2.1.1
+## v0.9.1
 
 - Lateral Movement progress bar for processing feedback
 - Stacking glassmorphism for overlapping histogram sources
 - Histogram upgrades and performance improvements
 
-## v2.1.0
+## v0.9.0
 
 ### New Features
 
@@ -96,7 +96,7 @@
 - Release polish and stability improvements
 - Beta tester credits added
 
-## v2.0.0
+## v0.1.0
 
 ### Core Features
 
