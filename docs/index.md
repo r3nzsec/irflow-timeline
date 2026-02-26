@@ -5,6 +5,9 @@ hero:
   name: IRFlow Timeline
   text: DFIR Timeline Analysis
   tagline: High-performance forensic timeline viewer for MacOS. Handles large files for timeline analysis. CSV/TSV/XLSX/EVTX/Plaso
+  image:
+    src: /irflow-timeline/logo.svg
+    alt: IRFlow Timeline
   actions:
     - theme: brand
       text: Get Started

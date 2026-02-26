@@ -120,6 +120,16 @@
   background-color: #141720;
 }
 
+/* Hero logo image */
+.VPHero .VPImage {
+  max-width: 320px;
+  max-height: 320px;
+}
+
+.dark .VPHero .image-bg {
+  background: radial-gradient(circle, rgba(232, 93, 42, 0.2) 0%, transparent 70%);
+}
+
 /* Footer */
 .dark .VPFooter {
   border-top-color: #2a2d33 !important;
