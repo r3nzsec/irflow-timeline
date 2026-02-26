@@ -91,7 +91,7 @@ function createWindow() {
 // ── File import ────────────────────────────────────────────────────
 async function importFile(filePath) {
   const tabId = `tab_${++tabCounter}_${Date.now()}`;
-  const fileName = path.basename(filePath);
+  const fileName = decodeURIComponent(path.basename(filePath));
   const ext = path.extname(filePath).toLowerCase();
 
   // For XLSX, check for multiple sheets
@@ -436,8 +436,20 @@ ipcMain.handle("get-burst-analysis", (event, { tabId, colName, windowMinutes, th
   return db.getBurstAnalysis(tabId, colName, windowMinutes, thresholdMultiplier, options);
 });
 
+ipcMain.handle("get-process-tree", (event, { tabId, options }) => {
+  return db.getProcessTree(tabId, options);
+});
+
 ipcMain.handle("bulk-tag-by-time-range", (event, { tabId, colName, ranges }) => {
   return db.bulkTagByTimeRange(tabId, colName, ranges);
+});
+
+ipcMain.handle("bulk-tag-filtered", (event, { tabId, tag, options }) => {
+  return db.bulkTagFiltered(tabId, tag, options);
+});
+
+ipcMain.handle("bulk-bookmark-filtered", (event, { tabId, add, options }) => {
+  return db.bulkBookmarkFiltered(tabId, add, options);
 });
 
 // Merge multiple tabs into a single chronological timeline
@@ -531,7 +543,7 @@ ipcMain.handle("import-files", async (event, { filePaths }) => {
 ipcMain.handle("import-file-for-restore", async (event, { filePath, sheetName }) => {
   if (!fs.existsSync(filePath)) return { error: `File not found: ${filePath}` };
   const tabId = `tab_${++tabCounter}_${Date.now()}`;
-  const fileName = path.basename(filePath);
+  const fileName = decodeURIComponent(path.basename(filePath));
   startImport(filePath, tabId, fileName, sheetName || undefined);
   return { tabId, fileName };
 });

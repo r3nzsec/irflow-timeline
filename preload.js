@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld("tle", {
   getGapAnalysis: (tabId, colName, gapThresholdMinutes, options) => ipcRenderer.invoke("get-gap-analysis", { tabId, colName, gapThresholdMinutes, options }),
   getLogSourceCoverage: (tabId, sourceCol, tsCol, options) => ipcRenderer.invoke("get-log-source-coverage", { tabId, sourceCol, tsCol, options }),
   getBurstAnalysis: (tabId, colName, windowMinutes, thresholdMultiplier, options) => ipcRenderer.invoke("get-burst-analysis", { tabId, colName, windowMinutes, thresholdMultiplier, options }),
+  getProcessTree: (tabId, options) => ipcRenderer.invoke("get-process-tree", { tabId, options }),
   bulkTagByTimeRange: (tabId, colName, ranges) => ipcRenderer.invoke("bulk-tag-by-time-range", { tabId, colName, ranges }),
   mergeTabs: (mergedTabId, sources) => ipcRenderer.invoke("merge-tabs", { mergedTabId, sources }),
   getEmptyColumns: (tabId) => ipcRenderer.invoke("get-empty-columns", { tabId }),
@@ -37,6 +38,8 @@ contextBridge.exposeInMainWorld("tle", {
   getAllTagData: (tabId) => ipcRenderer.invoke("get-all-tag-data", { tabId }),
   getBookmarkedIds: (tabId) => ipcRenderer.invoke("get-bookmarked-ids", { tabId }),
   bulkAddTags: (tabId, tagMap) => ipcRenderer.invoke("bulk-add-tags", { tabId, tagMap }),
+  bulkTagFiltered: (tabId, tag, options) => ipcRenderer.invoke("bulk-tag-filtered", { tabId, tag, options }),
+  bulkBookmarkFiltered: (tabId, add, options) => ipcRenderer.invoke("bulk-bookmark-filtered", { tabId, add, options }),
 
   // IOC matching
   loadIocFile: () => ipcRenderer.invoke("load-ioc-file"),
