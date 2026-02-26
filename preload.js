@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld("tle", {
   getLogSourceCoverage: (tabId, sourceCol, tsCol, options) => ipcRenderer.invoke("get-log-source-coverage", { tabId, sourceCol, tsCol, options }),
   getBurstAnalysis: (tabId, colName, windowMinutes, thresholdMultiplier, options) => ipcRenderer.invoke("get-burst-analysis", { tabId, colName, windowMinutes, thresholdMultiplier, options }),
   getProcessTree: (tabId, options) => ipcRenderer.invoke("get-process-tree", { tabId, options }),
+  getLateralMovement: (tabId, options) => ipcRenderer.invoke("get-lateral-movement", { tabId, options }),
   bulkTagByTimeRange: (tabId, colName, ranges) => ipcRenderer.invoke("bulk-tag-by-time-range", { tabId, colName, ranges }),
   mergeTabs: (mergedTabId, sources) => ipcRenderer.invoke("merge-tabs", { mergedTabId, sources }),
   getEmptyColumns: (tabId) => ipcRenderer.invoke("get-empty-columns", { tabId }),

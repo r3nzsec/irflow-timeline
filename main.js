@@ -118,11 +118,16 @@ async function importFile(filePath) {
 }
 
 async function startImport(filePath, tabId, fileName, sheetName) {
+  // Get file size for large-file warnings
+  let fileSize = 0;
+  try { fileSize = fs.statSync(filePath).size; } catch {}
+
   // Notify renderer that import has started
   mainWindow.webContents.send("import-start", {
     tabId,
     fileName,
     filePath,
+    fileSize,
   });
 
   try {
@@ -438,6 +443,10 @@ ipcMain.handle("get-burst-analysis", (event, { tabId, colName, windowMinutes, th
 
 ipcMain.handle("get-process-tree", (event, { tabId, options }) => {
   return db.getProcessTree(tabId, options);
+});
+
+ipcMain.handle("get-lateral-movement", (event, { tabId, options }) => {
+  return db.getLateralMovement(tabId, options);
 });
 
 ipcMain.handle("bulk-tag-by-time-range", (event, { tabId, colName, ranges }) => {

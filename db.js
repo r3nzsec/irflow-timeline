@@ -1684,6 +1684,7 @@ class TimelineDB {
       columnFilters = {}, checkboxFilters = {},
       bookmarkedOnly = false, dateRangeFilters = {},
       advancedFilters = [],
+      granularity = "day",
     } = options;
     const db = meta.db;
     const params = [];
@@ -1717,7 +1718,8 @@ class TimelineDB {
     if (searchTerm.trim()) this._applySearch(searchTerm, searchMode, meta, whereConditions, params, searchCondition);
     this._applyAdvancedFilters(advancedFilters, meta, whereConditions, params);
     const whereClause = `WHERE ${whereConditions.join(" AND ")}`;
-    const sql = `SELECT extract_date(${safeCol}) as day, COUNT(*) as cnt FROM data ${whereClause} GROUP BY day HAVING day IS NOT NULL ORDER BY day`;
+    const extractFn = granularity === "hour" ? `substr(extract_datetime_minute(${safeCol}), 1, 13)` : `extract_date(${safeCol})`;
+    const sql = `SELECT ${extractFn} as day, COUNT(*) as cnt FROM data ${whereClause} GROUP BY day HAVING day IS NOT NULL ORDER BY day`;
     try { return db.prepare(sql).all(...params); } catch { return []; }
   }
 
@@ -2120,6 +2122,9 @@ class TimelineDB {
       return null;
     };
 
+    // Detect EvtxECmd format (KAPE output)
+    const isEvtxECmdPT = meta.headers.some((h) => /^PayloadData1$/i.test(h)) && meta.headers.some((h) => /^ExecutableInfo$/i.test(h));
+
     const columns = {
       pid:         userPidCol        || detect([/^ProcessId$/i, /^pid$/i, /^process_id$/i]),
       ppid:        userPpidCol       || detect([/^ParentProcessId$/i, /^ppid$/i, /^parent_process_id$/i, /^parent_pid$/i]),
@@ -2129,12 +2134,27 @@ class TimelineDB {
       cmdLine:     userCmdLineCol    || detect([/^CommandLine$/i, /^command_line$/i, /^cmd$/i, /^cmdline$/i]),
       user:        userUserCol       || detect([/^User$/i, /^UserName$/i, /^user_name$/i, /^SubjectUserName$/i]),
       ts:          userTsCol         || detect([/^UtcTime$/i, /^datetime$/i, /^TimeCreated$/i, /^timestamp$/i]),
-      eventId:     userEventIdCol    || detect([/^EventID$/i, /^event_id$/i, /^eventid$/i]),
+      eventId:     userEventIdCol    || detect([/^EventID$/i, /^event_id$/i, /^eventid$/i, /^EventId$/]),
     };
 
-    const useGuid = !!(columns.guid && columns.parentGuid);
-    if (!columns.pid && !columns.guid) return { processes: [], stats: {}, columns, error: "Cannot detect ProcessId or ProcessGuid column" };
-    if (!columns.ppid && !columns.parentGuid) return { processes: [], stats: {}, columns, error: "Cannot detect ParentProcessId or ParentProcessGuid column" };
+    // EvtxECmd: OVERRIDE columns — ProcessId in CSV header is the logging service PID (e.g., Sysmon 5464),
+    // NOT the created process PID. Real PID/GUID is inside PayloadData1/PayloadData5.
+    // PayloadData1: "ProcessID: N, ProcessGUID: {guid}"
+    // PayloadData5: "ParentProcessID: N, ParentProcessGUID: {guid}"
+    // ExecutableInfo: full command line (image path extractable from first token)
+    if (isEvtxECmdPT) {
+      columns.pid = detect([/^PayloadData1$/i]) || columns.pid;       // MUST override — CSV ProcessId is service PID
+      columns.ppid = detect([/^PayloadData5$/i]) || columns.ppid;     // MUST override
+      columns.guid = detect([/^PayloadData1$/i]) || columns.guid;     // GUID parsed from same field as PID
+      columns.parentGuid = detect([/^PayloadData5$/i]) || columns.parentGuid; // parent GUID from same field as PPID
+      columns.image = detect([/^ExecutableInfo$/i]) || columns.image; // image extracted from command line
+      columns.cmdLine = detect([/^ExecutableInfo$/i]) || columns.cmdLine;
+    }
+    columns._isEvtxECmd = isEvtxECmdPT;
+
+    const useGuid = !!(columns.guid && columns.parentGuid) || isEvtxECmdPT;
+    if (!columns.pid && !columns.guid && !isEvtxECmdPT) return { processes: [], stats: {}, columns, error: "Cannot detect ProcessId or ProcessGuid column" };
+    if (!columns.ppid && !columns.parentGuid && !isEvtxECmdPT) return { processes: [], stats: {}, columns, error: "Cannot detect ParentProcessId or ParentProcessGuid column" };
 
     const db = meta.db;
     const params = [];
@@ -2174,10 +2194,15 @@ class TimelineDB {
 
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
 
-    // Build SELECT
+    // Build SELECT — deduplicate when multiple keys map to the same column (e.g., EvtxECmd: pid+guid both from PayloadData1)
     const selectParts = ["data.rowid as _rowid"];
+    const selectedCols = new Set();
     for (const [key, colName] of Object.entries(columns)) {
-      if (colName && meta.colMap[colName]) selectParts.push(`${meta.colMap[colName]} as [${key}]`);
+      if (key.startsWith("_")) continue;  // skip internal flags
+      if (colName && meta.colMap[colName] && !selectedCols.has(colName)) {
+        selectParts.push(`${meta.colMap[colName]} as [${key}]`);
+        selectedCols.add(colName);
+      }
     }
 
     const orderCol = columns.ts ? meta.colMap[columns.ts] : null;
@@ -2193,22 +2218,54 @@ class TimelineDB {
       const childrenOf = new Map();
 
       for (const row of rows) {
-        const key = useGuid
-          ? (row.guid || `pid:${row.pid}:${row._rowid}`)
-          : `pid:${row.pid}:${row._rowid}`;
-        const parentKey = useGuid
-          ? (row.parentGuid || `pid:${row.ppid}`)
-          : `pid:${row.ppid}`;
+        let pid = row.pid || "";
+        let ppid = row.ppid || "";
+        let guid = row.guid || "";
+        let parentGuid = row.parentGuid || "";
+        let imagePath = row.image || "";
+        let cmdLine = row.cmdLine || "";
 
-        const imagePath = row.image || "";
+        // EvtxECmd: parse structured PayloadData fields
+        if (isEvtxECmdPT) {
+          // PayloadData1: "ProcessID: 5668, ProcessGUID: 7bf9956e-0a95-6931-a700-000000000700"
+          // row.pid holds PayloadData1 (may also be aliased as guid due to same column)
+          const pd1 = row.pid || row.guid || "";
+          const pidMatch = pd1.match(/ProcessID:\s*(\d+)/i);
+          const guidMatch = pd1.match(/ProcessGUID:\s*([0-9a-f-]+)/i);
+          if (pidMatch) pid = pidMatch[1];
+          if (guidMatch) guid = guidMatch[1];
+
+          // PayloadData5: "ParentProcessID: 4408, ParentProcessGUID: 7bf9956e-..."
+          const pd5 = row.ppid || row.parentGuid || "";
+          const ppidMatch = pd5.match(/ParentProcessID:\s*(\d+)/i);
+          const pguidMatch = pd5.match(/ParentProcessGUID:\s*([0-9a-f-]+)/i);
+          if (ppidMatch) ppid = ppidMatch[1];
+          if (pguidMatch) parentGuid = pguidMatch[1];
+
+          // ExecutableInfo: full command line — may be aliased as image or cmdLine depending on dedup order
+          const execInfo = row.image || row.cmdLine || "";
+          cmdLine = execInfo;
+          // Extract image path from command line (first token, may be quoted)
+          if (execInfo) {
+            const qm = execInfo.match(/^"([^"]+)"/);
+            imagePath = qm ? qm[1] : execInfo.split(/\s/)[0];
+          }
+        }
+
+        const key = useGuid && guid
+          ? guid
+          : `pid:${pid}:${row._rowid}`;
+        const parentKey = useGuid && parentGuid
+          ? parentGuid
+          : `pid:${ppid}`;
+
         const processName = imagePath.split("\\").pop().split("/").pop() || "(unknown)";
 
         const node = {
           key, parentKey, rowid: row._rowid,
-          pid: row.pid || "", ppid: row.ppid || "",
-          guid: row.guid || "", parentGuid: row.parentGuid || "",
+          pid, ppid, guid, parentGuid,
           image: imagePath, processName,
-          cmdLine: row.cmdLine || "", user: row.user || "", ts: row.ts || "",
+          cmdLine, user: row.user || "", ts: row.ts || "",
           childCount: 0, depth: 0,
         };
         processes.push(node);
@@ -2244,6 +2301,247 @@ class TimelineDB {
       };
     } catch (e) {
       return { processes: [], stats: {}, columns, error: e.message };
+    }
+  }
+
+  getLateralMovement(tabId, options = {}) {
+    const meta = this.databases.get(tabId);
+    if (!meta) return { nodes: [], edges: [], chains: [], stats: {}, columns: {}, error: "No database" };
+
+    const {
+      sourceCol: userSourceCol, targetCol: userTargetCol,
+      userCol: userUserCol, logonTypeCol: userLogonTypeCol,
+      eventIdCol: userEventIdCol, tsCol: userTsCol, domainCol: userDomainCol,
+      eventIds = ["4624", "4625", "4648"],
+      excludeLocalLogons = true,
+      excludeServiceAccounts = true,
+      searchTerm = "", searchMode = "mixed", searchCondition = "contains",
+      columnFilters = {}, checkboxFilters = {},
+      bookmarkedOnly = false, dateRangeFilters = {},
+      advancedFilters = [],
+      maxRows = 500000,
+    } = options;
+
+    const detect = (patterns) => {
+      for (const pat of patterns) {
+        const found = meta.headers.find((h) => pat.test(h));
+        if (found) return found;
+      }
+      return null;
+    };
+
+    // Detect EvtxECmd format (KAPE output): RemoteHost, PayloadData1-6
+    const isEvtxECmd = meta.headers.some((h) => /^RemoteHost$/i.test(h)) && meta.headers.some((h) => /^PayloadData1$/i.test(h));
+
+    const columns = {
+      source:      userSourceCol    || detect([/^IpAddress$/i, /^SourceNetworkAddress$/i, /^SourceAddress$/i, /^Source_Network_Address$/i, /^RemoteHost$/i]),
+      workstation: detect([/^WorkstationName$/i, /^Workstation_Name$/i, /^SourceHostname$/i, /^SourceComputerName$/i]),
+      target:      userTargetCol    || detect([/^Computer$/i, /^ComputerName$/i, /^computer_name$/i, /^Hostname$/i]),
+      user:        userUserCol      || detect([/^TargetUserName$/i, /^Target_User_Name$/i, /^UserName$/i, ...(isEvtxECmd ? [/^PayloadData1$/i] : [])]),
+      logonType:   userLogonTypeCol || detect([/^LogonType$/i, /^Logon_Type$/i, ...(isEvtxECmd ? [/^PayloadData2$/i] : [])]),
+      eventId:     userEventIdCol   || detect([/^EventID$/i, /^event_id$/i, /^eventid$/i, /^EventId$/]),
+      ts:          userTsCol        || detect([/^datetime$/i, /^UtcTime$/i, /^TimeCreated$/i, /^timestamp$/i]),
+      domain:      userDomainCol    || detect([/^TargetDomainName$/i, /^Target_Domain_Name$/i, /^SubjectDomainName$/i]),
+      // EvtxECmd extra columns for value parsing
+      _remoteHost: isEvtxECmd ? detect([/^RemoteHost$/i]) : null,
+      _payloadData1: isEvtxECmd ? detect([/^PayloadData1$/i]) : null,
+      _payloadData2: isEvtxECmd ? detect([/^PayloadData2$/i]) : null,
+    };
+    columns._isEvtxECmd = isEvtxECmd;
+
+    if (!columns.source && !columns.workstation) return { nodes: [], edges: [], chains: [], stats: {}, columns, error: "Cannot detect source host column (IpAddress, WorkstationName, or RemoteHost)" };
+    if (!columns.target) return { nodes: [], edges: [], chains: [], stats: {}, columns, error: "Cannot detect target host column (Computer)" };
+
+    const db = meta.db;
+    const params = [];
+    const whereConditions = [];
+
+    if (columns.eventId && eventIds.length > 0) {
+      const safeEid = meta.colMap[columns.eventId];
+      if (safeEid) {
+        whereConditions.push(`${safeEid} IN (${eventIds.map(() => "?").join(",")})`);
+        params.push(...eventIds);
+      }
+    }
+
+    for (const [cn, fv] of Object.entries(columnFilters)) {
+      if (!fv) continue;
+      const sc = meta.colMap[cn]; if (!sc) continue;
+      whereConditions.push(`${sc} LIKE ?`); params.push(`%${fv}%`);
+    }
+    for (const [cn, values] of Object.entries(checkboxFilters)) {
+      if (!values || values.length === 0) continue;
+      const sc = meta.colMap[cn]; if (!sc) continue;
+      const hasNull = values.some((v) => v === null || v === "");
+      const nonNull = values.filter((v) => v !== null && v !== "");
+      const parts = [];
+      if (hasNull) parts.push(`(${sc} IS NULL OR ${sc} = '')`);
+      if (nonNull.length === 1) { parts.push(`${sc} = ?`); params.push(nonNull[0]); }
+      else if (nonNull.length > 1) { parts.push(`${sc} IN (${nonNull.map(() => "?").join(",")})`); params.push(...nonNull); }
+      whereConditions.push(parts.length > 1 ? `(${parts.join(" OR ")})` : parts[0]);
+    }
+    for (const [cn, range] of Object.entries(dateRangeFilters)) {
+      const sc = meta.colMap[cn]; if (!sc) continue;
+      if (range.from) { whereConditions.push(`${sc} >= ?`); params.push(range.from); }
+      if (range.to) { whereConditions.push(`${sc} <= ?`); params.push(range.to); }
+    }
+    if (bookmarkedOnly) whereConditions.push(`data.rowid IN (SELECT rowid FROM bookmarks)`);
+    if (searchTerm.trim()) this._applySearch(searchTerm, searchMode, meta, whereConditions, params, searchCondition);
+    this._applyAdvancedFilters(advancedFilters, meta, whereConditions, params);
+
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
+
+    const selectParts = ["data.rowid as _rowid"];
+    for (const [key, colName] of Object.entries(columns)) {
+      if (colName && meta.colMap[colName]) selectParts.push(`${meta.colMap[colName]} as [${key}]`);
+    }
+
+    const orderCol = columns.ts ? meta.colMap[columns.ts] : null;
+    const orderClause = orderCol ? `ORDER BY ${orderCol} ASC` : "ORDER BY data.rowid ASC";
+
+    try {
+      const sql = `SELECT ${selectParts.join(", ")} FROM data ${whereClause} ${orderClause} LIMIT ${maxRows}`;
+      const rows = db.prepare(sql).all(...params);
+
+      const EXCLUDED_IPS = new Set(["-", "::1", "127.0.0.1", "0.0.0.0", ""]);
+      const SERVICE_RE = /^(SYSTEM|LOCAL SERVICE|NETWORK SERVICE|DWM-\d+|UMFD-\d+|ANONYMOUS LOGON)$/i;
+
+      const edgeMap = new Map();
+      const hostSet = new Map();
+      const timeOrdered = [];
+
+      for (const row of rows) {
+        const targetHost = (row.target || "").toUpperCase().trim();
+        if (!targetHost) continue;
+
+        let sourceHost = (row.workstation || "").toUpperCase().trim();
+        if (!sourceHost || sourceHost === "-") sourceHost = (row.source || "").toUpperCase().trim();
+
+        // EvtxECmd: RemoteHost format is "WorkstationName (IpAddress)" e.g. "- (::1)" or "WKST01 (10.0.0.5)"
+        if (isEvtxECmd && row.source) {
+          const rh = row.source.trim();
+          // Skip non-host values from firewall/other events: *:, *: 445, LOCALSUBNET:*, LOCAL, etc.
+          if (/^\*/.test(rh) || /^LOCALSUBNET/i.test(rh) || /^LOCAL$/i.test(rh)) { continue; }
+          const rhMatch = rh.match(/^(.+?)\s*\(([^)]+)\)$/);
+          if (rhMatch) {
+            const wkst = rhMatch[1].trim();
+            const ip = rhMatch[2].trim();
+            sourceHost = (wkst && wkst !== "-") ? wkst.toUpperCase() : ip.toUpperCase();
+          } else {
+            sourceHost = rh.toUpperCase();
+          }
+        }
+
+        if (!sourceHost || EXCLUDED_IPS.has(sourceHost)) continue;
+        if (excludeLocalLogons && sourceHost === targetHost) continue;
+
+        // EvtxECmd: PayloadData1 format is "Target: DOMAIN\User" — only parse if it matches, else clear
+        let user = row.user || "";
+        if (isEvtxECmd && user) {
+          const pdMatch = user.match(/^Target:\s*(?:([^\\]+)\\)?(.+)$/i);
+          if (pdMatch) user = pdMatch[2].trim();
+          else user = "";  // Not a logon event — PayloadData1 has unrelated data
+        }
+        if (excludeServiceAccounts && user && (SERVICE_RE.test(user) || user.endsWith("$"))) continue;
+
+        // EvtxECmd: PayloadData2 format is "LogonType N" — only parse if it matches, else clear
+        let logonType = row.logonType || "";
+        if (isEvtxECmd && logonType) {
+          const ltMatch = logonType.match(/LogonType\s+(\d+)/i);
+          if (ltMatch) logonType = ltMatch[1];
+          else logonType = "";  // Not a logon event — PayloadData2 has unrelated data
+        }
+
+        const eventId = row.eventId || "";
+        const ts = row.ts || "";
+        const isFailure = eventId === "4625";
+
+        if (!hostSet.has(sourceHost)) hostSet.set(sourceHost, { isSource: false, isTarget: false, eventCount: 0 });
+        if (!hostSet.has(targetHost)) hostSet.set(targetHost, { isSource: false, isTarget: false, eventCount: 0 });
+        hostSet.get(sourceHost).isSource = true;
+        hostSet.get(sourceHost).eventCount++;
+        hostSet.get(targetHost).isTarget = true;
+        hostSet.get(targetHost).eventCount++;
+
+        const edgeKey = `${sourceHost}->${targetHost}`;
+        if (!edgeMap.has(edgeKey)) {
+          edgeMap.set(edgeKey, { source: sourceHost, target: targetHost, count: 0, users: new Set(), logonTypes: new Set(), firstSeen: ts, lastSeen: ts, hasFailures: false });
+        }
+        const edge = edgeMap.get(edgeKey);
+        edge.count++;
+        if (user) edge.users.add(user);
+        if (logonType) edge.logonTypes.add(logonType);
+        if (ts && ts < edge.firstSeen) edge.firstSeen = ts;
+        if (ts && ts > edge.lastSeen) edge.lastSeen = ts;
+        if (isFailure) edge.hasFailures = true;
+
+        timeOrdered.push({ source: sourceHost, target: targetHost, user, ts, logonType });
+      }
+
+      // Chain detection: time-ordered DFS for multi-hop paths
+      const adjByTime = new Map();
+      for (const evt of timeOrdered) {
+        if (!adjByTime.has(evt.source)) adjByTime.set(evt.source, []);
+        adjByTime.get(evt.source).push({ target: evt.target, ts: evt.ts, user: evt.user });
+      }
+
+      const chains = [];
+      const MAX_CHAINS = 50;
+      const MIN_HOPS = 2;
+
+      const originHosts = [...hostSet.entries()].filter(([, info]) => info.isSource).map(([host]) => host);
+
+      for (const origin of originHosts) {
+        if (chains.length >= MAX_CHAINS) break;
+        const stack = [{ host: origin, path: [{ host: origin, ts: "", user: "" }], visited: new Set([origin]) }];
+        while (stack.length > 0 && chains.length < MAX_CHAINS) {
+          const { host, path, visited } = stack.pop();
+          const lastTs = path[path.length - 1].ts;
+          const neighbors = adjByTime.get(host) || [];
+          let extended = false;
+          for (const edge of neighbors) {
+            if (lastTs && edge.ts && edge.ts < lastTs) continue;
+            if (visited.has(edge.target)) continue;
+            const newPath = [...path, { host: edge.target, ts: edge.ts, user: edge.user }];
+            const newVisited = new Set(visited);
+            newVisited.add(edge.target);
+            extended = true;
+            stack.push({ host: edge.target, path: newPath, visited: newVisited });
+          }
+          if (!extended && path.length >= MIN_HOPS + 1) {
+            chains.push({
+              path: path.map((p) => p.host),
+              timestamps: path.map((p) => p.ts),
+              users: [...new Set(path.slice(1).map((p) => p.user).filter(Boolean))],
+              hops: path.length - 1,
+            });
+          }
+        }
+      }
+      chains.sort((a, b) => b.hops - a.hops);
+
+      return {
+        nodes: [...hostSet.entries()].map(([id, info]) => ({
+          id, label: id, eventCount: info.eventCount,
+          isSource: info.isSource, isTarget: info.isTarget,
+          isBoth: info.isSource && info.isTarget,
+        })),
+        edges: [...edgeMap.values()].map((e) => ({
+          ...e, users: [...e.users], logonTypes: [...e.logonTypes],
+        })),
+        chains,
+        stats: {
+          totalEvents: rows.length, uniqueHosts: hostSet.size,
+          uniqueUsers: new Set(timeOrdered.map((e) => e.user).filter(Boolean)).size,
+          uniqueConnections: edgeMap.size,
+          failedLogons: timeOrdered.filter((e) => e.logonType === "4625" || rows.find((r) => r._rowid && r.eventId === "4625")).length,
+          longestChain: chains.length > 0 ? chains[0].hops : 0,
+          chainCount: chains.length,
+        },
+        columns, error: null,
+      };
+    } catch (e) {
+      return { nodes: [], edges: [], chains: [], stats: {}, columns, error: e.message };
     }
   }
 

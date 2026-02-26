@@ -408,6 +408,8 @@ export default function App() {
   const [histogramHeight, setHistogramHeight] = useState(160);
   const histResizeStartY = useRef(0);
   const histResizeStartH = useRef(0);
+  const [histGranularity, setHistGranularity] = useState("day");
+  const [histBrush, setHistBrush] = useState({ startIdx: null, endIdx: null, active: false });
   const [crossFind, setCrossFind] = useState(null); // { term, results: [{tabId, name, count}] }
   const [crossTabCounts, setCrossTabCounts] = useState(null); // auto inline: { term, mode, results: [{tabId, name, count}] }
   const [crossTabOpen, setCrossTabOpen] = useState(true);
@@ -567,7 +569,7 @@ export default function App() {
     if (!histogramVisible || !ct?.dataReady || !ct?.tsColumns?.size || !tle) { setHistogramData([]); return; }
     const hCol = histogramCol && ct.tsColumns.has(histogramCol) ? histogramCol : [...ct.tsColumns][0];
     if (!hCol) return;
-    const sig = `${ct.id}:${hCol}:${ct.totalFiltered}:${ct.searchTerm}:${ct.searchMode}:${ct.showBookmarkedOnly}:${JSON.stringify(ct.dateRangeFilters)}:${JSON.stringify(ct.advancedFilters)}`;
+    const sig = `${ct.id}:${hCol}:${histGranularity}:${ct.totalFiltered}:${ct.searchTerm}:${ct.searchMode}:${ct.showBookmarkedOnly}:${JSON.stringify(ct.dateRangeFilters)}:${JSON.stringify(ct.advancedFilters)}`;
     const cached = histogramCache.current[ct.id];
     if (cached && cached.sig === sig) { setHistogramData(cached.data); return; }
     if (cached) setHistogramData(cached.data); // show stale data while refreshing
@@ -578,13 +580,14 @@ export default function App() {
         searchTerm: effectiveSearch, searchMode: ct.searchMode, searchCondition: ct.searchCondition || "contains",
         columnFilters: af.columnFilters, checkboxFilters: af.checkboxFilters,
         bookmarkedOnly: ct.showBookmarkedOnly, dateRangeFilters: ct.dateRangeFilters || {}, advancedFilters: ct.advancedFilters || [],
+        granularity: histGranularity,
       });
       const result = data || [];
       histogramCache.current[ct.id] = { sig, data: result };
       setHistogramData(result);
     }, 400);
     return () => { if (histogramTimer.current) clearTimeout(histogramTimer.current); };
-  }, [histogramVisible, histogramCol, ct?.id, ct?.totalFiltered, ct?.searchTerm, ct?.searchMode, ct?.showBookmarkedOnly, JSON.stringify(ct?.dateRangeFilters), JSON.stringify(ct?.advancedFilters)]); // eslint-disable-line
+  }, [histogramVisible, histogramCol, histGranularity, ct?.id, ct?.totalFiltered, ct?.searchTerm, ct?.searchMode, ct?.showBookmarkedOnly, JSON.stringify(ct?.dateRangeFilters), JSON.stringify(ct?.advancedFilters)]); // eslint-disable-line
 
   // ── Scroll-driven window fetch (server-side virtual scrolling) ──
   const scrollFetchTimer = useRef(null);
@@ -800,8 +803,8 @@ export default function App() {
     // Remove any pre-existing listeners to avoid duplicates
     allChannels.forEach((ch) => tle.removeAllListeners(ch));
 
-    tle.onImportStart(({ tabId, fileName, filePath }) => {
-      setImportingTabs((prev) => ({ ...prev, [tabId]: { fileName, rowsImported: 0, percent: 0, status: "importing" } }));
+    tle.onImportStart(({ tabId, fileName, filePath, fileSize }) => {
+      setImportingTabs((prev) => ({ ...prev, [tabId]: { fileName, rowsImported: 0, percent: 0, status: "importing", fileSize: fileSize || 0 } }));
       setTabs((prev) => [...prev, {
         id: tabId, name: fileName, filePath, headers: [], rows: [], totalRows: 0, totalFiltered: 0,
         tsColumns: new Set(), numericColumns: new Set(), searchTerm: "", searchMode: "mixed", searchCondition: "contains",
@@ -1736,6 +1739,11 @@ export default function App() {
           <span>{formatNumber(info.rowsImported || 0)} rows imported</span>
           <span>{info.percent || 0}%</span>
         </div>
+        {info.fileSize > 3 * 1024 * 1024 * 1024 && (
+          <div style={{ marginTop: 16, padding: "10px 14px", background: (th.warning || "#d29922") + "15", border: `1px solid ${(th.warning || "#d29922")}44`, borderRadius: 8, color: th.warning || "#d29922", fontSize: 11, lineHeight: 1.5, fontFamily: "-apple-system, sans-serif" }}>
+            <strong>Large file detected ({(info.fileSize / (1024 * 1024 * 1024)).toFixed(1)} GB)</strong> — This may take several minutes. Do not close this window or import additional files until ingestion is complete.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1891,10 +1899,22 @@ export default function App() {
                     { label: "Burst Detection", icon: ic(<><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill={th.accent+"33"}/></>, th.danger || "#f85149"), action: () => {
                       if (ct?.dataReady && ct?.tsColumns?.size) setModal({ type: "burstAnalysis", phase: "config", colName: [...ct.tsColumns][0], windowMinutes: 5, thresholdMultiplier: 5, data: null, loading: false });
                     }, disabled: !ct?.dataReady || !ct?.tsColumns?.size },
-                    { label: "Process Tree", icon: ic(<><circle cx="5" cy="12" r="2.5" fill={th.success+"33"}/><circle cx="18" cy="6" r="2.5" fill={th.success+"33"}/><circle cx="18" cy="18" r="2.5" fill={th.success+"33"}/><line x1="7.5" y1="11" x2="15.5" y2="6.5"/><line x1="7.5" y1="13" x2="15.5" y2="17.5"/></>, th.success || "#3fb950"), action: () => {
+                    { label: "Process Tree", icon: ic(<><rect x="3" y="10" width="5" height="5" rx="1" fill={th.success+"33"}/><rect x="14" y="3" width="5" height="5" rx="1" fill={th.success+"33"}/><rect x="14" y="16" width="5" height="5" rx="1" fill={th.success+"33"}/><path d="M8 12.5h3v-7h3M11 12.5v5.5h3" strokeLinecap="round"/></>, th.success || "#3fb950"), action: () => {
                       if (!ct?.dataReady) return;
                       const det = (pats) => { for (const p of pats) { const f = ct.headers.find((h) => p.test(h)); if (f) return f; } return null; };
-                      const cols = {
+                      const isEvtxECmdPT = ct.headers.some((h) => /^PayloadData1$/i.test(h)) && ct.headers.some((h) => /^ExecutableInfo$/i.test(h));
+                      const cols = isEvtxECmdPT ? {
+                        // EvtxECmd: CSV ProcessId is the logging service PID, NOT the created process PID
+                        pid: det([/^PayloadData1$/i]),
+                        ppid: det([/^PayloadData5$/i]),
+                        guid: det([/^PayloadData1$/i]),       // GUID parsed from same field in post-processing
+                        parentGuid: det([/^PayloadData5$/i]), // parent GUID parsed from same field
+                        image: det([/^ExecutableInfo$/i]),     // image extracted from command line
+                        cmdLine: det([/^ExecutableInfo$/i]),
+                        user: det([/^UserName$/i, /^User$/i]),
+                        ts: det([/^TimeCreated$/i, /^datetime$/i]),
+                        eventId: det([/^EventId$/i, /^EventID$/i]),
+                      } : {
                         pid: det([/^ProcessId$/i, /^pid$/i, /^process_id$/i]),
                         ppid: det([/^ParentProcessId$/i, /^ppid$/i, /^parent_process_id$/i]),
                         guid: det([/^ProcessGuid$/i, /^process_guid$/i]),
@@ -1903,9 +1923,24 @@ export default function App() {
                         cmdLine: det([/^CommandLine$/i, /^command_line$/i, /^cmdline$/i]),
                         user: det([/^User$/i, /^UserName$/i]),
                         ts: det([/^UtcTime$/i, /^datetime$/i, /^TimeCreated$/i]),
-                        eventId: det([/^EventID$/i, /^event_id$/i]),
+                        eventId: det([/^EventID$/i, /^event_id$/i, /^EventId$/]),
                       };
                       setModal({ type: "processTree", phase: "config", columns: cols, eventIdValue: "1", data: null, loading: false, expandedNodes: {}, searchText: "", error: null });
+                    }, disabled: !ct?.dataReady },
+                    { label: "Lateral Movement", icon: ic(<><circle cx="5" cy="12" r="2.5" fill={(th.danger||"#f85149")+"33"}/><circle cx="19" cy="5" r="2.5" fill={(th.danger||"#f85149")+"33"}/><circle cx="19" cy="19" r="2.5" fill={(th.danger||"#f85149")+"33"}/><line x1="7.5" y1="11" x2="16.5" y2="6"/><line x1="7.5" y1="13" x2="16.5" y2="18"/><circle cx="12" cy="12" r="1.5" fill={(th.danger||"#f85149")+"55"}/></>, th.danger || "#f85149"), action: () => {
+                      if (!ct?.dataReady) return;
+                      const det = (pats) => { for (const p of pats) { const f = ct.headers.find((h) => p.test(h)); if (f) return f; } return null; };
+                      const isEvtxECmd = ct.headers.some((h) => /^RemoteHost$/i.test(h)) && ct.headers.some((h) => /^PayloadData1$/i.test(h));
+                      const cols = {
+                        source: det([/^IpAddress$/i, /^SourceNetworkAddress$/i, /^SourceAddress$/i, /^RemoteHost$/i]),
+                        target: det([/^Computer$/i, /^ComputerName$/i, /^Hostname$/i]),
+                        user: det([/^TargetUserName$/i, /^Target_User_Name$/i, /^UserName$/i, ...(isEvtxECmd ? [/^PayloadData1$/i] : [])]),
+                        logonType: det([/^LogonType$/i, /^Logon_Type$/i, ...(isEvtxECmd ? [/^PayloadData2$/i] : [])]),
+                        eventId: det([/^EventID$/i, /^event_id$/i, /^EventId$/]),
+                        ts: det([/^datetime$/i, /^UtcTime$/i, /^TimeCreated$/i]),
+                        domain: det([/^TargetDomainName$/i]),
+                      };
+                      setModal({ type: "lateralMovement", phase: "config", columns: cols, eventIds: "4624,4625,4648", excludeLocal: true, excludeService: true, data: null, loading: false, error: null, selectedNode: null, selectedEdge: null, viewTab: "graph", positions: null });
                     }, disabled: !ct?.dataReady },
                     { label: "Edit Filter", icon: ic(<><rect x="3" y="4" width="18" height="16" rx="2" fill="none"/><line x1="7" y1="9" x2="17" y2="9"/><line x1="7" y1="13" x2="14" y2="13"/><line x1="7" y1="17" x2="11" y2="17"/></>), action: () => {
                       if (ct?.dataReady) setModal({ type: "editFilter" });
@@ -2180,24 +2215,59 @@ export default function App() {
         </div>
       )}
 
-      {/* Timeline Histogram (Kibana-style with axes, resizable) */}
+      {/* Timeline Histogram — glass, brush-select, hourly toggle */}
       {histogramVisible && ct?.dataReady && ct?.tsColumns?.size > 0 && (() => {
         const effectiveHistCol = histogramCol && ct.tsColumns.has(histogramCol) ? histogramCol : [...ct.tsColumns][0];
-        const HIST_H = histogramHeight, Y_AXIS_W = 44, X_AXIS_H = 18, CHART_PAD_T = 4, HEADER_BAR = 26;
+        const HIST_H = histogramHeight, Y_AXIS_W = 44, X_AXIS_H = 18, CHART_PAD_T = 4, HEADER_BAR = 28;
         const svgH = HIST_H - HEADER_BAR;
         const chartH = svgH - X_AXIS_H - CHART_PAD_T;
+        const isHourly = histGranularity === "hour";
+        const bucketLabel = isHourly ? "hour" : "day";
+        // Brush helpers
+        const getBarIdx = (e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          const cw = r.width - Y_AXIS_W;
+          const bw = cw / (histogramData.length || 1);
+          return Math.max(0, Math.min(histogramData.length - 1, Math.floor((e.clientX - r.left - Y_AXIS_W) / bw)));
+        };
+        const brushFrom = (d) => isHourly ? d + ":00:00" : d + " 00:00:00";
+        const brushTo = (d) => isHourly ? d + ":59:59" : d + " 23:59:59";
+        const onSvgDown = (e) => { if (e.button !== 0 || !histogramData.length) return; const idx = getBarIdx(e); setHistBrush({ startIdx: idx, endIdx: idx, active: true }); };
+        const onSvgMove = (e) => { if (!histBrush.active) return; setHistBrush((b) => ({ ...b, endIdx: getBarIdx(e) })); };
+        const onSvgUp = (e) => {
+          if (!histBrush.active || !histogramData.length) return;
+          const end = getBarIdx(e);
+          const lo = Math.min(histBrush.startIdx, end), hi = Math.max(histBrush.startIdx, end);
+          if (lo === hi) {
+            const d = histogramData[lo];
+            if (d) up("dateRangeFilters", { ...(ct.dateRangeFilters || {}), [effectiveHistCol]: { from: brushFrom(d.day), to: brushTo(d.day) } });
+          } else {
+            const dLo = histogramData[lo], dHi = histogramData[hi];
+            if (dLo && dHi) up("dateRangeFilters", { ...(ct.dateRangeFilters || {}), [effectiveHistCol]: { from: brushFrom(dLo.day), to: brushTo(dHi.day) } });
+          }
+          setHistBrush({ startIdx: null, endIdx: null, active: false });
+        };
         return (
-          <div id="hist-container" style={{ height: HIST_H, padding: "4px 12px 0", background: th.panelBg, borderBottom: `1px solid ${th.border}`, flexShrink: 0, position: "relative", overflow: "hidden" }}>
+          <div id="hist-container" style={{ height: HIST_H, padding: "4px 12px 0", background: `linear-gradient(180deg, ${th.panelBg}ee, ${th.panelBg}cc)`, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", borderBottom: `1px solid ${th.border}44`, flexShrink: 0, position: "relative", overflow: "hidden" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, height: HEADER_BAR - 6 }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={th.accent} strokeWidth="2"><rect x="3" y="12" width="4" height="9" rx="1" /><rect x="10" y="6" width="4" height="15" rx="1" /><rect x="17" y="3" width="4" height="18" rx="1" /></svg>
-              <span style={{ color: th.textDim, fontSize: 10, fontWeight: 600 }}>Timeline</span>
-              <select value={effectiveHistCol || ""} onChange={(e) => setHistogramCol(e.target.value)}
-                style={{ background: th.btnBg, border: `1px solid ${th.btnBorder}`, color: th.textDim, fontSize: 10, padding: "2px 6px", borderRadius: 4, cursor: "pointer", outline: "none" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "2px 8px", background: `${th.panelBg}88`, borderRadius: 6, border: `1px solid ${th.border}33` }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={th.accent} strokeWidth="2"><rect x="3" y="12" width="4" height="9" rx="1" /><rect x="10" y="6" width="4" height="15" rx="1" /><rect x="17" y="3" width="4" height="18" rx="1" /></svg>
+                <span style={{ color: th.textDim, fontSize: 10, fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>Timeline</span>
+              </div>
+              <select value={effectiveHistCol || ""} onChange={(e) => { setHistogramCol(e.target.value); setHistBrush({ startIdx: null, endIdx: null, active: false }); }}
+                style={{ background: th.bgInput, border: `1px solid ${th.btnBorder}`, color: th.textDim, fontSize: 10, padding: "2px 6px", borderRadius: 4, cursor: "pointer", outline: "none" }}>
                 {[...ct.tsColumns].map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
+              {/* Granularity toggle */}
+              <div style={{ display: "flex", background: th.btnBg, borderRadius: 5, border: `1px solid ${th.btnBorder}`, overflow: "hidden" }}>
+                {["day", "hour"].map((g) => (
+                  <button key={g} onClick={() => { setHistGranularity(g); setHistBrush({ startIdx: null, endIdx: null, active: false }); }}
+                    style={{ padding: "2px 8px", fontSize: 9, fontWeight: histGranularity === g ? 600 : 400, background: histGranularity === g ? th.accent + "22" : "transparent", color: histGranularity === g ? th.accent : th.textMuted, border: "none", cursor: "pointer", fontFamily: "-apple-system,sans-serif", textTransform: "capitalize" }}>{g}</button>
+                ))}
+              </div>
               {histogramData.length > 0 && (
-                <span style={{ color: th.textMuted, fontSize: 9 }}>
-                  {histogramData[0]?.day} — {histogramData[histogramData.length - 1]?.day} ({histogramData.length} day{histogramData.length !== 1 ? "s" : ""})
+                <span style={{ color: th.textMuted, fontSize: 9, fontFamily: "-apple-system, sans-serif" }}>
+                  {histogramData[0]?.day} — {histogramData[histogramData.length - 1]?.day} ({histogramData.length} {bucketLabel}{histogramData.length !== 1 ? "s" : ""})
                 </span>
               )}
               {ct.dateRangeFilters?.[effectiveHistCol] && (
@@ -2205,17 +2275,17 @@ export default function App() {
                   const next = { ...(ct.dateRangeFilters || {}) };
                   delete next[effectiveHistCol];
                   up("dateRangeFilters", next);
-                }} style={{ background: `${th.warning}22`, border: `1px solid ${th.warning}4D`, color: th.warning, cursor: "pointer", fontSize: 9, padding: "1px 8px", borderRadius: 3, marginLeft: "auto" }}>
-                  Clear {ct.dateRangeFilters[effectiveHistCol].from?.slice(0, 10)} filter
+                }} style={{ background: `${th.warning}22`, border: `1px solid ${th.warning}4D`, color: th.warning, cursor: "pointer", fontSize: 9, padding: "1px 8px", borderRadius: 3, marginLeft: "auto", fontFamily: "-apple-system,sans-serif" }}>
+                  Clear filter
                 </button>
               )}
-              <button onClick={() => setHistogramVisible(false)} style={{ background: "none", border: "none", color: th.textMuted, cursor: "pointer", fontSize: 10, marginLeft: ct.dateRangeFilters?.[effectiveHistCol] ? 4 : "auto", padding: "0 4px" }}>✕</button>
+              <button onClick={() => setHistogramVisible(false)} style={{ background: "none", border: "none", color: th.textMuted, cursor: "pointer", fontSize: 10, marginLeft: ct.dateRangeFilters?.[effectiveHistCol] ? 4 : "auto", padding: "0 4px" }}>{"\u2715"}</button>
             </div>
             {histogramData.length > 0 ? (
-              <svg width="100%" height={svgH} style={{ display: "block", overflow: "visible" }}>
+              <svg width="100%" height={svgH} style={{ display: "block", overflow: "visible", cursor: histBrush.active ? "col-resize" : "crosshair", userSelect: "none" }}
+                onMouseDown={onSvgDown} onMouseMove={onSvgMove} onMouseUp={onSvgUp} onMouseLeave={() => { if (histBrush.active) setHistBrush({ startIdx: null, endIdx: null, active: false }); }}>
                 {(() => {
                   const maxCnt = Math.max(...histogramData.map((d) => d.cnt), 1);
-                  // Nice Y-axis ticks
                   const rawStep = maxCnt / 4;
                   const mag = Math.pow(10, Math.floor(Math.log10(rawStep || 1)));
                   const step = Math.ceil(rawStep / mag) * mag || 1;
@@ -2223,68 +2293,72 @@ export default function App() {
                   for (let v = 0; v <= maxCnt; v += step) yTicks.push(v);
                   if (yTicks[yTicks.length - 1] < maxCnt) yTicks.push(yTicks[yTicks.length - 1] + step);
                   const yMax = yTicks[yTicks.length - 1] || 1;
-
                   const chartW = Math.max(200, (typeof window !== "undefined" ? window.innerWidth : 800) - 24 - Y_AXIS_W);
                   const barW = Math.max(1, chartW / histogramData.length);
                   const gap = barW > 4 ? 1 : 0;
-
-                  // X-axis: show labels at regular intervals
-                  const maxLabels = Math.floor(chartW / 70);
+                  const maxLabels = Math.floor(chartW / (isHourly ? 90 : 70));
                   const labelStep = Math.max(1, Math.ceil(histogramData.length / maxLabels));
-
                   const gridColor = th.histGrid;
                   const textColor = th.textMuted;
-                  // Heatmap: interpolate cool→hot based on event density
                   const heatColor = (ratio) => {
                     const t = Math.max(0, Math.min(1, ratio));
-                    const r = Math.round(30 + t * 202);  // #1e → #E8
-                    const g = Math.round(40 + t * 53);   // #28 → #5D
-                    const b = Math.round(56 - t * 14);   // #38 → #2A
-                    return `rgb(${r},${g},${b})`;
+                    return `rgb(${Math.round(30 + t * 202)},${Math.round(40 + t * 53)},${Math.round(56 - t * 14)})`;
                   };
                   const heatHover = (ratio) => {
                     const t = Math.max(0, Math.min(1, ratio));
-                    const r = Math.min(255, Math.round(50 + t * 194));
-                    const g = Math.min(255, Math.round(60 + t * 63));
-                    const b = Math.min(255, Math.round(70 - t * 6));
-                    return `rgb(${r},${g},${b})`;
+                    return `rgb(${Math.min(255, Math.round(50 + t * 194))},${Math.min(255, Math.round(60 + t * 63))},${Math.min(255, Math.round(70 - t * 6))})`;
                   };
+                  // Brush selection range
+                  const bLo = histBrush.active ? Math.min(histBrush.startIdx, histBrush.endIdx) : -1;
+                  const bHi = histBrush.active ? Math.max(histBrush.startIdx, histBrush.endIdx) : -1;
+                  // Active date filter check
+                  const activeFilter = ct.dateRangeFilters?.[effectiveHistCol];
+                  const filterFrom = activeFilter?.from?.slice(0, isHourly ? 13 : 10);
+                  const filterTo = activeFilter?.to?.slice(0, isHourly ? 13 : 10);
 
                   return (<>
-                    {/* Y-axis grid lines and labels */}
                     {yTicks.map((v) => {
                       const y = CHART_PAD_T + chartH - (v / yMax) * chartH;
                       return <g key={`y-${v}`}>
-                        <line x1={Y_AXIS_W} y1={y} x2={Y_AXIS_W + chartW} y2={y} stroke={gridColor} strokeWidth={1} />
+                        <line x1={Y_AXIS_W} y1={y} x2={Y_AXIS_W + chartW} y2={y} stroke={gridColor} strokeWidth={1} strokeOpacity={0.6} />
                         <text x={Y_AXIS_W - 4} y={y + 3} textAnchor="end" fill={textColor} fontSize={9} fontFamily="-apple-system,sans-serif">{v >= 1000 ? `${(v/1000).toFixed(v >= 10000 ? 0 : 1)}k` : v}</text>
                       </g>;
                     })}
-                    {/* Bars — heatmap colored by density */}
                     {histogramData.map((d, i) => {
                       const h = Math.max(1, (d.cnt / yMax) * chartH);
                       const x = Y_AXIS_W + i * barW + gap;
                       const y = CHART_PAD_T + chartH - h;
-                      const isFiltered = ct.dateRangeFilters?.[effectiveHistCol]?.from?.slice(0, 10) === d.day;
+                      const isFiltered = filterFrom && filterTo && d.day >= filterFrom && d.day <= filterTo;
+                      const inBrush = i >= bLo && i <= bHi;
                       const ratio = d.cnt / maxCnt;
+                      const fill = isFiltered ? th.warning : inBrush ? heatHover(ratio) : heatColor(ratio);
                       return <rect key={i} x={x} y={y} width={Math.max(1, barW - gap * 2)} height={h}
-                        fill={isFiltered ? th.warning : heatColor(ratio)} rx={barW > 8 ? 1 : 0}
-                        style={{ cursor: "pointer", transition: "fill 0.1s" }}
-                        onMouseEnter={(e) => { if (!isFiltered) e.currentTarget.setAttribute("fill", heatHover(ratio)); }}
-                        onMouseLeave={(e) => { if (!isFiltered) e.currentTarget.setAttribute("fill", heatColor(ratio)); }}
-                        onClick={() => {
-                          const from = d.day + " 00:00:00";
-                          const to = d.day + " 23:59:59";
-                          up("dateRangeFilters", { ...(ct.dateRangeFilters || {}), [effectiveHistCol]: { from, to } });
-                        }}>
+                        fill={fill} rx={barW > 6 ? 2 : 0}
+                        style={{ transition: histBrush.active ? "none" : "fill 0.1s", pointerEvents: "none" }}>
                         <title>{d.day}: {d.cnt.toLocaleString()} events</title>
                       </rect>;
                     })}
-                    {/* X-axis line */}
+                    {/* Brush selection overlay */}
+                    {histBrush.active && bLo >= 0 && bHi >= 0 && (() => {
+                      const bx = Y_AXIS_W + bLo * barW;
+                      const bw = (bHi - bLo + 1) * barW;
+                      return (<>
+                        <rect x={bx} y={CHART_PAD_T} width={bw} height={chartH} fill={th.accent + "15"} stroke={th.accent} strokeWidth={1} strokeDasharray="3 2" rx={2} style={{ pointerEvents: "none" }} />
+                        <text x={bx + bw / 2} y={CHART_PAD_T - 3} textAnchor="middle" fill={th.accent} fontSize={8} fontWeight="600" fontFamily="-apple-system,sans-serif" style={{ pointerEvents: "none" }}>
+                          {histogramData[bLo]?.day}{bLo !== bHi ? ` — ${histogramData[bHi]?.day}` : ""}
+                        </text>
+                      </>);
+                    })()}
                     <line x1={Y_AXIS_W} y1={CHART_PAD_T + chartH} x2={Y_AXIS_W + chartW} y2={CHART_PAD_T + chartH} stroke={gridColor} strokeWidth={1} />
-                    {/* X-axis date labels */}
                     {histogramData.map((d, i) => {
                       if (i % labelStep !== 0 && i !== histogramData.length - 1) return null;
                       const x = Y_AXIS_W + i * barW + barW / 2;
+                      if (isHourly) {
+                        const p = d.day.split(" ");
+                        const dateParts = (p[0] || "").split("-");
+                        const label = dateParts.length === 3 ? `${dateParts[1]}/${dateParts[2]} ${p[1] || ""}:00` : d.day;
+                        return <text key={`xl-${i}`} x={x} y={svgH - 2} textAnchor="middle" fill={textColor} fontSize={7} fontFamily="-apple-system,sans-serif">{label}</text>;
+                      }
                       const parts = d.day.split("-");
                       const label = parts.length === 3 ? `${parts[1]}/${parts[2]}` : d.day;
                       return <text key={`xl-${i}`} x={x} y={svgH - 2} textAnchor="middle" fill={textColor} fontSize={8} fontFamily="-apple-system,sans-serif">{label}</text>;
@@ -2294,12 +2368,12 @@ export default function App() {
               </svg>
             ) : (
               <div style={{ height: svgH, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <span style={{ color: th.textMuted, fontSize: 10 }}>Loading histogram...</span>
+                <span style={{ color: th.textMuted, fontSize: 10, fontFamily: "-apple-system, sans-serif" }}>Loading histogram...</span>
               </div>
             )}
-            {/* Drag handle for resizing */}
-            <div onMouseDown={onHistResizeStart} style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 5, cursor: "row-resize", zIndex: 2 }}>
-              <div style={{ width: 40, height: 3, borderRadius: 2, background: th.textMuted + "66", margin: "1px auto 0" }} />
+            {/* Drag handle */}
+            <div onMouseDown={onHistResizeStart} style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 6, cursor: "row-resize", zIndex: 2 }}>
+              <div style={{ width: 36, height: 3, borderRadius: 2, background: th.textMuted + "55", margin: "2px auto 0" }} />
             </div>
           </div>
         );
@@ -2616,87 +2690,110 @@ export default function App() {
           const onUp = (ev) => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); const nw = Math.max(500, Math.min(window.innerWidth - 40, startW + (ev.clientX - startX) * 2)); setModal((p) => p?.type === "stacking" ? { ...p, modalWidth: nw } : p); };
           window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
         };
+        const reloadStack = (col, sort) => {
+          const af = activeFilters(ct);
+          tle.getStackingData(ct.id, col, {
+            searchTerm: ct.searchHighlight ? "" : ct.searchTerm, searchMode: ct.searchMode, searchCondition: ct.searchCondition || "contains",
+            columnFilters: af.columnFilters, checkboxFilters: af.checkboxFilters,
+            bookmarkedOnly: ct.showBookmarkedOnly, dateRangeFilters: ct.dateRangeFilters || {}, advancedFilters: ct.advancedFilters || [],
+            sortBy: sort,
+          }).then((result) => setModal((p) => p?.type === "stacking" ? { ...p, data: result, loading: false } : p))
+            .catch(() => setModal((p) => p?.type === "stacking" ? { ...p, loading: false, data: { values: [], totalUnique: 0, totalRows: 0 } } : p));
+        };
         return (
           <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }}>
             <div id="stacking-modal" onClick={(e) => e.stopPropagation()} style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: mw, maxWidth: "96vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)", position: "relative" }}>
               {/* Right edge resize handle */}
               <div onMouseDown={onModalResize} style={{ position: "absolute", top: 12, bottom: 12, right: -3, width: 6, cursor: "ew-resize", zIndex: 1 }} />
-              {/* Header */}
-              <div style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}` }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                  <div>
-                    <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif" }}>Value Frequency Analysis</h3>
-                    <select value={colName} onChange={(e) => {
-                      const newCol = e.target.value;
-                      setModal((p) => ({ ...p, colName: newCol, loading: true, filterText: "" }));
-                      const af = activeFilters(ct);
-                      tle.getStackingData(ct.id, newCol, {
-                        searchTerm: ct.searchHighlight ? "" : ct.searchTerm, searchMode: ct.searchMode, searchCondition: ct.searchCondition || "contains",
-                        columnFilters: af.columnFilters, checkboxFilters: af.checkboxFilters,
-                        bookmarkedOnly: ct.showBookmarkedOnly, dateRangeFilters: ct.dateRangeFilters || {}, advancedFilters: ct.advancedFilters || [],
-                        sortBy: sortBy,
-                      }).then((result) => setModal((p) => p?.type === "stacking" ? { ...p, data: result, loading: false } : p))
-                        .catch(() => setModal((p) => p?.type === "stacking" ? { ...p, loading: false, data: { entries: [], totalUnique: 0, totalRows: 0 } } : p));
-                    }} style={{ background: th.bgInput, border: `1px solid ${th.btnBorder}`, borderRadius: 4, color: th.textDim, fontSize: 11, padding: "2px 6px", cursor: "pointer", outline: "none" }}>
-                      {ct.headers.filter((h) => !ct.hiddenColumns?.has?.(h)).map((h) => <option key={h} value={h}>{h}</option>)}
-                    </select>
+              {/* Header — glass */}
+              <div style={{ padding: "16px 20px 14px", borderBottom: `1px solid ${th.border}22`, flexShrink: 0, background: `linear-gradient(135deg, ${th.panelBg}ee, ${th.modalBg}dd)`, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ width: 32, height: 32, borderRadius: 8, background: `linear-gradient(135deg, ${th.accent}33, ${th.accent}11)`, border: `1px solid ${th.accent}33`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={th.accent} strokeWidth="1.5" strokeLinecap="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="16" y2="12"/><line x1="4" y1="18" x2="10" y2="18"/></svg>
+                    </div>
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif", letterSpacing: "-0.3px" }}>Value Frequency Analysis</h3>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+                        <select value={colName} onChange={(e) => {
+                          setModal((p) => ({ ...p, colName: e.target.value, loading: true, filterText: "" }));
+                          reloadStack(e.target.value, sortBy);
+                        }} style={{ background: th.bgInput, border: `1px solid ${th.btnBorder}`, borderRadius: 4, color: th.textDim, fontSize: 11, padding: "2px 6px", cursor: "pointer", outline: "none" }}>
+                          {ct.headers.filter((h) => !ct.hiddenColumns?.has?.(h)).map((h) => <option key={h} value={h}>{h}</option>)}
+                        </select>
+                      </div>
+                    </div>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 10, color: th.textMuted }}>{formatNumber(data.totalUnique)} unique / {formatNumber(data.totalRows)} rows</span>
-                    <button onClick={() => setModal(null)} style={{ background: "none", border: "none", color: th.textMuted, cursor: "pointer", fontSize: 16, padding: "0 4px" }}>✕</button>
-                  </div>
+                  <button onClick={() => setModal(null)} style={{ width: 24, height: 24, borderRadius: 12, background: th.textMuted + "15", border: "none", color: th.textMuted, cursor: "pointer", fontSize: 13, fontFamily: "-apple-system, sans-serif", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s" }}
+                    onMouseEnter={(ev) => { ev.currentTarget.style.background = (th.danger || "#f85149") + "33"; ev.currentTarget.style.color = th.danger || "#f85149"; }}
+                    onMouseLeave={(ev) => { ev.currentTarget.style.background = th.textMuted + "15"; ev.currentTarget.style.color = th.textMuted; }}>{"\u2715"}</button>
                 </div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {/* Stats cards */}
+                <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                  {[
+                    { val: data.totalUnique, label: "unique values", color: th.accent, icon: "M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2" },
+                    { val: data.totalRows, label: "total events", color: th.success || "#3fb950", icon: "M4 7h16M4 12h16M4 17h10" },
+                  ].map((s, i) => (
+                    <div key={i} style={{ flex: 1, padding: "10px 12px", borderRadius: 8, background: `radial-gradient(ellipse at 30% 0%, ${s.color}11, transparent 70%)`, border: `1px solid ${s.color}22`, position: "relative", overflow: "hidden" }}>
+                      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 1, background: `linear-gradient(90deg, transparent, ${s.color}33, transparent)` }} />
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={s.color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.6, flexShrink: 0 }}><path d={s.icon}/></svg>
+                        <div>
+                          <div style={{ fontSize: 16, fontWeight: 600, color: th.text, fontFamily: "'SF Mono',Menlo,monospace", letterSpacing: "-0.5px" }}>{formatNumber(s.val)}</div>
+                          <div style={{ fontSize: 9, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: "-apple-system, sans-serif" }}>{s.label}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {/* Controls pill */}
+                <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "6px 10px", background: `${th.panelBg}88`, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", borderRadius: 8, border: `1px solid ${th.border}33` }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={th.textMuted} strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0 }}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                   <input autoFocus placeholder="Filter values..." value={filterText} onChange={(e) => setModal((p) => ({ ...p, filterText: e.target.value }))}
-                    style={{ flex: 1, padding: "6px 10px", background: th.bgInput, border: `1px solid ${th.btnBorder}`, borderRadius: 6, color: th.text, fontSize: 12, outline: "none", fontFamily: "inherit" }} />
+                    style={{ flex: 1, padding: "4px 6px", background: "transparent", border: "none", color: th.text, fontSize: 12, outline: "none", fontFamily: "inherit" }} />
+                  <div style={{ width: 1, height: 16, background: th.border + "44" }} />
                   <button onClick={() => {
-                    const newSort = sortBy === "count" ? "value" : "count";
-                    setModal((p) => ({ ...p, sortBy: newSort, loading: true }));
-                    const af = activeFilters(ct);
-                    tle.getStackingData(ct.id, colName, {
-                      searchTerm: ct.searchHighlight ? "" : ct.searchTerm, searchMode: ct.searchMode, searchCondition: ct.searchCondition || "contains",
-                      columnFilters: af.columnFilters, checkboxFilters: af.checkboxFilters,
-                      bookmarkedOnly: ct.showBookmarkedOnly, dateRangeFilters: ct.dateRangeFilters || {}, advancedFilters: ct.advancedFilters || [],
-                      sortBy: newSort,
-                    }).then((result) => setModal((p) => p?.type === "stacking" ? { ...p, data: result, loading: false } : p))
-                      .catch(() => setModal((p) => p?.type === "stacking" ? { ...p, loading: false, data: { entries: [], totalUnique: 0, totalRows: 0 } } : p));
-                  }} style={{ padding: "6px 12px", background: th.btnBg, border: `1px solid ${th.btnBorder}`, borderRadius: 6, color: th.textDim, fontSize: 11, cursor: "pointer", fontFamily: "-apple-system,sans-serif", whiteSpace: "nowrap" }}>
-                    Sort: {sortBy === "count" ? "Count" : "Value"} {sortBy === "count" ? "↓" : "A→Z"}
+                    const ns = sortBy === "count" ? "value" : "count";
+                    setModal((p) => ({ ...p, sortBy: ns, loading: true }));
+                    reloadStack(colName, ns);
+                  }} style={{ padding: "3px 10px", background: th.btnBg, border: `1px solid ${th.btnBorder}`, borderRadius: 6, color: th.textDim, fontSize: 10, cursor: "pointer", fontFamily: "-apple-system,sans-serif", whiteSpace: "nowrap" }}>
+                    {sortBy === "count" ? "Count \u2193" : "A\u2192Z"}
                   </button>
                   <button onClick={() => {
                     const lines = ["Value\tCount\tPercent"];
                     for (const v of displayed) {
-                      const pct = data.totalRows > 0 ? ((v.cnt / data.totalRows) * 100).toFixed(2) : "0";
-                      lines.push(`${v.val ?? "(empty)"}\t${v.cnt}\t${pct}%`);
+                      const p = data.totalRows > 0 ? ((v.cnt / data.totalRows) * 100).toFixed(2) : "0";
+                      lines.push(`${v.val ?? "(empty)"}\t${v.cnt}\t${p}%`);
                     }
                     navigator.clipboard.writeText(lines.join("\n"));
-                  }} style={{ padding: "6px 12px", background: th.btnBg, border: `1px solid ${th.btnBorder}`, borderRadius: 6, color: th.textDim, fontSize: 11, cursor: "pointer", fontFamily: "-apple-system,sans-serif", whiteSpace: "nowrap" }}>
-                    Copy TSV
+                  }} style={{ padding: "3px 10px", background: th.btnBg, border: `1px solid ${th.btnBorder}`, borderRadius: 6, color: th.textDim, fontSize: 10, cursor: "pointer", fontFamily: "-apple-system,sans-serif", whiteSpace: "nowrap" }}>
+                    Copy
                   </button>
                 </div>
               </div>
               {/* Table header */}
-              <div style={{ display: "flex", padding: "6px 20px", borderBottom: `1px solid ${th.border}`, background: th.bgAlt, fontSize: 10, color: th.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "-apple-system,sans-serif" }}>
-                <span style={{ width: 48, flexShrink: 0, textAlign: "right", paddingRight: 12 }}>#</span>
+              <div style={{ display: "flex", padding: "6px 20px", borderBottom: `1px solid ${th.border}33`, background: `${th.bgAlt}cc`, fontSize: 9, color: th.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: "-apple-system,sans-serif" }}>
+                <span style={{ width: 40, flexShrink: 0, textAlign: "right", paddingRight: 10 }}>#</span>
                 <span style={{ width: vw, flexShrink: 0, position: "relative" }}>
                   Value
                   <div onMouseDown={onValColResize} style={{ position: "absolute", right: -4, top: 0, bottom: 0, width: 8, cursor: "col-resize" }}>
                     <div style={{ position: "absolute", right: 3, top: 2, bottom: 2, width: 2, background: th.border, borderRadius: 1 }} />
                   </div>
                 </span>
-                <span style={{ width: 100, flexShrink: 0, textAlign: "right" }}>Count</span>
-                <span style={{ width: 60, flexShrink: 0, textAlign: "right" }}>%</span>
+                <span style={{ width: 90, flexShrink: 0, textAlign: "right" }}>Count</span>
+                <span style={{ width: 50, flexShrink: 0, textAlign: "right" }}>%</span>
                 <span style={{ flex: 1, paddingLeft: 12 }}>Distribution</span>
               </div>
               {/* Scrollable rows */}
               <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
                 {modal.loading ? (
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 40 }}>
-                    <span style={{ color: th.textMuted, fontSize: 12 }}>Loading...</span>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 40, flexDirection: "column", gap: 8 }}>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={th.accent} strokeWidth="1.5" strokeLinecap="round"><line x1="4" y1="6" x2="20" y2="6" opacity="0.3"/><line x1="4" y1="12" x2="16" y2="12" opacity="0.5"/><line x1="4" y1="18" x2="10" y2="18" opacity="0.7"/></svg>
+                    <span style={{ color: th.textMuted, fontSize: 12, fontFamily: "-apple-system, sans-serif" }}>Loading...</span>
                   </div>
                 ) : displayed.length === 0 ? (
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 40 }}>
-                    <span style={{ color: th.textMuted, fontSize: 12 }}>{filterText ? "No matching values" : "No data"}</span>
+                    <span style={{ color: th.textMuted, fontSize: 12, fontFamily: "-apple-system, sans-serif" }}>{filterText ? "No matching values" : "No data"}</span>
                   </div>
                 ) : displayed.map((v, i) => {
                   const pct = data.totalRows > 0 ? (v.cnt / data.totalRows) * 100 : 0;
@@ -2712,26 +2809,26 @@ export default function App() {
                         up("checkboxFilters", existing);
                         setModal(null);
                       }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = th.btnBg; }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = th.btnBg + "88"; }}
                       onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                      style={{ display: "flex", alignItems: "center", padding: "5px 20px", cursor: "pointer", borderBottom: `1px solid ${th.border}22`, fontSize: 12 }}>
-                      <span style={{ width: 48, flexShrink: 0, textAlign: "right", paddingRight: 12, color: th.textMuted, fontSize: 10 }}>{i + 1}</span>
+                      style={{ display: "flex", alignItems: "center", padding: "5px 20px", cursor: "pointer", borderBottom: `1px solid ${th.border}15`, fontSize: 12, transition: "background 0.1s" }}>
+                      <span style={{ width: 40, flexShrink: 0, textAlign: "right", paddingRight: 10, color: th.textMuted, fontSize: 10, fontFamily: "'SF Mono',Menlo,monospace" }}>{i + 1}</span>
                       <span style={{ width: vw, flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isRare ? th.accent : th.text, fontWeight: isRare ? 500 : 400 }} title={valStr}>{valStr}</span>
-                      <span style={{ width: 100, flexShrink: 0, textAlign: "right", color: th.text, fontWeight: 500, fontFamily: "'SF Mono',Menlo,monospace" }}>{formatNumber(v.cnt)}</span>
-                      <span style={{ width: 60, flexShrink: 0, textAlign: "right", color: th.textDim, fontSize: 11 }}>{pct.toFixed(1)}%</span>
+                      <span style={{ width: 90, flexShrink: 0, textAlign: "right", color: th.text, fontWeight: 500, fontFamily: "'SF Mono',Menlo,monospace", fontSize: 11 }}>{formatNumber(v.cnt)}</span>
+                      <span style={{ width: 50, flexShrink: 0, textAlign: "right", color: th.textDim, fontSize: 10, fontFamily: "'SF Mono',Menlo,monospace" }}>{pct.toFixed(1)}%</span>
                       <div style={{ flex: 1, paddingLeft: 12 }}>
-                        <div style={{ height: 14, background: th.border + "44", borderRadius: 3, overflow: "hidden" }}>
-                          <div style={{ height: "100%", width: `${Math.max(1, barPct)}%`, background: isRare ? th.danger + "CC" : th.accent + "99", borderRadius: 3, transition: "width 0.2s" }} />
+                        <div style={{ height: 12, background: th.border + "22", borderRadius: 6, overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${Math.max(1, barPct)}%`, background: isRare ? `linear-gradient(90deg, ${th.danger || "#f85149"}CC, ${th.danger || "#f85149"}88)` : `linear-gradient(90deg, ${th.accent}BB, ${th.accent}66)`, borderRadius: 6, transition: "width 0.2s", boxShadow: isRare ? `0 0 6px ${th.danger || "#f85149"}33` : "none" }} />
                         </div>
                       </div>
                     </div>
                   );
                 })}
               </div>
-              {/* Footer */}
-              <div style={{ padding: "10px 20px", borderTop: `1px solid ${th.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11, color: th.textMuted }}>
-                <span>{filterText ? `${formatNumber(displayed.length)} of ${formatNumber(data.totalUnique)} values shown` : `${formatNumber(data.totalUnique)} unique values`}{data.truncated ? <span style={{ color: th.warning, marginLeft: 6 }}>(showing top 10,000)</span> : ""}</span>
-                <span style={{ color: th.textDim }}>Click a row to filter · Drag column border to resize</span>
+              {/* Footer — glass */}
+              <div style={{ padding: "10px 20px", borderTop: `1px solid ${th.border}22`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, background: `linear-gradient(135deg, ${th.panelBg}ee, ${th.modalBg}dd)`, backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", fontSize: 11, color: th.textMuted, fontFamily: "-apple-system, sans-serif" }}>
+                <span>{filterText ? `${formatNumber(displayed.length)} of ${formatNumber(data.totalUnique)} values shown` : `${formatNumber(data.totalUnique)} unique values`}{data.truncated ? <span style={{ color: th.warning, marginLeft: 6 }}>(top 10k)</span> : ""}</span>
+                <span style={{ color: th.textDim, fontSize: 10 }}>Click row to filter</span>
               </div>
             </div>
           </div>
@@ -4717,6 +4814,795 @@ export default function App() {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Lateral Movement Modal */}
+      {modal?.type === "lateralMovement" && ct && (() => {
+        const { phase, columns: cols, data, eventIds, excludeLocal, excludeService } = modal;
+        const viewTab = modal.viewTab || "graph";
+        const selectedNode = modal.selectedNode;
+        const selectedEdge = modal.selectedEdge;
+        const positions = modal.positions || {};
+
+        const computeForceLayout = (nodes, edges) => {
+          if (nodes.length === 0) return {};
+          const W = 700, H = 450, CX = W / 2, CY = H / 2;
+          const pos = {};
+          nodes.forEach((n, i) => {
+            const angle = (2 * Math.PI * i) / nodes.length;
+            const r = Math.min(W, H) * 0.35;
+            pos[n.id] = { x: CX + r * Math.cos(angle), y: CY + r * Math.sin(angle), vx: 0, vy: 0 };
+          });
+          const ITER = 80, REP = 8000, ATT = 0.005, IDEAL = 120, CENTER = 0.01, DAMP = 0.85, MAX_D = 40;
+          for (let it = 0; it < ITER; it++) {
+            const cool = 1 - it / ITER;
+            for (let i = 0; i < nodes.length; i++) {
+              for (let j = i + 1; j < nodes.length; j++) {
+                const a = pos[nodes[i].id], b = pos[nodes[j].id];
+                let dx = a.x - b.x, dy = a.y - b.y;
+                const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                const f = REP / (dist * dist) * cool;
+                const fx = (dx / dist) * f, fy = (dy / dist) * f;
+                a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+              }
+            }
+            for (const edge of edges) {
+              const a = pos[edge.source], b = pos[edge.target];
+              if (!a || !b) continue;
+              const dx = b.x - a.x, dy = b.y - a.y;
+              const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+              const disp = dist - IDEAL;
+              const w = Math.min(3, 1 + Math.log2(edge.count || 1) * 0.3);
+              const f = ATT * disp * cool * w;
+              const fx = (dx / dist) * f, fy = (dy / dist) * f;
+              a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+            }
+            for (const n of nodes) {
+              const p = pos[n.id];
+              p.vx += (CX - p.x) * CENTER; p.vy += (CY - p.y) * CENTER;
+              p.vx *= DAMP; p.vy *= DAMP;
+              const spd = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+              const md = MAX_D * cool;
+              if (spd > md) { p.vx = (p.vx / spd) * md; p.vy = (p.vy / spd) * md; }
+              p.x += p.vx; p.y += p.vy;
+              p.x = Math.max(40, Math.min(W - 40, p.x));
+              p.y = Math.max(40, Math.min(H - 40, p.y));
+            }
+          }
+          const result = {};
+          for (const n of nodes) result[n.id] = { x: pos[n.id].x, y: pos[n.id].y };
+          return result;
+        };
+
+        const handleAnalyze = async () => {
+          const t0 = Date.now();
+          const pInt = setInterval(() => {
+            setModal((p) => {
+              if (!p || p.type !== "lateralMovement" || p.phase !== "loading") { clearInterval(pInt); return p; }
+              const el = (Date.now() - t0) / 1000;
+              const prog = Math.min(92, 90 * (1 - Math.exp(-el / 8)));
+              const pi = prog < 10 ? 0 : prog < 35 ? 1 : prog < 60 ? 2 : prog < 80 ? 3 : 4;
+              return { ...p, lmProgress: prog, lmPhaseIdx: pi };
+            });
+          }, 150);
+          setModal((p) => ({ ...p, phase: "loading", loading: true, error: null, lmProgress: 0, lmPhaseIdx: 0, _cancelled: false }));
+          try {
+            const af = activeFilters(ct);
+            const eids = (modal.eventIds || "").split(",").map((s) => s.trim()).filter(Boolean);
+            const result = await tle.getLateralMovement(ct.id, {
+              sourceCol: cols.source, targetCol: cols.target, userCol: cols.user,
+              logonTypeCol: cols.logonType, eventIdCol: cols.eventId, tsCol: cols.ts, domainCol: cols.domain,
+              eventIds: eids, excludeLocalLogons: modal.excludeLocal, excludeServiceAccounts: modal.excludeService,
+              searchTerm: ct.searchHighlight ? "" : ct.searchTerm, searchMode: ct.searchMode, searchCondition: ct.searchCondition || "contains",
+              columnFilters: af.columnFilters, checkboxFilters: af.checkboxFilters,
+              bookmarkedOnly: ct.showBookmarkedOnly, dateRangeFilters: ct.dateRangeFilters || {}, advancedFilters: ct.advancedFilters || [],
+            });
+            clearInterval(pInt);
+            if (result.error) {
+              setModal((p) => p?.type === "lateralMovement" && !p._cancelled ? { ...p, phase: "config", loading: false, error: result.error, lmProgress: 0 } : p);
+            } else {
+              setModal((p) => p?.type === "lateralMovement" && !p._cancelled ? { ...p, lmProgress: 100, lmPhaseIdx: 5 } : p);
+              await new Promise((r) => setTimeout(r, 300));
+              const layoutNodes = result.nodes.length > 500 ? result.nodes.sort((a, b) => b.eventCount - a.eventCount).slice(0, 500) : result.nodes;
+              const layoutIds = new Set(layoutNodes.map((n) => n.id));
+              const layoutEdges = result.edges.filter((e) => layoutIds.has(e.source) && layoutIds.has(e.target));
+              const pos = computeForceLayout(layoutNodes, layoutEdges);
+              setModal((p) => p?.type === "lateralMovement" && !p._cancelled ? { ...p, phase: "results", loading: false, data: result, positions: pos, selectedNode: null, selectedEdge: null, viewTab: "graph", truncatedGraph: result.nodes.length > 500 } : p);
+            }
+          } catch (e) {
+            clearInterval(pInt);
+            setModal((p) => p?.type === "lateralMovement" && !p._cancelled ? { ...p, phase: "config", loading: false, error: e.message } : p);
+          }
+        };
+
+        const logonColor = (types) => {
+          const t = new Set(types.map(String));
+          if (t.has("10")) return "#58a6ff";
+          if (t.has("3")) return "#3fb950";
+          if (t.has("2")) return "#d29922";
+          if (t.has("7")) return "#a371f7";
+          if (t.has("9")) return "#f0883e";
+          return th.textDim || "#888";
+        };
+        const edgeWidth = (count) => Math.max(1, Math.min(6, 1 + Math.log2(count)));
+        const nodeRadius = (eventCount) => Math.max(6, Math.min(20, 6 + Math.log2(eventCount + 1) * 2));
+        const nodeColor = (node) => {
+          if (selectedNode === node.id) return th.accent;
+          if (node.isBoth) return "#a371f7";
+          if (node.isSource && !node.isTarget) return "#3fb950";
+          return "#58a6ff";
+        };
+        const isEdgeHL = (e) => {
+          if (selectedEdge && e.source === selectedEdge.source && e.target === selectedEdge.target) return true;
+          if (selectedNode && (e.source === selectedNode || e.target === selectedNode)) return true;
+          return false;
+        };
+
+        return (
+          <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 880, maxWidth: "96vw", maxHeight: "92vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
+              {/* Header */}
+              <div style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}22`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, background: `linear-gradient(135deg, ${th.panelBg}ee, ${th.modalBg}dd)`, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ width: 32, height: 32, borderRadius: 8, background: `linear-gradient(135deg, ${th.danger || "#f85149"}33, ${th.danger || "#f85149"}11)`, border: `1px solid ${th.danger || "#f85149"}33`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={th.danger || "#f85149"} strokeWidth="1.5" strokeLinecap="round"><circle cx="5" cy="12" r="2.5" fill={`${th.danger || "#f85149"}33`}/><circle cx="19" cy="5" r="2.5" fill={`${th.danger || "#f85149"}33`}/><circle cx="19" cy="19" r="2.5" fill={`${th.danger || "#f85149"}33`}/><line x1="7.5" y1="11" x2="16.5" y2="6"/><line x1="7.5" y1="13" x2="16.5" y2="18"/></svg>
+                  </div>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif", letterSpacing: "-0.3px" }}>Lateral Movement Tracker</h3>
+                    <p style={{ margin: "2px 0 0", color: th.textMuted, fontSize: 11, fontFamily: "-apple-system, sans-serif" }}>Network graph of host-to-host logon events</p>
+                  </div>
+                </div>
+                <button onClick={() => setModal(null)} style={{ width: 24, height: 24, borderRadius: 12, background: th.textMuted + "15", border: "none", color: th.textMuted, cursor: "pointer", fontSize: 13, fontFamily: "-apple-system, sans-serif", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s" }}
+                  onMouseEnter={(ev) => { ev.currentTarget.style.background = th.danger + "33"; ev.currentTarget.style.color = th.danger || "#f85149"; }}
+                  onMouseLeave={(ev) => { ev.currentTarget.style.background = th.textMuted + "15"; ev.currentTarget.style.color = th.textMuted; }}>{"\u2715"}</button>
+              </div>
+
+              {/* Body */}
+              <div style={{ flex: 1, overflow: "auto", padding: "16px 20px" }}>
+                {/* Config phase */}
+                {phase === "config" && (
+                  <div>
+                    {modal.error && <div style={{ padding: "8px 12px", background: (th.danger || "#f85149") + "15", border: `1px solid ${th.danger || "#f85149"}33`, borderRadius: 6, color: th.danger || "#f85149", fontSize: 11, marginBottom: 12 }}>{modal.error}</div>}
+                    <div style={ms.fg}>
+                      <label style={ms.lb}>Column Mapping</label>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                        {[
+                          ["source", "Source Host (IpAddress)"],
+                          ["target", "Target Host (Computer)"],
+                          ["user", "User (TargetUserName)"],
+                          ["logonType", "Logon Type"],
+                          ["eventId", "Event ID"],
+                          ["ts", "Timestamp"],
+                        ].map(([key, label]) => (
+                          <div key={key}>
+                            <label style={{ ...ms.lb, fontSize: 9 }}>{label}</label>
+                            <select value={cols[key] || ""} onChange={(e) => setModal((p) => ({ ...p, columns: { ...p.columns, [key]: e.target.value || null } }))} style={ms.sl}>
+                              <option value="">-- auto --</option>
+                              {ct.headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                            </select>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={ms.fg}>
+                      <label style={ms.lb}>Event IDs (comma-separated, leave empty for all events)</label>
+                      <input value={eventIds} onChange={(e) => setModal((p) => ({ ...p, eventIds: e.target.value }))} style={ms.ip} placeholder="4624,4625,4648" />
+                    </div>
+                    <div style={{ display: "flex", gap: 16, marginBottom: 10 }}>
+                      <label style={{ fontSize: 11, color: th.textDim, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontFamily: "-apple-system, sans-serif" }}>
+                        <input type="checkbox" checked={excludeLocal} onChange={() => setModal((p) => ({ ...p, excludeLocal: !p.excludeLocal }))} /> Exclude local logons
+                      </label>
+                      <label style={{ fontSize: 11, color: th.textDim, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontFamily: "-apple-system, sans-serif" }}>
+                        <input type="checkbox" checked={excludeService} onChange={() => setModal((p) => ({ ...p, excludeService: !p.excludeService }))} /> Exclude service accounts
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                {/* Loading phase */}
+                {phase === "loading" && (() => {
+                  const prog = modal.lmProgress || 0;
+                  const pi = modal.lmPhaseIdx || 0;
+                  const plabels = ["Querying database...", "Processing logon events...", "Building host connections...", "Detecting lateral chains...", "Computing graph layout...", "Complete"];
+                  return (
+                    <div style={{ padding: "50px 40px 40px", textAlign: "center" }}>
+                      <style>{`@keyframes lmPulse{0%,100%{opacity:.35}50%{opacity:1}}`}</style>
+                      <div style={{ marginBottom: 22 }}>
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" strokeWidth="1.5" strokeLinecap="round">
+                          <circle cx="5" cy="12" r="2.5" fill={th.accent+"33"} stroke={th.accent} style={{ animation: "lmPulse 1.5s ease-in-out infinite" }} />
+                          <circle cx="19" cy="5" r="2.5" fill={(th.danger||"#f85149")+"33"} stroke={th.danger||"#f85149"} style={{ animation: "lmPulse 1.5s ease-in-out infinite .3s" }} />
+                          <circle cx="19" cy="19" r="2.5" fill={(th.danger||"#f85149")+"33"} stroke={th.danger||"#f85149"} style={{ animation: "lmPulse 1.5s ease-in-out infinite .6s" }} />
+                          <line x1="7.5" y1="11" x2="16.5" y2="6" stroke={th.accent} strokeDasharray="3 3" />
+                          <line x1="7.5" y1="13" x2="16.5" y2="18" stroke={th.accent} strokeDasharray="3 3" />
+                        </svg>
+                      </div>
+                      <div style={{ color: th.text, fontSize: 13, fontWeight: 500, marginBottom: 6, fontFamily: "-apple-system, sans-serif", letterSpacing: "-0.2px" }}>{plabels[pi]}</div>
+                      <div style={{ color: th.textMuted, fontSize: 11, fontFamily: "-apple-system, sans-serif", marginBottom: 24 }}>This may take a moment for large datasets</div>
+                      <div style={{ position: "relative", height: 4, background: th.border + "22", borderRadius: 2, overflow: "hidden", maxWidth: 360, margin: "0 auto 12px" }}>
+                        <div style={{ position: "absolute", left: 0, top: 0, height: "100%", width: `${prog}%`, background: `linear-gradient(90deg, ${th.accent}, ${th.danger || "#f85149"})`, borderRadius: 2, transition: "width 0.25s ease-out", boxShadow: `0 0 12px ${th.accent}44` }} />
+                      </div>
+                      <div style={{ color: th.textDim, fontSize: 10, fontFamily: "-apple-system, sans-serif" }}>{Math.round(prog)}%</div>
+                    </div>
+                  );
+                })()}
+
+                {/* Results phase */}
+                {phase === "results" && data && (
+                  <div>
+                    {/* Stats cards — glass morphism */}
+                    <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+                      {[
+                        { val: data.stats.uniqueHosts, label: "unique hosts", color: th.accent, icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" },
+                        { val: data.stats.uniqueConnections, label: "connections", color: "#58a6ff", icon: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" },
+                        { val: data.stats.uniqueUsers, label: "users", color: "#d2a8ff", icon: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8" },
+                        { val: data.stats.longestChain, label: "longest chain", color: th.danger || "#f85149", icon: "M13 17l5-5-5-5M6 17l5-5-5-5" },
+                        { val: data.stats.totalEvents?.toLocaleString(), label: "logon events", color: "#3fb950", icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8" },
+                      ].map((c, i) => (
+                        <div key={i} style={{ flex: 1, textAlign: "center", padding: "10px 6px 8px", background: `linear-gradient(160deg, ${c.color}08, ${c.color}03)`, borderRadius: 10, border: `1px solid ${c.color}20`, position: "relative", overflow: "hidden" }}>
+                          <div style={{ position: "absolute", top: -8, right: -8, width: 40, height: 40, borderRadius: 20, background: `radial-gradient(circle, ${c.color}12, transparent)` }} />
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={c.color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5, marginBottom: 2 }}><path d={c.icon}/></svg>
+                          <div style={{ fontSize: 22, fontWeight: 700, color: c.color, fontFamily: "-apple-system, sans-serif", letterSpacing: "-0.5px", lineHeight: 1 }}>{c.val}</div>
+                          <div style={{ fontSize: 9, color: th.textMuted, marginTop: 3, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 500 }}>{c.label}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {modal.truncatedGraph && <div style={{ padding: "6px 10px", background: th.warning + "15", border: `1px solid ${th.warning}33`, borderRadius: 6, color: th.warning, fontSize: 10, marginBottom: 10, fontFamily: "-apple-system, sans-serif" }}>Graph showing top 500 hosts by activity. {data.nodes.length} total hosts detected.</div>}
+
+                    {/* Tab switcher — macOS segmented control */}
+                    <div style={{ display: "inline-flex", background: th.panelBg, borderRadius: 8, padding: 2, marginBottom: 12, border: `1px solid ${th.border}44`, gap: 1 }}>
+                      {[
+                        { id: "graph", label: "Network Graph", icon: "M22 12h-4l-3 9L9 3l-3 9H2" },
+                        { id: "chains", label: `Chains (${data.chains.length})`, icon: "M13 17l5-5-5-5M6 17l5-5-5-5" },
+                        { id: "table", label: `Connections (${data.edges.length})`, icon: "M3 3h18v18H3zM3 9h18M3 15h18M9 3v18M15 3v18" },
+                      ].map((tab) => (
+                        <button key={tab.id} onClick={() => setModal((p) => ({ ...p, viewTab: tab.id, selectedNode: null, selectedEdge: null }))}
+                          style={{ padding: "5px 12px", background: viewTab === tab.id ? `linear-gradient(180deg, ${th.accent}ee, ${th.accent})` : "transparent", color: viewTab === tab.id ? "#fff" : th.textDim, border: "none", borderRadius: 6, fontSize: 11, cursor: "pointer", fontFamily: "-apple-system, sans-serif", fontWeight: viewTab === tab.id ? 600 : 400, transition: "all 0.15s", display: "flex", alignItems: "center", gap: 5, boxShadow: viewTab === tab.id ? `0 1px 4px ${th.accent}44` : "none" }}
+                          onMouseEnter={(ev) => { if (viewTab !== tab.id) ev.currentTarget.style.background = th.textMuted + "11"; }}
+                          onMouseLeave={(ev) => { if (viewTab !== tab.id) ev.currentTarget.style.background = "transparent"; }}>
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={tab.icon}/></svg>
+                          {tab.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Graph tab */}
+                    {viewTab === "graph" && (() => {
+                      const W = 700, H = 450;
+                      const graphNodes = data.nodes.length > 500 ? data.nodes.sort((a, b) => b.eventCount - a.eventCount).slice(0, 500) : data.nodes;
+                      const graphIds = new Set(graphNodes.map((n) => n.id));
+                      const graphEdges = data.edges.filter((e) => graphIds.has(e.source) && graphIds.has(e.target));
+                      const vb = modal.viewBox || { x: 0, y: 0, w: W, h: H };
+                      const isIP = (s) => /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(s);
+                      const isDC = (s) => /DC\d*$/i.test(s) || /domain.controller/i.test(s);
+                      const logonLabel = (types) => { const t = types.map(String); if (t.includes("10")) return "RDP"; if (t.includes("3")) return "Net"; if (t.includes("2")) return "Local"; if (t.includes("7")) return "Unlock"; return t.join(","); };
+                      const tbtn = { padding: "4px 10px", background: `${th.panelBg}cc`, color: th.textDim, border: `1px solid ${th.border}44`, borderRadius: 6, fontSize: 10, cursor: "pointer", fontFamily: "-apple-system, sans-serif", display: "flex", alignItems: "center", gap: 4, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", transition: "all 0.15s", fontWeight: 500 };
+
+                      const svgToWorld = (clientX, clientY, svgEl) => {
+                        if (!svgEl) return { x: 0, y: 0 };
+                        const rect = svgEl.getBoundingClientRect();
+                        const sx = (clientX - rect.left) / rect.width;
+                        const sy = (clientY - rect.top) / rect.height;
+                        return { x: vb.x + sx * vb.w, y: vb.y + sy * vb.h };
+                      };
+
+                      const onWheel = (ev) => {
+                        ev.preventDefault();
+                        const svg = ev.currentTarget;
+                        const pt = svgToWorld(ev.clientX, ev.clientY, svg);
+                        const factor = ev.deltaY > 0 ? 1.15 : 1 / 1.15;
+                        const nw = Math.max(100, Math.min(W * 4, vb.w * factor));
+                        const nh = Math.max(65, Math.min(H * 4, vb.h * factor));
+                        const nx = pt.x - (pt.x - vb.x) * (nw / vb.w);
+                        const ny = pt.y - (pt.y - vb.y) * (nh / vb.h);
+                        setModal((p) => ({ ...p, viewBox: { x: nx, y: ny, w: nw, h: nh } }));
+                      };
+
+                      const onPanStart = (ev) => {
+                        if (ev.button !== 0) return;
+                        const svg = ev.currentTarget;
+                        const startPt = svgToWorld(ev.clientX, ev.clientY, svg);
+                        const startVb = { ...vb };
+                        const onMove = (me) => {
+                          const cur = svgToWorld(me.clientX, me.clientY, svg);
+                          // Use ratio-based delta since viewBox may have changed
+                          const rect = svg.getBoundingClientRect();
+                          const dx = ((me.clientX - ev.clientX) / rect.width) * startVb.w;
+                          const dy = ((me.clientY - ev.clientY) / rect.height) * startVb.h;
+                          setModal((p) => ({ ...p, viewBox: { ...startVb, x: startVb.x - dx, y: startVb.y - dy } }));
+                        };
+                        const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+                        document.addEventListener("mousemove", onMove);
+                        document.addEventListener("mouseup", onUp);
+                      };
+
+                      const onNodeDragStart = (ev, nodeId) => {
+                        ev.stopPropagation();
+                        if (ev.button !== 0) return;
+                        const svg = ev.currentTarget.closest("svg");
+                        const startWorld = svgToWorld(ev.clientX, ev.clientY, svg);
+                        const startPos = positions[nodeId];
+                        if (!startPos) return;
+                        let moved = false;
+                        const onMove = (me) => {
+                          moved = true;
+                          const curWorld = svgToWorld(me.clientX, me.clientY, svg);
+                          const dx = curWorld.x - startWorld.x, dy = curWorld.y - startWorld.y;
+                          setModal((p) => ({ ...p, positions: { ...p.positions, [nodeId]: { x: startPos.x + dx, y: startPos.y + dy } } }));
+                        };
+                        const onUp = () => {
+                          document.removeEventListener("mousemove", onMove);
+                          document.removeEventListener("mouseup", onUp);
+                          if (!moved) setModal((p) => ({ ...p, selectedNode: p.selectedNode === nodeId ? null : nodeId, selectedEdge: null }));
+                        };
+                        document.addEventListener("mousemove", onMove);
+                        document.addEventListener("mouseup", onUp);
+                      };
+
+                      const zoomBy = (factor) => {
+                        const cx = vb.x + vb.w / 2, cy = vb.y + vb.h / 2;
+                        const nw = Math.max(100, Math.min(W * 4, vb.w * factor));
+                        const nh = Math.max(65, Math.min(H * 4, vb.h * factor));
+                        setModal((p) => ({ ...p, viewBox: { x: cx - nw / 2, y: cy - nh / 2, w: nw, h: nh } }));
+                      };
+
+                      return (
+                        <div>
+                          {/* Toolbar */}
+                          <div style={{ display: "flex", gap: 3, marginBottom: 8, alignItems: "center", padding: "4px 6px", background: `${th.panelBg}88`, borderRadius: 8, border: `1px solid ${th.border}22` }}>
+                            <button onClick={() => zoomBy(1 / 1.3)} style={tbtn} title="Zoom In">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={th.textDim} strokeWidth="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+                            </button>
+                            <button onClick={() => zoomBy(1.3)} style={tbtn} title="Zoom Out">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={th.textDim} strokeWidth="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+                            </button>
+                            <button onClick={() => setModal((p) => ({ ...p, viewBox: { x: 0, y: 0, w: W, h: H } }))} style={tbtn} title="Reset View">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={th.textDim} strokeWidth="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                              Reset
+                            </button>
+                            <button onClick={() => {
+                              const layoutNodes = data.nodes.length > 500 ? data.nodes.sort((a, b) => b.eventCount - a.eventCount).slice(0, 500) : data.nodes;
+                              const ids = new Set(layoutNodes.map((n) => n.id));
+                              const le = data.edges.filter((e) => ids.has(e.source) && ids.has(e.target));
+                              const pos = computeForceLayout(layoutNodes, le);
+                              setModal((p) => ({ ...p, positions: pos, viewBox: { x: 0, y: 0, w: W, h: H } }));
+                            }} style={tbtn} title="Redraw Layout">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={th.textDim} strokeWidth="2"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+                              Redraw
+                            </button>
+                            <button onClick={() => {
+                              const svgEl = document.querySelector("[data-lm-graph]");
+                              if (!svgEl) return;
+                              const clone = svgEl.cloneNode(true);
+                              clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+                              clone.style.background = th.panelBg;
+                              const svgData = new XMLSerializer().serializeToString(clone);
+                              const canvas = document.createElement("canvas");
+                              const svgBlob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
+                              const url = URL.createObjectURL(svgBlob);
+                              const img = new Image();
+                              img.onload = () => {
+                                canvas.width = img.width * 2;
+                                canvas.height = img.height * 2;
+                                const ctx = canvas.getContext("2d");
+                                ctx.scale(2, 2);
+                                ctx.fillStyle = th.panelBg;
+                                ctx.fillRect(0, 0, img.width, img.height);
+                                ctx.drawImage(img, 0, 0);
+                                URL.revokeObjectURL(url);
+                                canvas.toBlob((blob) => {
+                                  const a = document.createElement("a");
+                                  a.href = URL.createObjectURL(blob);
+                                  a.download = "lateral-movement-graph.png";
+                                  a.click();
+                                  URL.revokeObjectURL(a.href);
+                                }, "image/png");
+                              };
+                              img.src = url;
+                            }} style={tbtn} title="Export as PNG">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={th.textDim} strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                              Export
+                            </button>
+                            <div style={{ flex: 1 }} />
+                            <span style={{ fontSize: 9, color: th.textMuted, fontFamily: "-apple-system, sans-serif" }}>Scroll to zoom \u00B7 Drag background to pan \u00B7 Drag nodes to reposition</span>
+                          </div>
+
+                          <svg data-lm-graph="1" width="100%" height={480} viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
+                            style={{ background: th.panelBg, borderRadius: 6, border: `1px solid ${th.border}`, cursor: modal.draggingNode ? "grabbing" : "grab", display: "block", userSelect: "none" }}
+                            onWheel={onWheel}
+                            onMouseDown={(ev) => { if (ev.target === ev.currentTarget || ev.target.tagName === "rect") { onPanStart(ev); setModal((p) => ({ ...p, selectedNode: null, selectedEdge: null })); } }}>
+
+                            {/* SVG defs — gradients, filters, grid */}
+                            <defs>
+                              <pattern id="lm-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+                                <circle cx="20" cy="20" r="0.6" fill={th.textMuted + "18"} />
+                              </pattern>
+                              <filter id="lm-glow" x="-50%" y="-50%" width="200%" height="200%">
+                                <feGaussianBlur stdDeviation="3" result="blur"/>
+                                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                              </filter>
+                              <filter id="lm-shadow" x="-20%" y="-20%" width="140%" height="140%">
+                                <feDropShadow dx="0" dy="1" stdDeviation="2" floodOpacity="0.25"/>
+                              </filter>
+                              <radialGradient id="lm-grad-green" cx="35%" cy="35%"><stop offset="0%" stopColor="#3fb950" stopOpacity="0.35"/><stop offset="100%" stopColor="#3fb950" stopOpacity="0.08"/></radialGradient>
+                              <radialGradient id="lm-grad-blue" cx="35%" cy="35%"><stop offset="0%" stopColor="#58a6ff" stopOpacity="0.35"/><stop offset="100%" stopColor="#58a6ff" stopOpacity="0.08"/></radialGradient>
+                              <radialGradient id="lm-grad-purple" cx="35%" cy="35%"><stop offset="0%" stopColor="#d2a8ff" stopOpacity="0.35"/><stop offset="100%" stopColor="#d2a8ff" stopOpacity="0.08"/></radialGradient>
+                              <radialGradient id="lm-grad-accent" cx="35%" cy="35%"><stop offset="0%" stopColor={th.accent} stopOpacity="0.4"/><stop offset="100%" stopColor={th.accent} stopOpacity="0.1"/></radialGradient>
+                            </defs>
+                            <rect x={vb.x - 200} y={vb.y - 200} width={vb.w + 400} height={vb.h + 400} fill="url(#lm-grid)" />
+
+                            {/* Edges */}
+                            {graphEdges.map((e, i) => {
+                              const from = positions[e.source], to = positions[e.target];
+                              if (!from || !to) return null;
+                              const hl = isEdgeHL(e);
+                              const op = selectedNode || selectedEdge ? (hl ? 0.9 : 0.1) : 0.6;
+                              const col = e.hasFailures ? (th.danger || "#f85149") : logonColor(e.logonTypes);
+                              const dx = to.x - from.x, dy = to.y - from.y;
+                              const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                              const toR = nodeRadius((graphNodes.find((n) => n.id === e.target) || {}).eventCount || 1) + 2;
+                              const fromR = nodeRadius((graphNodes.find((n) => n.id === e.source) || {}).eventCount || 1) + 2;
+                              const ux = dx / dist, uy = dy / dist;
+                              const x1 = from.x + ux * fromR, y1 = from.y + uy * fromR;
+                              const x2 = to.x - ux * toR, y2 = to.y - uy * toR;
+                              const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+                              const ang = Math.atan2(dy, dx) * 180 / Math.PI;
+                              const perpX = -uy * 4, perpY = ux * 4;
+                              return (
+                                <g key={`e-${i}`} style={{ cursor: "pointer" }} opacity={op}>
+                                  <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={col} strokeWidth={edgeWidth(e.count)} strokeDasharray={e.hasFailures ? "4,3" : "none"} />
+                                  <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={12} onClick={(ev) => { ev.stopPropagation(); setModal((p) => ({ ...p, selectedEdge: e, selectedNode: null })); }} />
+                                  <polygon points="-5,-4 5,0 -5,4" transform={`translate(${x2},${y2}) rotate(${ang})`} fill={col} />
+                                  {/* Edge label */}
+                                  <g transform={`translate(${mx + perpX}, ${my + perpY})`}>
+                                    <rect x={-14} y={-7} width={28} height={14} rx={7} fill={th.panelBg} fillOpacity={0.9} stroke={col} strokeWidth={0.4} strokeOpacity={0.3} />
+                                    <text textAnchor="middle" dy="3.5" fill={col} fontSize={7.5} fontWeight={600} fontFamily="-apple-system,sans-serif" fillOpacity={0.9}>
+                                      {e.count > 999 ? Math.round(e.count / 1000) + "k" : e.count}
+                                    </text>
+                                  </g>
+                                </g>
+                              );
+                            })}
+
+                            {/* Nodes */}
+                            {graphNodes.map((n) => {
+                              const p = positions[n.id];
+                              if (!p) return null;
+                              const r = nodeRadius(n.eventCount);
+                              const dimmed = selectedNode && selectedNode !== n.id && !graphEdges.some((e) => (e.source === selectedNode && e.target === n.id) || (e.target === selectedNode && e.source === n.id));
+                              const op = selectedNode ? (dimmed ? 0.12 : 1) : 1;
+                              const col = nodeColor(n);
+                              const ip = isIP(n.id);
+                              const dc = isDC(n.id);
+                              const gradId = col === "#3fb950" ? "lm-grad-green" : col === "#58a6ff" ? "lm-grad-blue" : col === "#d2a8ff" ? "lm-grad-purple" : "lm-grad-accent";
+                              const labelText = n.label.length > 20 ? n.label.slice(0, 18) + "\u2026" : n.label;
+                              const labelW = labelText.length * 5.5 + 12;
+                              const isSel = selectedNode === n.id;
+                              return (
+                                <g key={`n-${n.id}`} opacity={op} style={{ cursor: "grab" }}
+                                  onMouseDown={(ev) => onNodeDragStart(ev, n.id)} filter={isSel ? "url(#lm-glow)" : undefined}>
+                                  {/* Ambient glow behind node */}
+                                  <circle cx={p.x} cy={p.y} r={r + 4} fill={col} fillOpacity={isSel ? 0.12 : 0.04} />
+                                  {/* Node shape */}
+                                  {ip ? (
+                                    <g>
+                                      <circle cx={p.x} cy={p.y} r={r} fill={`url(#${gradId})`} stroke={col} strokeWidth={1.2} strokeDasharray="4,2.5" strokeOpacity={0.7} />
+                                      <circle cx={p.x - r * 0.25} cy={p.y - r * 0.25} r={r * 0.15} fill={col} fillOpacity={0.15} />
+                                    </g>
+                                  ) : dc ? (
+                                    <g>
+                                      <rect x={p.x - r} y={p.y - r} width={r * 2} height={r * 2} rx={4} fill={`url(#${gradId})`} stroke={col} strokeWidth={1.5} />
+                                      <line x1={p.x - r * 0.6} y1={p.y - r * 0.35} x2={p.x + r * 0.6} y2={p.y - r * 0.35} stroke={col} strokeWidth={0.8} strokeOpacity={0.3} />
+                                      <line x1={p.x - r * 0.6} y1={p.y} x2={p.x + r * 0.6} y2={p.y} stroke={col} strokeWidth={0.8} strokeOpacity={0.3} />
+                                      <line x1={p.x - r * 0.6} y1={p.y + r * 0.35} x2={p.x + r * 0.6} y2={p.y + r * 0.35} stroke={col} strokeWidth={0.8} strokeOpacity={0.3} />
+                                    </g>
+                                  ) : (
+                                    <g>
+                                      <rect x={p.x - r} y={p.y - r * 0.7} width={r * 2} height={r * 1.4} rx={5} fill={`url(#${gradId})`} stroke={col} strokeWidth={1.2} />
+                                      {/* Monitor stand */}
+                                      <line x1={p.x} y1={p.y + r * 0.7} x2={p.x} y2={p.y + r * 0.95} stroke={col} strokeWidth={0.8} strokeOpacity={0.35} />
+                                      <line x1={p.x - r * 0.25} y1={p.y + r * 0.95} x2={p.x + r * 0.25} y2={p.y + r * 0.95} stroke={col} strokeWidth={0.8} strokeOpacity={0.35} />
+                                      {/* Screen shine */}
+                                      <rect x={p.x - r * 0.7} y={p.y - r * 0.5} width={r * 0.4} height={r * 0.2} rx={1} fill={col} fillOpacity={0.08} />
+                                    </g>
+                                  )}
+                                  {/* Selection ring */}
+                                  {isSel && <circle cx={p.x} cy={p.y} r={r + 6} fill="none" stroke={th.accent} strokeWidth={1.5} strokeOpacity={0.5} strokeDasharray="4,3" />}
+                                  {/* Inner icon text */}
+                                  {ip ? (
+                                    <text x={p.x} y={p.y + 1} textAnchor="middle" dominantBaseline="middle" fill={col} fontSize={r * 0.6} fontWeight={600} fontFamily="-apple-system,sans-serif" fillOpacity={0.7}>IP</text>
+                                  ) : dc ? (
+                                    <text x={p.x} y={p.y + r * 0.7} textAnchor="middle" fill={col} fontSize={r * 0.5} fontWeight={600} fontFamily="-apple-system,sans-serif" fillOpacity={0.7}>DC</text>
+                                  ) : null}
+                                  {/* Label with glass pill */}
+                                  <g transform={`translate(${p.x}, ${p.y + r + 14})`}>
+                                    <rect x={-labelW / 2} y={-8} width={labelW} height={15} rx={7} fill={th.panelBg} fillOpacity={0.85} stroke={col} strokeWidth={0.4} strokeOpacity={0.3} />
+                                    <text textAnchor="middle" dy="3" fill={th.text} fontSize={8.5} fontWeight={500} fontFamily="-apple-system,sans-serif">{labelText}</text>
+                                  </g>
+                                </g>
+                              );
+                            })}
+
+                            {/* Legend — glass panel (fixed in top-left of viewport) */}
+                            <g transform={`translate(${vb.x + 10}, ${vb.y + 10})`}>
+                              <rect x={-6} y={-6} width={140} height={106} rx={8} fill={th.panelBg} fillOpacity={0.88} stroke={th.border} strokeWidth={0.5} strokeOpacity={0.3} />
+                              <text x={0} y={6} fill={th.textMuted} fontSize={7.5} fontWeight={600} fontFamily="-apple-system,sans-serif" letterSpacing="0.08em" textTransform="uppercase">CONNECTIONS</text>
+                              {[
+                                { color: "#58a6ff", label: "RDP (type 10)" },
+                                { color: "#3fb950", label: "Network (type 3)" },
+                                { color: "#d29922", label: "Interactive (type 2)" },
+                                { color: th.danger || "#f85149", label: "Failed logon", dashed: true },
+                              ].map((item, i) => (
+                                <g key={i} transform={`translate(4, ${i * 15 + 18})`}>
+                                  <line x1={0} y1={0} x2={14} y2={0} stroke={item.color} strokeWidth={2} strokeLinecap="round" strokeDasharray={item.dashed ? "3,2" : "none"} />
+                                  <circle cx={14} cy={0} r={1.5} fill={item.color} />
+                                  <text x={20} y={3} fill={th.textMuted} fontSize={7.5} fontFamily="-apple-system,sans-serif">{item.label}</text>
+                                </g>
+                              ))}
+                              <line x1={0} y1={78} x2={124} y2={78} stroke={th.border} strokeWidth={0.3} strokeOpacity={0.5} />
+                              <text x={0} y={90} fill={th.textMuted} fontSize={7.5} fontWeight={600} fontFamily="-apple-system,sans-serif" letterSpacing="0.08em">NODES</text>
+                              <g transform="translate(4, 98)">
+                                <circle cx={4} cy={0} r={3.5} fill="url(#lm-grad-green)" stroke="#3fb950" strokeWidth={0.8} strokeDasharray="2.5,1.5" />
+                                <text x={14} y={3} fill={th.textMuted} fontSize={7.5} fontFamily="-apple-system,sans-serif">IP</text>
+                              </g>
+                              <g transform="translate(38, 98)">
+                                <rect x={0} y={-4} width={8} height={8} rx={2} fill="url(#lm-grad-blue)" stroke="#58a6ff" strokeWidth={0.8} />
+                                <text x={14} y={3} fill={th.textMuted} fontSize={7.5} fontFamily="-apple-system,sans-serif">DC</text>
+                              </g>
+                              <g transform="translate(68, 98)">
+                                <rect x={0} y={-3} width={9} height={6} rx={2} fill="url(#lm-grad-purple)" stroke="#d2a8ff" strokeWidth={0.8} />
+                                <text x={15} y={3} fill={th.textMuted} fontSize={7.5} fontFamily="-apple-system,sans-serif">Host</text>
+                              </g>
+                            </g>
+                          </svg>
+
+                          {/* Node detail panel — glass card */}
+                          {selectedNode && (() => {
+                            const node = data.nodes.find((n) => n.id === selectedNode);
+                            const inbound = data.edges.filter((e) => e.target === selectedNode);
+                            const outbound = data.edges.filter((e) => e.source === selectedNode);
+                            const nc = nodeColor(node || {});
+                            return (
+                              <div style={{ marginTop: 10, padding: 14, background: `linear-gradient(135deg, ${nc}08, ${th.panelBg}ee)`, borderRadius: 10, border: `1px solid ${nc}22`, backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                                  <span style={{ padding: "3px 10px", background: `linear-gradient(135deg, ${nc}33, ${nc}15)`, color: nc, borderRadius: 6, fontSize: 10, fontWeight: 600, fontFamily: "-apple-system, sans-serif", letterSpacing: "0.03em" }}>{isIP(selectedNode) ? "IP Address" : isDC(selectedNode) ? "Domain Controller" : "Workstation"}</span>
+                                  <span style={{ fontWeight: 600, fontSize: 13, color: th.text, fontFamily: "-apple-system, sans-serif", letterSpacing: "-0.2px" }}>{selectedNode}</span>
+                                </div>
+                                <div style={{ display: "flex", gap: 12, fontSize: 11, color: th.textDim, marginBottom: 10, fontFamily: "-apple-system, sans-serif", alignItems: "center" }}>
+                                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 6, height: 6, borderRadius: 3, background: "#58a6ff", display: "inline-block" }} /> {inbound.length} inbound</span>
+                                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 6, height: 6, borderRadius: 3, background: "#3fb950", display: "inline-block" }} /> {outbound.length} outbound</span>
+                                  <span style={{ color: th.textMuted }}>{node?.eventCount} events</span>
+                                  <button onClick={() => {
+                                    const cols = modal.columns || {};
+                                    const srcCol = cols.source || cols.workstation;
+                                    const tgtCol = cols.target;
+                                    if (srcCol || tgtCol) {
+                                      const cf = { ...(ct.columnFilters || {}) };
+                                      if (srcCol && tgtCol) cf[srcCol] = selectedNode;
+                                      else if (tgtCol) cf[tgtCol] = selectedNode;
+                                      up("columnFilters", cf);
+                                    }
+                                    setModal(null);
+                                  }} style={{ marginLeft: "auto", padding: "4px 12px", fontSize: 10, background: `linear-gradient(135deg, ${th.accent}33, ${th.accent}18)`, color: th.accent, border: `1px solid ${th.accent}33`, borderRadius: 6, cursor: "pointer", fontFamily: "-apple-system, sans-serif", fontWeight: 600, transition: "all 0.15s" }}
+                                    onMouseEnter={(ev) => { ev.currentTarget.style.background = th.accent + "44"; ev.currentTarget.style.boxShadow = `0 2px 8px ${th.accent}22`; }}
+                                    onMouseLeave={(ev) => { ev.currentTarget.style.background = `linear-gradient(135deg, ${th.accent}33, ${th.accent}18)`; ev.currentTarget.style.boxShadow = "none"; }}>
+                                    Filter Grid
+                                  </button>
+                                </div>
+                                <div style={{ maxHeight: 120, overflow: "auto" }}>
+                                  {[...inbound.map((e) => ({ ...e, dir: "in" })), ...outbound.map((e) => ({ ...e, dir: "out" }))].map((e, i) => (
+                                    <div key={i} style={{ fontSize: 10, padding: "4px 0", color: th.textDim, fontFamily: "monospace", display: "flex", alignItems: "center", gap: 6, borderBottom: `1px solid ${th.border}22` }}>
+                                      <span style={{ padding: "1px 4px", background: e.dir === "in" ? "#58a6ff22" : "#3fb95022", color: e.dir === "in" ? "#58a6ff" : "#3fb950", borderRadius: 2, fontSize: 8, fontWeight: 600 }}>{e.dir === "in" ? "IN" : "OUT"}</span>
+                                      <span>{e.source} {"\u2192"} {e.target}</span>
+                                      <span style={{ color: th.accent }}>{e.count}x</span>
+                                      <span style={{ color: th.textMuted }}>{e.users.join(", ")}</span>
+                                      <span style={{ color: logonColor(e.logonTypes), fontSize: 9 }}>{logonLabel(e.logonTypes)}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })()}
+
+                          {/* Edge detail panel — glass card */}
+                          {selectedEdge && (() => {
+                            const ec = selectedEdge.hasFailures ? (th.danger || "#f85149") : logonColor(selectedEdge.logonTypes);
+                            return (
+                              <div style={{ marginTop: 10, padding: 14, background: `linear-gradient(135deg, ${ec}06, ${th.panelBg}ee)`, borderRadius: 10, border: `1px solid ${ec}22`, backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                                  <span style={{ fontWeight: 600, fontSize: 12, color: th.text, fontFamily: "-apple-system, sans-serif", display: "flex", alignItems: "center", gap: 6 }}>
+                                    <span style={{ padding: "2px 8px", background: "#3fb95018", color: "#3fb950", borderRadius: 5, fontSize: 10 }}>{selectedEdge.source}</span>
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={ec} strokeWidth="2" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                                    <span style={{ padding: "2px 8px", background: "#58a6ff18", color: "#58a6ff", borderRadius: 5, fontSize: 10 }}>{selectedEdge.target}</span>
+                                  </span>
+                                  {selectedEdge.hasFailures && <span style={{ padding: "2px 8px", background: (th.danger || "#f85149") + "18", color: th.danger || "#f85149", borderRadius: 5, fontSize: 9, fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>FAILED</span>}
+                                </div>
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, fontSize: 11, color: th.textDim, fontFamily: "-apple-system, sans-serif" }}>
+                                  <div><span style={{ fontSize: 8, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>Events</span><div style={{ fontWeight: 700, color: th.text, fontSize: 16, marginTop: 1 }}>{selectedEdge.count}</div></div>
+                                  <div><span style={{ fontSize: 8, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>Users</span><div style={{ marginTop: 2 }}>{selectedEdge.users.join(", ")}</div></div>
+                                  <div><span style={{ fontSize: 8, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>Logon Type</span><div style={{ color: logonColor(selectedEdge.logonTypes), marginTop: 2 }}>{logonLabel(selectedEdge.logonTypes)} ({selectedEdge.logonTypes.join(",")})</div></div>
+                                  <div><span style={{ fontSize: 8, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>First Seen</span><div style={{ marginTop: 2, fontFamily: "monospace", fontSize: 10 }}>{selectedEdge.firstSeen?.slice(0, 19)}</div></div>
+                                  <div><span style={{ fontSize: 8, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>Last Seen</span><div style={{ marginTop: 2, fontFamily: "monospace", fontSize: 10 }}>{selectedEdge.lastSeen?.slice(0, 19)}</div></div>
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Chains tab */}
+                    {viewTab === "chains" && (
+                      <div>
+                        {data.chains.length === 0 ? (
+                          <div style={{ textAlign: "center", padding: 30, color: th.textMuted, fontSize: 12, fontFamily: "-apple-system, sans-serif" }}>No multi-hop lateral movement chains detected</div>
+                        ) : (
+                          <div style={{ maxHeight: 350, overflow: "auto" }}>
+                            {data.chains.map((chain, ci) => (
+                              <div key={ci} style={{ padding: "10px 12px", marginBottom: 8, background: th.panelBg, borderRadius: 6, border: `1px solid ${th.border}` }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                                  <span style={{ padding: "2px 8px", background: (th.danger || "#f85149") + "22", color: th.danger || "#f85149", borderRadius: 3, fontSize: 10, fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>{chain.hops} hops</span>
+                                  <span style={{ fontSize: 10, color: th.textDim, fontFamily: "-apple-system, sans-serif" }}>Users: {chain.users.join(", ") || "(unknown)"}</span>
+                                </div>
+                                <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                                  {chain.path.map((host, hi) => (
+                                    <span key={hi} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                      <span style={{ padding: "3px 8px", background: hi === 0 ? "#3fb95022" : hi === chain.path.length - 1 ? (th.danger || "#f85149") + "22" : th.btnBg, color: hi === 0 ? "#3fb950" : hi === chain.path.length - 1 ? (th.danger || "#f85149") : th.text, borderRadius: 4, fontSize: 10, fontFamily: "monospace", border: `1px solid ${th.border}` }}>{host}</span>
+                                      {hi < chain.path.length - 1 && <span style={{ color: th.textMuted, fontSize: 10 }}>{"\u2192"}</span>}
+                                    </span>
+                                  ))}
+                                </div>
+                                <div style={{ fontSize: 9, color: th.textMuted, marginTop: 4, fontFamily: "monospace" }}>
+                                  {chain.timestamps.filter(Boolean).map((t) => t.slice(0, 19)).join(" \u2192 ")}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Connections table tab */}
+                    {viewTab === "table" && (() => {
+                      const lmHeaders = ["Source", "Target", "Count", "Users", "Logon Types", "First Seen", "Last Seen"];
+                      const lmDefWidths = { Source: 130, Target: 130, Count: 60, Users: 180, "Logon Types": 90, "First Seen": 150, "Last Seen": 150 };
+                      const lmColWidths = modal.colWidths || lmDefWidths;
+                      const lmSortCol = modal.tableSortCol || "Count";
+                      const lmSortDir = modal.tableSortDir || "desc";
+                      const lmSortKey = (e, col) => {
+                        if (col === "Count") return e.count;
+                        if (col === "Source") return e.source;
+                        if (col === "Target") return e.target;
+                        if (col === "Users") return e.users.join(", ");
+                        if (col === "Logon Types") return e.logonTypes.join(", ");
+                        if (col === "First Seen") return e.firstSeen || "";
+                        if (col === "Last Seen") return e.lastSeen || "";
+                        return "";
+                      };
+                      const sortedEdges = [...data.edges].sort((a, b) => {
+                        const av = lmSortKey(a, lmSortCol), bv = lmSortKey(b, lmSortCol);
+                        const cmp = typeof av === "number" ? av - bv : String(av).localeCompare(String(bv));
+                        return lmSortDir === "asc" ? cmp : -cmp;
+                      });
+                      const toggleSort = (col) => {
+                        setModal((p) => ({
+                          ...p,
+                          tableSortCol: col,
+                          tableSortDir: p.tableSortCol === col && p.tableSortDir === "asc" ? "desc" : "asc",
+                        }));
+                      };
+
+                      const lmCellVal = (e, h) => {
+                        if (h === "Source") return e.source;
+                        if (h === "Target") return e.target;
+                        if (h === "Count") return String(e.count);
+                        if (h === "Users") return e.users.join(", ");
+                        if (h === "Logon Types") return e.logonTypes.join(", ");
+                        if (h === "First Seen") return e.firstSeen?.slice(0, 19) || "";
+                        if (h === "Last Seen") return e.lastSeen?.slice(0, 19) || "";
+                        return "";
+                      };
+
+                      const copyRow = (e) => {
+                        const line = lmHeaders.map((h) => lmCellVal(e, h)).join("\t");
+                        navigator.clipboard.writeText(line);
+                      };
+                      const copyAll = () => {
+                        const headerLine = lmHeaders.join("\t");
+                        const lines = sortedEdges.map((e) => lmHeaders.map((h) => lmCellVal(e, h)).join("\t"));
+                        navigator.clipboard.writeText([headerLine, ...lines].join("\n"));
+                      };
+
+                      const onResizeStart = (colName, startX) => {
+                        const startW = lmColWidths[colName] || lmDefWidths[colName];
+                        const move = (ev) => {
+                          const delta = ev.clientX - startX;
+                          const newW = Math.max(40, startW + delta);
+                          setModal((p) => ({ ...p, colWidths: { ...(p.colWidths || lmDefWidths), [colName]: newW } }));
+                        };
+                        const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+                        document.addEventListener("mousemove", move);
+                        document.addEventListener("mouseup", up);
+                      };
+
+                      return (
+                        <div>
+                          <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginBottom: 6 }}>
+                            <button onClick={copyAll} style={{ padding: "3px 10px", fontSize: 10, background: th.btnBg, color: th.text, border: `1px solid ${th.border}`, borderRadius: 4, cursor: "pointer", fontFamily: "-apple-system, sans-serif" }}
+                              onMouseEnter={(ev) => { ev.currentTarget.style.background = th.accent + "22"; }} onMouseLeave={(ev) => { ev.currentTarget.style.background = th.btnBg; }}>
+                              Copy All ({sortedEdges.length})
+                            </button>
+                          </div>
+                          <div style={{ maxHeight: 360, overflow: "auto", border: `1px solid ${th.border}`, borderRadius: 6 }}>
+                            <table style={{ borderCollapse: "collapse", fontSize: 10, fontFamily: "monospace", tableLayout: "fixed", width: lmHeaders.reduce((s, h) => s + (lmColWidths[h] || lmDefWidths[h]), 0) }}>
+                              <thead>
+                                <tr>
+                                  {lmHeaders.map((h) => (
+                                    <th key={h} onClick={() => toggleSort(h)} style={{ position: "sticky", top: 0, width: lmColWidths[h] || lmDefWidths[h], minWidth: 40, background: th.headerBg || th.panelBg, color: lmSortCol === h ? th.text : th.accent, padding: "6px 8px", textAlign: "left", fontSize: 9, borderBottom: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", overflow: "hidden", boxSizing: "border-box", userSelect: "none", zIndex: 2, cursor: "pointer" }}>
+                                      <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                                        <span>{h}</span>
+                                        {lmSortCol === h && <span style={{ fontSize: 7, color: th.accent }}>{lmSortDir === "asc" ? "\u25B2" : "\u25BC"}</span>}
+                                        <div style={{ width: 4, cursor: "col-resize", height: 16, position: "absolute", right: 0, top: 0, bottom: 0 }}
+                                          onMouseDown={(ev) => { ev.preventDefault(); ev.stopPropagation(); onResizeStart(h, ev.clientX); }} />
+                                      </div>
+                                    </th>
+                                  ))}
+                                  <th style={{ position: "sticky", top: 0, width: 28, background: th.headerBg || th.panelBg, borderBottom: `1px solid ${th.border}`, zIndex: 2 }} />
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {sortedEdges.map((e, i) => (
+                                  <tr key={i} style={{ background: i % 2 === 0 ? "transparent" : (th.rowAlt || th.panelBg + "44") }}>
+                                    <td style={{ padding: "4px 8px", color: th.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.source}</td>
+                                    <td style={{ padding: "4px 8px", color: th.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.target}</td>
+                                    <td style={{ padding: "4px 8px", fontWeight: 600, color: th.text }}>{e.count}</td>
+                                    <td style={{ padding: "4px 8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: th.textDim }}>{e.users.join(", ")}</td>
+                                    <td style={{ padding: "4px 8px", color: th.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.logonTypes.join(", ")}</td>
+                                    <td style={{ padding: "4px 8px", color: th.textDim, whiteSpace: "nowrap" }}>{e.firstSeen?.slice(0, 19)}</td>
+                                    <td style={{ padding: "4px 8px", color: th.textDim, whiteSpace: "nowrap" }}>{e.lastSeen?.slice(0, 19)}</td>
+                                    <td style={{ padding: "2px 4px", textAlign: "center" }}>
+                                      <button onClick={() => copyRow(e)} title="Copy row" style={{ background: "none", border: "none", cursor: "pointer", padding: "2px 4px", fontSize: 10, color: th.textMuted, borderRadius: 3 }}
+                                        onMouseEnter={(ev) => { ev.currentTarget.style.background = th.accent + "22"; ev.currentTarget.style.color = th.accent; }}
+                                        onMouseLeave={(ev) => { ev.currentTarget.style.background = "none"; ev.currentTarget.style.color = th.textMuted; }}>
+                                        {"\u2398"}
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+
+              {/* Footer — glass bar */}
+              <div style={{ padding: "12px 20px", borderTop: `1px solid ${th.border}22`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, background: `linear-gradient(135deg, ${th.panelBg}ee, ${th.modalBg}dd)`, backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)" }}>
+                {phase === "config" && (
+                  <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+                    <button onClick={() => setModal(null)} style={{ ...ms.bs, borderRadius: 8 }}>Cancel</button>
+                    <button onClick={handleAnalyze} style={{ ...ms.bp, borderRadius: 8, boxShadow: `0 2px 8px ${th.accent}33` }}>Analyze</button>
+                  </div>
+                )}
+                {phase === "loading" && (
+                  <div style={{ display: "flex", justifyContent: "space-between", width: "100%", alignItems: "center" }}>
+                    <span style={{ color: th.textMuted, fontSize: 11, fontFamily: "-apple-system, sans-serif" }}>{Math.round(modal.lmProgress || 0)}% complete</span>
+                    <button onClick={() => setModal((p) => ({ ...p, phase: "config", loading: false, lmProgress: 0, _cancelled: true }))} style={{ ...ms.bs, borderRadius: 8 }}>Cancel</button>
+                  </div>
+                )}
+                {phase === "results" && (
+                  <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+                    <button onClick={() => setModal((p) => ({ ...p, phase: "config", data: null, positions: null }))} style={{ ...ms.bs, borderRadius: 8 }}>Back</button>
+                    <button onClick={() => setModal(null)} style={{ ...ms.bp, borderRadius: 8, boxShadow: `0 2px 8px ${th.accent}33` }}>Done</button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         );
