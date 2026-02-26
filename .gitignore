@@ -5,3 +5,5 @@ release/
 *.db-wal
 *.db-shm
 .DS_Store
+docs/.vitepress/dist
+docs/.vitepress/cache
