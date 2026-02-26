@@ -2,6 +2,8 @@
 
 Stacking provides frequency analysis of unique values in any column, presented as bar charts. This technique is fundamental to DFIR analysis — unusual or rare values often indicate malicious activity.
 
+![Value Frequency Analysis panel showing stacking by Provider column with count, percentage, and distribution bars](/dfir-tips/Stacking.png)
+
 ## Opening Stacking
 
 - **Menu:** Tools > Stacking
