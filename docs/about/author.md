@@ -25,7 +25,7 @@ import { withBase } from 'vitepress'
 
 ## Background
 
-Renzon Cruz is a seasoned Digital Forensics and Incident Response (DFIR) professional with **8 years of experience** investigating complex cyber intrusions across enterprise environments. He currently serves as **Technical Director of Incident Response at Unit 42, Palo Alto Networks**, where he leads high-profile breach investigations and threat actor attribution.
+Renzon Cruz is a seasoned Digital Forensics and Incident Response (DFIR) professional with **8 years of experience** investigating complex cyber intrusions across enterprise environments. He currently serves as **Technical Director of Incident Response at Unit 42, Palo Alto Networks**, where he leads high-profile breach investigations and threat actor negotiation.
 
 Prior to Unit 42, Renzon was a **Senior Consultant at the National Cybersecurity Agency**, where he responded to nation-state and advanced persistent threat (APT) campaigns targeting critical infrastructure.
 
@@ -34,10 +34,12 @@ Prior to Unit 42, Renzon was a **Senior Consultant at the National Cybersecurity
 Renzon is an active contributor to the DFIR community:
 
 - **DFIR Analyst/Contributor** at [The DFIR Report](https://thedfirreport.com/) — providing detailed intrusion analysis write-ups used by defenders worldwide
-- **CFP Board & APT Labs Contributor** at [Xintra APT Labs](https://www.intralabs.io/) — developing hands-on APT investigation training scenarios
+- **CFP Board & APT Labs Contributor** at [Xintra APT Labs](https://www.xintra.org/) — developing hands-on APT investigation training scenarios
+- - **Co-Founder/Lead Instructor** at [GuideM] — lead author of Cyber Defense & Threat Hunting, and Digital Forensics & Memory Analysis course. 
 
 ## Why IRFlow Timeline?
 
 > After years of investigating breaches involving 30–50GB+ super-timelines, I needed a tool that could handle the scale of modern investigations without the overhead of enterprise SIEM infrastructure. IRFlow Timeline was built from real-world IR experience — every feature exists because I needed it during an actual case. From reconstructing ransomware kill chains to tracing lateral movement across hundreds of endpoints, this tool reflects the workflows that DFIR practitioners use every day.
 >
 > — Renzon Cruz
+
