@@ -39,15 +39,16 @@ Renzon is an active contributor to the DFIR community:
 
 ## Why IRFlow Timeline?
 
-> If you’re a DFIR analyst running macOS, you know the struggle of booting up a Windows VM just to triage a timeline. I got tired of it, so I built a solution.
+If you’re a DFIR analyst running macOS, you know the struggle of booting up a Windows VM just to triage a timeline. I got tired of it, so I built a solution.
 
-Introducing IRFlow Timeline.
+Introducing **IRFlow Timeline**.
 
 This isn't just another personal project; it’s a tool built from the ground up based on real-world IR experience. Every feature exists because I reached for it during an actual case and it wasn’t there. 
 
 If you need to stay agile in the field without leaving your native OS, this is for you.
 >
-> — Renzon Cruz
+— Renzon Cruz
+
 
 
 
