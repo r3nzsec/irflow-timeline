@@ -22,7 +22,7 @@ features:
     details: Full-text search, LIKE, Regex, Fuzzy matching, and Mixed mode. Find exactly what you need across massive timelines.
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#E85D2A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v6"/><circle cx="12" cy="12" r="3"/><path d="M12 15v3"/><path d="M8 15l-3 3"/><path d="M16 15l3 3"/><path d="M5 18v2"/><path d="M12 18v2"/><path d="M19 18v2"/></svg>'
     title: Process Tree
-    details: GUID-aware process hierarchy visualization from Sysmon logs with suspicious pattern detection for LOLBins, Office spawns, and temp paths.
+    details: GUID-aware process hierarchy visualization from Sysmon and Windows Security logs with suspicious pattern detection for LOLBins, Office spawns, and temp paths.
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#E85D2A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/><line x1="8.5" y1="7.5" x2="15.5" y2="16.5"/><line x1="15.5" y1="7.5" x2="8.5" y2="16.5"/><line x1="6" y1="9" x2="6" y2="15"/><line x1="18" y1="9" x2="18" y2="15"/></svg>'
     title: Lateral Movement Tracker
     details: Interactive force-directed network graph showing logon events, movement chains, and multi-hop detection across your environment.
