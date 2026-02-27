@@ -4,8 +4,8 @@ const ROW_HEIGHT = 26;
 const HEADER_HEIGHT = 34;
 const FILTER_HEIGHT = 28;
 const OVERSCAN = 20;
-const VIRTUAL_WINDOW = 5000;    // rows to fetch per SQL query window
-const VIRTUAL_AHEAD = 1000;     // trigger re-fetch when within this many rows of edge
+const VIRTUAL_WINDOW = 10000;   // rows to fetch per SQL query window
+const VIRTUAL_AHEAD = 2000;     // trigger re-fetch when within this many rows of edge
 const QUERY_DEBOUNCE = 500;
 const DETAIL_PANEL_HEIGHT_DEFAULT = 200;
 const DETAIL_PANEL_MIN_HEIGHT = 80;
@@ -533,12 +533,15 @@ export default function App() {
       dateRangeFilters: tab.dateRangeFilters || {}, advancedFilters: tab.advancedFilters || [],
     });
     if (fetchId.current !== myFetchId) return; // Stale — newer fetch in flight
-    // Cache the result (keep max 4 entries per tab to limit memory)
-    if (!searchCache.current[tab.id]) searchCache.current[tab.id] = {};
-    const tc = searchCache.current[tab.id];
-    const keys = Object.keys(tc);
-    if (keys.length >= 4) delete tc[keys[0]];
-    tc[cacheKey] = { rows: result.rows, rowOffset: fetchOffset, totalFiltered: result.totalFiltered, bookmarkedSet: new Set(result.bookmarkedRows), rowTags: result.rowTags || {} };
+    // Cache only initial/filter loads (centerRow===0), NOT scroll-driven fetches,
+    // to prevent stale offset data from being returned on scroll-back
+    if (centerRow === 0) {
+      if (!searchCache.current[tab.id]) searchCache.current[tab.id] = {};
+      const tc = searchCache.current[tab.id];
+      const keys = Object.keys(tc);
+      if (keys.length >= 4) delete tc[keys[0]];
+      tc[cacheKey] = { rows: result.rows, rowOffset: fetchOffset, totalFiltered: result.totalFiltered, bookmarkedSet: new Set(result.bookmarkedRows), rowTags: result.rowTags || {} };
+    }
     setTabs((prev) => prev.map((t) =>
       t.id === tab.id ? { ...t, rows: result.rows, rowOffset: fetchOffset, totalFiltered: result.totalFiltered, bookmarkedSet: new Set(result.bookmarkedRows), rowTags: result.rowTags || {}, dataReady: true } : t
     ));
@@ -891,7 +894,7 @@ export default function App() {
             const kpHidden = (kp.hiddenColumns || []).filter((h) => headers.includes(h));
             kpHidden.forEach((h) => autoHidden.add(h));
             return { ...base, _detectedProfile: kp.name,
-              pinnedColumns: (kp.pinnedColumns || []).filter((h) => headers.includes(h)),
+              pinnedColumns: [],
               hiddenColumns: autoHidden,
               columnOrder: [...order, ...rest],
               colorRules: autoRules,
@@ -1306,6 +1309,19 @@ export default function App() {
     ? displayRows.slice(si, ei)
     : rows.slice(Math.max(0, si - rowOffset), Math.max(0, ei - rowOffset)),
     [isGrouped, displayRows, rows, si, ei, rowOffset]);
+
+  // Skeleton rows for positions outside the cached window (shown during fast scroll)
+  const skeletonIndices = useMemo(() => {
+    if (isGrouped || visible.length >= (ei - si)) return [];
+    const cacheStart = rowOffset;
+    const cacheEnd = rowOffset + rows.length;
+    const indices = [];
+    for (let i = si; i < ei; i++) {
+      if (i < cacheStart || i >= cacheEnd) indices.push(i);
+    }
+    return indices;
+  }, [isGrouped, visible.length, si, ei, rowOffset, rows.length]);
+
   const compiledColors = useMemo(() => compileColorRules(ct?.colorRules || []), [ct?.colorRules]);
   const gw = (col) => ct?.columnWidths[col] || 150;
   const fmtCell = (h, val) => (dateTimeFormat && ct?.tsColumns?.has(h)) ? formatDateTime(val, dateTimeFormat, timezone) : (val || "");
@@ -1636,8 +1652,8 @@ export default function App() {
 
   // ── Modals ───────────────────────────────────────────────────────
   const Overlay = ({ children }) => (
-    <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 24, width: 480, maxWidth: "92vw", maxHeight: "80vh", overflow: "auto", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
+    <div style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)", WebkitAppRegion: "drag" }}>
+      <div style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 24, width: 480, maxWidth: "92vw", maxHeight: "80vh", overflow: "auto", boxShadow: "0 24px 48px rgba(0,0,0,0.5)", WebkitAppRegion: "no-drag" }}>
         {children}
       </div>
     </div>
@@ -1881,10 +1897,10 @@ export default function App() {
       <style>{`
         @keyframes tle-spin { to { transform: rotate(360deg) } }
         @keyframes tle-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(0.95); } }
-        ::-webkit-scrollbar { width: 10px; height: 10px; }
+        ::-webkit-scrollbar { width: 14px; height: 14px; }
         ::-webkit-scrollbar-track { background: ${th.bg}; }
-        ::-webkit-scrollbar-thumb { background: ${th.border}; border-radius: 5px; border: 2px solid ${th.bg}; }
-        ::-webkit-scrollbar-thumb:hover { background: ${th.accent}; }
+        ::-webkit-scrollbar-thumb { background: ${th.textMuted}; border-radius: 7px; border: 3px solid ${th.bg}; }
+        ::-webkit-scrollbar-thumb:hover { background: ${th.textDim}; }
         ::-webkit-scrollbar-corner { background: ${th.bg}; }
       `}</style>
 
@@ -1964,17 +1980,20 @@ export default function App() {
                         ts: det([/^TimeCreated$/i, /^datetime$/i]),
                         eventId: det([/^EventId$/i, /^EventID$/i]),
                       } : {
-                        pid: det([/^ProcessId$/i, /^pid$/i, /^process_id$/i]),
-                        ppid: det([/^ParentProcessId$/i, /^ppid$/i, /^parent_process_id$/i]),
+                        pid: det([/^ProcessId$/i, /^pid$/i, /^process_id$/i, /^NewProcessId$/i]),
+                        ppid: det([/^ParentProcessId$/i, /^ppid$/i, /^parent_process_id$/i, /^CreatorProcessId$/i]),
                         guid: det([/^ProcessGuid$/i, /^process_guid$/i]),
                         parentGuid: det([/^ParentProcessGuid$/i, /^parent_process_guid$/i]),
-                        image: det([/^Image$/i, /^process_name$/i, /^exe$/i]),
-                        cmdLine: det([/^CommandLine$/i, /^command_line$/i, /^cmdline$/i]),
-                        user: det([/^User$/i, /^UserName$/i]),
+                        image: det([/^Image$/i, /^process_name$/i, /^exe$/i, /^NewProcessName$/i]),
+                        parentImage: det([/^ParentImage$/i, /^ParentProcessName$/i]),
+                        cmdLine: det([/^CommandLine$/i, /^command_line$/i, /^cmdline$/i, /^ProcessCommandLine$/i]),
+                        user: det([/^User$/i, /^UserName$/i, /^TargetUserName$/i]),
                         ts: det([/^UtcTime$/i, /^datetime$/i, /^TimeCreated$/i]),
                         eventId: det([/^EventID$/i, /^event_id$/i, /^EventId$/]),
+                        elevation: det([/^TokenElevationType$/i]),
+                        integrity: det([/^MandatoryLabel$/i, /^IntegrityLevel$/i]),
                       };
-                      setModal({ type: "processTree", phase: "config", columns: cols, eventIdValue: "1", data: null, loading: false, expandedNodes: {}, searchText: "", error: null });
+                      setModal({ type: "processTree", phase: "config", columns: cols, eventIdValue: "1,4688", data: null, loading: false, expandedNodes: {}, searchText: "", error: null });
                     }, disabled: !ct?.dataReady },
                     { label: "Lateral Movement", icon: ic(<><circle cx="5" cy="12" r="2.5" fill={(th.danger||"#f85149")+"33"}/><circle cx="19" cy="5" r="2.5" fill={(th.danger||"#f85149")+"33"}/><circle cx="19" cy="19" r="2.5" fill={(th.danger||"#f85149")+"33"}/><line x1="7.5" y1="11" x2="16.5" y2="6"/><line x1="7.5" y1="13" x2="16.5" y2="18"/><circle cx="12" cy="12" r="1.5" fill={(th.danger||"#f85149")+"55"}/></>, th.danger || "#f85149"), action: () => {
                       if (!ct?.dataReady) return;
@@ -1989,7 +2008,7 @@ export default function App() {
                         ts: det([/^datetime$/i, /^UtcTime$/i, /^TimeCreated$/i]),
                         domain: det([/^TargetDomainName$/i]),
                       };
-                      setModal({ type: "lateralMovement", phase: "config", columns: cols, eventIds: "4624,4625,4648", excludeLocal: true, excludeService: true, data: null, loading: false, error: null, selectedNode: null, selectedEdge: null, viewTab: "graph", positions: null });
+                      setModal({ type: "lateralMovement", phase: "config", columns: cols, eventIds: "4624,4625,4648,4778", excludeLocal: true, excludeService: true, data: null, loading: false, error: null, selectedNode: null, selectedEdge: null, viewTab: "graph", positions: null });
                     }, disabled: !ct?.dataReady },
                     { label: "Persistence Analyzer", icon: ic(<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill={(th.danger||"#f85149")+"22"} stroke={th.danger||"#f85149"}/><path d="M12 8v4M12 16h.01" stroke={th.danger||"#f85149"}/></>, th.danger || "#f85149"), action: () => {
                       if (!ct?.dataReady) return;
@@ -2051,7 +2070,7 @@ export default function App() {
           <span style={{ color: th.textDim, fontSize: 10, minWidth: 18, textAlign: "center" }}>{fontSize}</span>
           <button onClick={() => setFontSize((s) => Math.min(18, s + 1))} style={{ ...tb, fontSize: 11, padding: "3px 5px" }} title="Increase font size">+</button>
           <div style={tdv} />
-          <button onClick={() => setHistogramVisible((v) => !v)} style={{ ...tb, color: histogramVisible ? th.accent : undefined }} title="Toggle timeline histogram">
+          <button onClick={() => setHistogramVisible((v) => !v)} style={{ ...tb, color: histogramVisible ? th.accent : th.textDim }} title="Toggle timeline histogram">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="12" width="4" height="9" rx="1" /><rect x="10" y="6" width="4" height="15" rx="1" /><rect x="17" y="3" width="4" height="18" rx="1" /></svg>
           </button>
           {proximityFilter && ct?.dateRangeFilters?.[proximityFilter.tsCol] && (<>
@@ -2711,6 +2730,17 @@ export default function App() {
                     </div>
                   );
                 })}
+                {/* Skeleton placeholder rows shown during fast scroll when data is loading */}
+                {skeletonIndices.length > 0 && skeletonIndices.map((ai) => (
+                  <div key={`sk-${ai}`} style={{ display: "flex", alignItems: "center", height: ROW_HEIGHT, position: "absolute", top: ai * ROW_HEIGHT, width: tw, borderBottom: `1px solid ${th.cellBorder}`, background: ai % 2 === 0 ? th.rowEven : th.rowOdd, gap: 12, paddingLeft: BKMK_COL_WIDTH + tagColWidth + 8 }}>
+                    <div style={{ width: 50, height: 8, background: th.border, borderRadius: 3 }} />
+                    <div style={{ width: 130, height: 8, background: th.border, borderRadius: 3 }} />
+                    <div style={{ width: 40, height: 8, background: th.border, borderRadius: 3 }} />
+                    <div style={{ width: 90, height: 8, background: th.border, borderRadius: 3 }} />
+                    <div style={{ width: 70, height: 8, background: th.border, borderRadius: 3 }} />
+                    <div style={{ width: 180, height: 8, background: th.border, borderRadius: 3 }} />
+                  </div>
+                ))}
               </div>
             </div>
           </div>
@@ -2827,8 +2857,8 @@ export default function App() {
             .catch(() => setModal((p) => p?.type === "stacking" ? { ...p, loading: false, data: { values: [], totalUnique: 0, totalRows: 0 } } : p));
         };
         return (
-          <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }}>
-            <div id="stacking-modal" onClick={(e) => e.stopPropagation()} style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: mw, maxWidth: "96vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)", position: "relative" }}>
+          <div style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)", WebkitAppRegion: "drag" }}>
+            <div id="stacking-modal" style={{ WebkitAppRegion: "no-drag", background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: mw, maxWidth: "96vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)", position: "relative" }}>
               {/* Right edge resize handle */}
               <div onMouseDown={onModalResize} style={{ position: "absolute", top: 12, bottom: 12, right: -3, width: 6, cursor: "ew-resize", zIndex: 1 }} />
               {/* Header — glass */}
@@ -2975,8 +3005,8 @@ export default function App() {
           return `${m}m`;
         };
         return (
-          <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }}>
-            <div onClick={(e) => e.stopPropagation()} style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 520, maxWidth: "94vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
+          <div style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)", WebkitAppRegion: "drag" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 520, maxWidth: "94vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
               <div style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div>
                   <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif" }}>Column Statistics</h3>
@@ -3407,8 +3437,8 @@ export default function App() {
         const missedCount = results ? results.perIocResults.filter((r) => r.hits === 0).length : 0;
 
         return (
-          <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }}>
-            <div onClick={(e) => e.stopPropagation()} style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 580, maxWidth: "94vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
+          <div style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)", WebkitAppRegion: "drag" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 580, maxWidth: "94vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
               {/* Header */}
               <div style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div>
@@ -3570,8 +3600,8 @@ export default function App() {
         });
 
         return (
-          <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }}>
-            <div onClick={(e) => e.stopPropagation()} style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 600, maxWidth: "94vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
+          <div style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)", WebkitAppRegion: "drag" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 600, maxWidth: "94vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
               {/* Header */}
               <div style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div>
@@ -3706,7 +3736,7 @@ export default function App() {
       {/* Cell Detail Popup */}
       {cellPopup && (
         <div onClick={() => setCellPopup(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, backdropFilter: "blur(4px)" }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 560, maxWidth: "92vw", maxHeight: "80vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 560, maxWidth: "92vw", maxHeight: "80vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: `1px solid ${th.border}` }}>
               <span style={{ color: th.textDim, fontSize: 12, fontWeight: 600 }}>{cellPopup.column}</span>
               <div style={{ display: "flex", gap: 6 }}>
@@ -3728,7 +3758,7 @@ export default function App() {
       {filterDropdown && (
         <>
           <div onClick={() => setFilterDropdown(null)} style={{ position: "fixed", inset: 0, zIndex: 199 }} />
-          <div onClick={(e) => e.stopPropagation()} style={{ position: "fixed", left: filterDropdown.dx ?? Math.min(filterDropdown.x, window.innerWidth - 400), top: filterDropdown.dy ?? Math.min(filterDropdown.y, window.innerHeight - 440), width: 380, height: 420, minWidth: 260, minHeight: 200, maxWidth: "90vw", maxHeight: "90vh", background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 8, boxShadow: "0 12px 28px rgba(0,0,0,0.5)", zIndex: 200, display: "flex", flexDirection: "column", overflow: "hidden", resize: "both" }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", position: "fixed", left: filterDropdown.dx ?? Math.min(filterDropdown.x, window.innerWidth - 400), top: filterDropdown.dy ?? Math.min(filterDropdown.y, window.innerHeight - 440), width: 380, height: 420, minWidth: 260, minHeight: 200, maxWidth: "90vw", maxHeight: "90vh", background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 8, boxShadow: "0 12px 28px rgba(0,0,0,0.5)", zIndex: 200, display: "flex", flexDirection: "column", overflow: "hidden", resize: "both" }}>
             <div style={{ padding: "4px 8px", flexShrink: 0, display: "flex", alignItems: "center", gap: 6, borderBottom: `1px solid ${th.border}`, cursor: "grab", userSelect: "none" }}
               onMouseDown={(e) => {
                 if (e.button !== 0) return;
@@ -3788,7 +3818,7 @@ export default function App() {
       {dateRangeDropdown && (
         <>
           <div onClick={() => setDateRangeDropdown(null)} style={{ position: "fixed", inset: 0, zIndex: 199 }} />
-          <div onClick={(e) => e.stopPropagation()} style={{ position: "fixed", left: Math.min(dateRangeDropdown.x, window.innerWidth - 300), top: Math.min(dateRangeDropdown.y, window.innerHeight - 220), width: 290, background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 8, boxShadow: "0 12px 28px rgba(0,0,0,0.5)", zIndex: 200, padding: 12 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", position: "fixed", left: Math.min(dateRangeDropdown.x, window.innerWidth - 300), top: Math.min(dateRangeDropdown.y, window.innerHeight - 220), width: 290, background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 8, boxShadow: "0 12px 28px rgba(0,0,0,0.5)", zIndex: 200, padding: 12 }}>
             <div style={{ color: th.textDim, fontSize: 10, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: "-apple-system, sans-serif" }}>Date Range — {dateRangeDropdown.colName}</div>
             <div style={{ marginBottom: 8 }}>
               <label style={{ display: "block", color: th.textMuted, fontSize: 10, marginBottom: 2, fontFamily: "-apple-system, sans-serif" }}>From</label>
@@ -3856,9 +3886,24 @@ export default function App() {
           setModal(null);
         };
 
-        const parseTs = (ts) => new Date((ts || "").replace(" ", "T")).getTime();
+        const parseTs = (ts) => {
+          if (!ts) return NaN;
+          const s = String(ts).trim();
+          // Try ISO-like: "2024-11-05 18:31" → "2024-11-05T18:31"
+          let d = new Date(s.replace(" ", "T"));
+          if (!isNaN(d.getTime())) return d.getTime();
+          // Try as-is
+          d = new Date(s);
+          if (!isNaN(d.getTime())) return d.getTime();
+          // Try numeric epoch (seconds or ms)
+          const n = Number(s);
+          if (!isNaN(n) && n > 946684800) return n > 1e12 ? n : n * 1000;
+          return NaN;
+        };
         const fmtDur = (ms) => {
+          if (!ms || isNaN(ms) || !isFinite(ms) || ms <= 0) return "\u2014";
           const mins = Math.round(ms / 60000);
+          if (mins < 1) return "<1m";
           if (mins < 60) return `${mins}m`;
           if (mins < 1440) return `${Math.floor(mins / 60)}h ${mins % 60}m`;
           return `${Math.floor(mins / 1440)}d ${Math.floor((mins % 1440) / 60)}h`;
@@ -3871,8 +3916,8 @@ export default function App() {
         });
 
         return (
-          <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }}>
-            <div onClick={(e) => e.stopPropagation()} style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 700, maxWidth: "94vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
+          <div style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)", WebkitAppRegion: "drag" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 700, maxWidth: "94vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
               {/* Header */}
               <div style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div>
@@ -4109,8 +4154,8 @@ export default function App() {
         });
 
         return (
-          <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }}>
-            <div onClick={(e) => e.stopPropagation()} style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 650, maxWidth: "94vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
+          <div style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)", WebkitAppRegion: "drag" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 650, maxWidth: "94vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
               {/* Header */}
               <div style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div>
@@ -4279,8 +4324,8 @@ export default function App() {
         const totalMergeRows = checkedTabs.reduce((s, t) => s + t.rowCount, 0);
         const canMerge = checkedTabs.length >= 2 && checkedTabs.every((t) => t.selectedTsCol);
         return (
-          <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }}>
-            <div onClick={(e) => e.stopPropagation()} style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 560, maxWidth: "94vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
+          <div style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)", WebkitAppRegion: "drag" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 560, maxWidth: "94vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
               <div style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div>
                   <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif" }}>Merge Tabs</h3>
@@ -4426,8 +4471,8 @@ export default function App() {
         const inputStyle = { ...selectStyle, flex: 1, minWidth: 80 };
 
         return (
-          <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }}>
-            <div onClick={(e) => e.stopPropagation()} style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 720, maxWidth: "94vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
+          <div style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)", WebkitAppRegion: "drag" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 720, maxWidth: "94vw", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
               {/* Header */}
               <div style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif" }}>Edit Filter</h3>
@@ -4541,8 +4586,8 @@ export default function App() {
         const btnStyle = { padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: busy ? "wait" : "pointer", fontFamily: "-apple-system, sans-serif", border: "none" };
 
         return (
-          <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }}>
-            <div onClick={(e) => e.stopPropagation()} style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 480, maxWidth: "94vw", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
+          <div style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)", WebkitAppRegion: "drag" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 480, maxWidth: "94vw", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
               {/* Header */}
               <div style={{ padding: "16px 20px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div>
@@ -4615,21 +4660,122 @@ export default function App() {
         const { phase, columns: cols, eventIdValue, data, expandedNodes, searchText } = modal;
         const hasCols = (cols.pid && cols.ppid) || (cols.guid && cols.parentGuid);
 
-        const SUSPICIOUS_PARENTS = /^(winword|excel|powerpnt|outlook|onenote|msaccess)(\.exe)?$/i;
-        const SCRIPT_KIDS = /^(powershell|pwsh|cmd|wscript|cscript|mshta|bash)(\.exe)?$/i;
-        const LOLBINS = /^(certutil|bitsadmin|msiexec|regsvr32|rundll32|msbuild|installutil|cmstp)(\.exe)?$/i;
-        const SUS_PATHS = /(\\temp\\|\\tmp\\|\\appdata\\|\\downloads\\|\\public\\)/i;
-        const NORMAL_LOLBIN_PARENTS = /^(explorer|svchost|services|cmd|powershell|mmc)(\.exe)?$/i;
+        const SUSPICIOUS_PARENTS = /^(winword|excel|powerpnt|outlook|onenote|msaccess|acrobat|acrord32)(\.exe)?$/i;
+        const SCRIPT_KIDS = /^(powershell|pwsh|cmd|wscript|cscript|mshta|bash|sh)(\.exe)?$/i;
+        const LOLBINS = /^(certutil|bitsadmin|msiexec|regsvr32|rundll32|msbuild|installutil|cmstp|wmic|forfiles|pcalua|msdt|mavinject|dnscmd|ftp|mshta)(\.exe)?$/i;
+        const SUS_PATHS = /(\\temp\\|\\tmp\\|\\appdata\\|\\downloads\\|\\public\\|\\programdata\\|\\recycle|\\perflogs\\)/i;
+        const NORMAL_LOLBIN_PARENTS = /^(explorer|svchost|services|cmd|powershell|mmc|wmiprvse|taskeng|taskhostw)(\.exe)?$/i;
+        const ENCODED_PS = /\s+(-e\s|-enc\s|-encodedcommand\s|-en\s|-ec\s)/i;
+        const DISCOVERY_CMDS = /^(whoami|ipconfig|systeminfo|net|net1|nltest|tasklist|qprocess|arp|nbtstat|route|netstat|quser|qwinsta|cmdkey|dsquery)(\.exe)?$/i;
+        const REMOTE_EXEC = /^(psexe[cs]svc|wsmprovhost|winrshost)(\.exe)?$/i;
+        const SVCHOST_NORMAL_PARENTS = /^(services)(\.exe)?$/i;
+        // DFIR report-derived patterns (11 reports, Feb 2025–Feb 2026)
+        const WEB_SERVERS = /^(java|tomcat\d*|w3wp|httpd|nginx|node|php-cgi|confluence)(\.exe)?$/i;
+        const CRED_DUMP_CMD = /(comsvcs\.dll|sekurlsa|lsadump|procdump.*lsass|mimikatz|pypykatz|nanodump)/i;
+        const NTDS_EXTRACT = /(ntdsutil.*ifm|wbadmin.*ntds|secretsdump|ntds\.dit)/i;
+        const LSASS_TOOLS = /^(processhacker|procdump|sqldumper|avdump|handlekatz)(\.exe)?$/i;
+        const ACCOUNT_MANIP = /net\s+(user|group|localgroup)\s+.*(\/add|\/domain\s+\/add)/i;
+        const DEFENSE_EVASION = /(vssadmin.*delete|wevtutil\s+cl|bcdedit.*safeboot|bcdedit.*recoveryenabled)/i;
+        const RMM_TOOLS = /^(anydesk|splashtop|rustdesk|atera|screenconnect|teamviewer|supremo)(\.exe)?$/i;
+        const EXFIL_TOOLS = /^(rclone|filezilla|winscp|megasync|megacmd)(\.exe)?$/i;
+        const NETWORK_SCANNERS = /^(netscan|netscan64|advanced_ip_scanner|rustscan|masscan|angry_ip_scanner|nbtscan)(\.exe)?$/i;
+        const AD_RECON_TOOLS = /^(adfind|sharphound|bloodhound|sharpview|seatbelt|rubeus|certify|certipy)(\.exe)?$/i;
+        const ARCHIVE_SUSPECT = /\b(7z|7za|winrar|rar)\b.*(-p| a .*\.(7z|zip|rar))/i;
 
         const getSusLevel = (node, parentNode) => {
           const n = (node.processName || "").toLowerCase();
           const pn = (parentNode?.processName || "").toLowerCase();
+          const cmd = node.cmdLine || "";
+          const img = node.image || "";
+          // Level 3 — critical
           if (SCRIPT_KIDS.test(n) && SUSPICIOUS_PARENTS.test(pn)) return 3;
+          if (SCRIPT_KIDS.test(n) && WEB_SERVERS.test(pn)) return 3;
+          if (/^lsass(\.exe)?$/i.test(pn) && !/^(svchost|werfault)(\.exe)?$/i.test(n)) return 3;
+          if (ENCODED_PS.test(cmd) && /^(powershell|pwsh)(\.exe)?$/i.test(n)) return 3;
+          if (REMOTE_EXEC.test(n)) return 3;
+          if (CRED_DUMP_CMD.test(cmd)) return 3;
+          if (NTDS_EXTRACT.test(cmd)) return 3;
+          if (LSASS_TOOLS.test(n)) return 3;
+          // Level 2 — high
           if (LOLBINS.test(n) && pn && !NORMAL_LOLBIN_PARENTS.test(pn)) return 2;
-          if (SUS_PATHS.test(node.image)) return 1;
+          if (/^svchost(\.exe)?$/i.test(n) && pn && !SVCHOST_NORMAL_PARENTS.test(pn)) return 2;
+          if (/^(wscript|cscript)(\.exe)?$/i.test(n) && /(\\users\\[^\\]+\\|\\appdata\\)/i.test(img)) return 2;
+          if (DISCOVERY_CMDS.test(n) && SCRIPT_KIDS.test(pn)) return 2;
+          if (/wmic.*\/node:/i.test(cmd) || /winrm/i.test(cmd)) return 2;
+          if (ACCOUNT_MANIP.test(cmd)) return 2;
+          if (DEFENSE_EVASION.test(cmd)) return 2;
+          if (RMM_TOOLS.test(n) && pn && !/^explorer(\.exe)?$/i.test(pn)) return 2;
+          if (EXFIL_TOOLS.test(n)) return 2;
+          if (ARCHIVE_SUSPECT.test(cmd)) return 2;
+          if (/^psexesvc(\.exe)?$/i.test(n) && SCRIPT_KIDS.test(pn)) return 2;
+          if (/^wmiprvse(\.exe)?$/i.test(pn) && SCRIPT_KIDS.test(n) && /ADMIN\$/i.test(cmd)) return 2;
+          // Level 1 — medium
+          if (SUS_PATHS.test(img)) return 1;
+          if (DISCOVERY_CMDS.test(n)) return 1;
+          if (NETWORK_SCANNERS.test(n)) return 1;
+          if (AD_RECON_TOOLS.test(n)) return 1;
+          if (RMM_TOOLS.test(n)) return 1;
           return 0;
         };
+        const susLabels = { 3: "Critical: exploitation / credential dump / NTDS extract / remote exec", 2: "High: account manipulation / defense evasion / LOLBin / exfiltration", 1: "Medium: suspicious path / discovery / scanning / recon tools" };
         const susColors = { 3: th.danger || "#f85149", 2: "#f0883e", 1: "#d29922", 0: null };
+
+        // Process tree column configuration
+        const ptHeaders = ["Process", "PID", "User", "Timestamp", "Command Line"];
+        const ptDefWidths = { Process: 280, PID: 75, User: 150, Timestamp: 135, "Command Line": 300 };
+        const ptColWidths = modal.ptColWidths || ptDefWidths;
+        const ptSortCol = modal.ptSortCol || "Timestamp";
+        const ptSortDir = modal.ptSortDir || "asc";
+        const ptColFilters = modal.ptColFilters || {};
+        const ptCellVal = (node, col) => {
+          if (col === "Process") return node.processName || "";
+          if (col === "PID") return node.pid || "";
+          if (col === "User") return node.user || "";
+          if (col === "Timestamp") return node.ts || "";
+          if (col === "Command Line") return node.cmdLine || "";
+          return "";
+        };
+        const ptSortKey = (node, col) => {
+          if (col === "PID") return parseInt(node.pid) || 0;
+          return ptCellVal(node, col);
+        };
+        const togglePtSort = (col) => {
+          setModal((p) => {
+            if ((p.ptSortCol || "Timestamp") === col) return { ...p, ptSortDir: (p.ptSortDir || "asc") === "asc" ? "desc" : "asc" };
+            return { ...p, ptSortCol: col, ptSortDir: "asc" };
+          });
+        };
+        const onPtResizeStart = (colName, e) => {
+          e.preventDefault(); e.stopPropagation();
+          const startX = e.clientX;
+          const startW = ptColWidths[colName] || ptDefWidths[colName];
+          document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none";
+          const move = (ev) => {
+            const newW = Math.max(40, startW + ev.clientX - startX);
+            setModal((p) => ({ ...p, ptColWidths: { ...(p.ptColWidths || ptDefWidths), [colName]: newW } }));
+          };
+          const up = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+          document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
+        };
+        const openPtFilter = (colName, e) => {
+          e.stopPropagation();
+          const rect = e.currentTarget.getBoundingClientRect();
+          const counts = {};
+          for (const p of (data?.processes || [])) { const v = ptCellVal(p, colName); counts[v] = (counts[v] || 0) + 1; }
+          const allVals = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+          const current = ptColFilters[colName];
+          const selected = new Set(current && current.length > 0 ? current : allVals);
+          setModal((p) => ({ ...p, ptFilterOpen: colName, ptFilterPos: { x: rect.left, y: rect.bottom + 2 }, ptFilterVals: allVals, ptFilterCounts: counts, ptFilterSel: selected, ptFilterSearch: "" }));
+        };
+        const ptFilterOpen = modal.ptFilterOpen;
+        const ptFilterPos = modal.ptFilterPos || {};
+        const ptFilterVals = modal.ptFilterVals || [];
+        const ptFilterCounts = modal.ptFilterCounts || {};
+        const ptFilterSel = modal.ptFilterSel || new Set();
+        const ptFilterSearch = modal.ptFilterSearch || "";
+        const ptFilterDisplay = ptFilterSearch ? ptFilterVals.filter((v) => v.toLowerCase().includes(ptFilterSearch.toLowerCase())) : ptFilterVals;
+        const ptActiveFilterCount = Object.values(ptColFilters).filter((v) => v && v.length > 0).length;
+        const totalPtW = ptHeaders.reduce((s, h) => s + (ptColWidths[h] || ptDefWidths[h]), 0) + 50;
 
         const handleBuild = async () => {
           setModal((p) => ({ ...p, phase: "loading", loading: true, error: null }));
@@ -4666,31 +4812,49 @@ export default function App() {
             childMap.get(p.parentKey).push(p.key);
           }
           const st = (searchText || "").toLowerCase();
-          if (st) {
-            return procs.filter((p) =>
-              (p.processName || "").toLowerCase().includes(st) ||
-              (p.pid || "").toLowerCase().includes(st) ||
-              (p.cmdLine || "").toLowerCase().includes(st) ||
-              (p.user || "").toLowerCase().includes(st)
-            ).map((p) => ({ ...p, connectors: [], isLast: false }));
+          const hasColFilters = Object.values(ptColFilters).some((v) => v && v.length > 0);
+          const siblingSort = (a, b) => {
+            const av = ptSortKey(a, ptSortCol), bv = ptSortKey(b, ptSortCol);
+            const cmp = typeof av === "number" ? av - bv : String(av).localeCompare(String(bv));
+            return ptSortDir === "asc" ? cmp : -cmp;
+          };
+          // Flat mode when search or column filters active
+          if (st || hasColFilters) {
+            let filtered = [...procs];
+            if (hasColFilters) {
+              filtered = filtered.filter((p) => {
+                for (const [col, vals] of Object.entries(ptColFilters)) {
+                  if (!vals || vals.length === 0) continue;
+                  if (!vals.includes(ptCellVal(p, col))) return false;
+                }
+                return true;
+              });
+            }
+            if (st) {
+              filtered = filtered.filter((p) =>
+                (p.processName || "").toLowerCase().includes(st) ||
+                (p.pid || "").toLowerCase().includes(st) ||
+                (p.cmdLine || "").toLowerCase().includes(st) ||
+                (p.user || "").toLowerCase().includes(st)
+              );
+            }
+            filtered.sort(siblingSort);
+            return filtered.map((p) => ({ ...p, depth: 0, connectors: [], isLast: false }));
           }
           const roots = procs.filter((p) => !byKey.has(p.parentKey));
-          roots.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
           const flat = [];
-          // activeLines[depth] = true means a vertical continuation line at that depth
           const activeLines = {};
           const dfs = (keys, depth) => {
             const sorted = keys.map((k) => byKey.get(k)).filter(Boolean);
-            sorted.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
+            sorted.sort(siblingSort);
             for (let si = 0; si < sorted.length; si++) {
               const node = sorted[si];
               const isLast = si === sorted.length - 1;
-              // Build connector array: for each depth 0..depth-1, is there a vertical line?
               const connectors = [];
               for (let d = 0; d < depth; d++) connectors.push(!!activeLines[d]);
               flat.push({ ...node, depth, connectors, isLast: depth > 0 && isLast });
               if (expandedNodes[node.key]) {
-                activeLines[depth] = !isLast; // vertical line continues if not last sibling
+                activeLines[depth] = !isLast;
                 dfs(childMap.get(node.key) || [], depth + 1);
                 delete activeLines[depth];
               }
@@ -4775,8 +4939,8 @@ export default function App() {
         const edgeStyle = (cursor, pos) => ({ position: "absolute", ...pos, zIndex: 2, cursor });
 
         return (
-          <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, zIndex: 100, backdropFilter: "blur(4px)" }}>
-            <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute", left: px, top: py, width: pw, height: ph_, background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)", overflow: "hidden" }}>
+          <div style={{ position: "fixed", inset: 0, background: th.overlay, zIndex: 100, backdropFilter: "blur(4px)", WebkitAppRegion: "drag" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", position: "absolute", left: px, top: py, width: pw, height: ph_, background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)", overflow: "hidden" }}>
               {/* Resize handles — edges */}
               <div onMouseDown={(e) => startResize(e, "t")} style={edgeStyle("ns-resize", { top: 0, left: 8, right: 8, height: 5 })} />
               <div onMouseDown={(e) => startResize(e, "b")} style={edgeStyle("ns-resize", { bottom: 0, left: 8, right: 8, height: 5 })} />
@@ -4811,7 +4975,8 @@ export default function App() {
                   <div style={{ fontSize: 12, color: th.textDim, marginBottom: 12, fontFamily: "-apple-system, sans-serif" }}>Map columns for process tree reconstruction. Auto-detected from headers.</div>
                   <div style={{ display: "grid", gridTemplateColumns: "130px 1fr 130px 1fr", gap: "8px 12px", alignItems: "center", fontSize: 12, fontFamily: "-apple-system, sans-serif" }}>
                     {[["Process ID", "pid"], ["Parent Process ID", "ppid"], ["Process GUID", "guid"], ["Parent GUID", "parentGuid"],
-                      ["Image / Exe", "image"], ["Command Line", "cmdLine"], ["User", "user"], ["Timestamp", "ts"], ["Event ID", "eventId"]].map(([label, key]) => (
+                      ["Image / Exe", "image"], ["Parent Image", "parentImage"], ["Command Line", "cmdLine"], ["User", "user"],
+                      ["Timestamp", "ts"], ["Event ID", "eventId"], ["Token Elevation", "elevation"], ["Integrity Level", "integrity"]].map(([label, key]) => (
                       <div key={key} style={{ display: "contents" }}>
                         <label style={{ color: th.textDim, textAlign: "right" }}>{label}:</label>
                         <select value={cols[key] || ""} onChange={(e) => setModal((p) => ({ ...p, columns: { ...p.columns, [key]: e.target.value || null } }))} style={selStyle}>
@@ -4820,8 +4985,8 @@ export default function App() {
                         </select>
                       </div>
                     ))}
-                    <label style={{ color: th.textDim, textAlign: "right" }}>EventID value:</label>
-                    <input value={eventIdValue || ""} onChange={(e) => setModal((p) => ({ ...p, eventIdValue: e.target.value }))} placeholder="1 (blank = all rows)" style={{ ...selStyle, width: 120 }} />
+                    <label style={{ color: th.textDim, textAlign: "right" }}>EventID values:</label>
+                    <input value={eventIdValue || ""} onChange={(e) => setModal((p) => ({ ...p, eventIdValue: e.target.value }))} placeholder="1,4688 (comma-separated, blank = all)" style={{ ...selStyle, width: 180 }} />
                   </div>
                   {modal.error && <div style={{ marginTop: 12, padding: "8px 12px", background: (th.danger || "#f85149") + "22", borderRadius: 6, fontSize: 12, color: th.danger || "#f85149" }}>{modal.error}</div>}
                   <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
@@ -4849,10 +5014,74 @@ export default function App() {
                       {[1, 2, 3, 4, 5].filter((d) => d <= (data.stats.maxDepth || 5)).map((d) => <option key={d} value={d}>Depth {d}</option>)}
                     </select>
                     {selectedKey && <button onClick={() => setModal((p) => p ? { ...p, selectedKey: null } : p)} style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: (th.accent || "#58a6ff") + "22", color: th.accent || "#58a6ff", border: `1px solid ${(th.accent || "#58a6ff")}55`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0 }}>Clear Chain</button>}
+                    {/* Separator */}
+                    <div style={{ width: 1, height: 16, background: th.border, flexShrink: 0 }} />
+                    {/* Copy Chain — ancestry from selected node to root */}
+                    {selectedKey && <button onClick={() => {
+                      const lines = [];
+                      const chain = [];
+                      let cur = selectedKey;
+                      while (cur && byKeyMap.has(cur)) { chain.unshift(byKeyMap.get(cur)); cur = byKeyMap.get(cur).parentKey; }
+                      chain.forEach((n, i) => {
+                        const indent = "  ".repeat(i);
+                        const prefix = i === 0 ? "" : "\u2514\u2500 ";
+                        lines.push(`${indent}${prefix}${n.processName} (PID: ${n.pid}${n.user ? ", " + n.user : ""}${n.ts ? ", " + n.ts : ""})`);
+                        if (n.cmdLine) lines.push(`${indent}   ${n.cmdLine}`);
+                      });
+                      navigator.clipboard.writeText(lines.join("\n"));
+                    }} title="Copy ancestry chain to clipboard" style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: th.btnBg, color: th.accent || "#58a6ff", border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0 }}>Copy Chain</button>}
+                    {/* Copy Tree — all visible nodes as indented text */}
+                    <button onClick={() => {
+                      const lines = [];
+                      flatNodes.forEach((n) => {
+                        const indent = "  ".repeat(n.depth);
+                        const connector = n.depth > 0 ? (n.isLast ? "\u2514\u2500 " : "\u251C\u2500 ") : "";
+                        lines.push(`${indent}${connector}${n.processName} (PID: ${n.pid}, PPID: ${n.ppid}${n.user ? ", " + n.user : ""}${n.ts ? ", " + n.ts : ""})`);
+                        if (n.cmdLine) lines.push(`${indent}${n.depth > 0 ? "   " : ""}  ${n.cmdLine}`);
+                      });
+                      navigator.clipboard.writeText(lines.join("\n"));
+                    }} title="Copy visible tree as text" style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0 }}>Copy Tree</button>
+                    {/* Copy CSV — tab-separated for spreadsheets */}
+                    <button onClick={() => {
+                      const header = ["ProcessName", "PID", "PPID", "User", "Timestamp", "ImagePath", "CommandLine", "Elevation", "Integrity", "Depth"].join("\t");
+                      const rows = flatNodes.map((n) => [
+                        n.processName, n.pid, n.ppid, n.user || "", n.ts || "", n.image || "", n.cmdLine || "",
+                        n.elevation || "", n.integrity || "", n.depth
+                      ].join("\t"));
+                      navigator.clipboard.writeText([header, ...rows].join("\n"));
+                    }} title="Copy as tab-separated CSV" style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0 }}>Copy CSV</button>
                   </div>
 
-                  {/* Tree with connector lines */}
-                  <div style={{ flex: 1, overflowY: "auto", overflowX: "auto", padding: "4px 0", minHeight: 0 }}>
+                  {/* Column headers + Tree */}
+                  <div style={{ flex: 1, overflowY: "auto", overflowX: "auto", minHeight: 0 }}>
+                    {/* Sticky header block — filter bar + column headers as one unit */}
+                    <div style={{ position: "sticky", top: 0, zIndex: 2, background: th.modalBg }}>
+                      {/* Filter active indicator */}
+                      {ptActiveFilterCount > 0 && (
+                        <div style={{ padding: "4px 12px", display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${th.border}33`, borderLeft: `3px solid ${th.accent || "#58a6ff"}`, minWidth: totalPtW }}>
+                          <span style={{ fontSize: 10, fontWeight: 600, color: th.accent || "#58a6ff", fontFamily: "-apple-system, sans-serif" }}>Filter active ({ptActiveFilterCount} column{ptActiveFilterCount > 1 ? "s" : ""})</span>
+                          <span style={{ fontSize: 10, color: th.textDim }}>{"\u2014"} {flatNodes.length} of {data.stats.totalProcesses} processes</span>
+                          <button onClick={() => setModal((p) => ({ ...p, ptColFilters: {} }))} style={{ padding: "1px 8px", fontSize: 9, background: th.accent || "#58a6ff", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>Clear All</button>
+                        </div>
+                      )}
+                      {/* Column header row */}
+                      <div style={{ display: "flex", borderBottom: `1px solid ${th.border}`, minWidth: totalPtW }}>
+                        {ptHeaders.map((h) => (
+                          <div key={h} style={{ width: ptColWidths[h] || ptDefWidths[h], flexShrink: 0, padding: "6px 8px", fontSize: 9, fontFamily: "-apple-system, sans-serif", fontWeight: 600, color: (ptSortCol || "Timestamp") === h ? th.text : (th.accent || "#58a6ff"), whiteSpace: "nowrap", overflow: "hidden", userSelect: "none", position: "relative", boxSizing: "border-box" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                              <span onClick={() => togglePtSort(h)} style={{ cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis" }}>{h}</span>
+                              {(ptSortCol || "Timestamp") === h && <span style={{ fontSize: 7, color: th.accent || "#58a6ff" }}>{(ptSortDir || "asc") === "asc" ? "\u25B2" : "\u25BC"}</span>}
+                              <span onClick={(e) => openPtFilter(h, e)} style={{ cursor: "pointer", fontSize: 7, color: ptColFilters[h] ? (th.accent || "#58a6ff") : (th.textDim) + "66", flexShrink: 0, marginLeft: "auto", paddingRight: 8 }}>{"\u25BC"}</span>
+                              <div onMouseDown={(e) => onPtResizeStart(h, e)} style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 6, cursor: "col-resize" }}>
+                                <div style={{ position: "absolute", right: 2, top: 2, bottom: 2, width: 1, background: th.border }} />
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                        <div style={{ width: 50, flexShrink: 0, padding: "6px 4px", fontSize: 9, fontFamily: "-apple-system, sans-serif", color: th.textDim, userSelect: "none" }} />
+                      </div>
+                    </div>
+                    {/* Tree rows */}
                     {flatNodes.length === 0 && (
                       <div style={{ padding: 20, textAlign: "center", color: th.textDim, fontSize: 12 }}>{searchText ? "No matching processes" : "No process creation events found"}</div>
                     )}
@@ -4872,62 +5101,238 @@ export default function App() {
                       return (
                         <div key={node.key + ":" + i}
                           onClick={() => setModal((p) => p ? { ...p, selectedKey: p.selectedKey === node.key ? null : node.key } : p)}
-                          style={{ display: "flex", alignItems: "center", gap: 6, height: ROW_H, paddingRight: 12, fontSize: 12, fontFamily: "-apple-system, sans-serif", cursor: "pointer", position: "relative", background: isSelected ? (th.accent || "#58a6ff") + "18" : "transparent", borderBottom: `1px solid ${th.border}11` }}
+                          style={{ display: "flex", height: ROW_H, fontSize: 12, fontFamily: "-apple-system, sans-serif", cursor: "pointer", background: isSelected ? (th.accent || "#58a6ff") + "18" : "transparent", borderBottom: `1px solid ${th.border}11`, minWidth: totalPtW }}
                           onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = th.bgHover || th.border + "44"; }}
                           onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}>
 
-                          {/* Connector lines */}
-                          {node.depth > 0 && (node.connectors || []).map((active, d) => (
-                            active ? <div key={`vl${d}`} style={{ position: "absolute", left: LEFT_PAD + d * INDENT + INDENT / 2, top: 0, bottom: 0, width: 1, background: chainKeys.has(node.key) && d >= 0 ? chainColor + "66" : lineColor + "44" }} /> : null
-                          ))}
-                          {node.depth > 0 && (
-                            <>
-                              {/* Vertical line from parent down to this node */}
-                              <div style={{ position: "absolute", left: LEFT_PAD + (node.depth - 1) * INDENT + INDENT / 2, top: 0, height: node.isLast ? ROW_H / 2 : ROW_H, width: 1, background: inChain ? chainColor + "88" : lineColor + "44" }} />
-                              {/* Horizontal branch from vertical line to node */}
-                              <div style={{ position: "absolute", left: LEFT_PAD + (node.depth - 1) * INDENT + INDENT / 2, top: ROW_H / 2, width: INDENT / 2 + 2, height: 1, background: inChain ? chainColor + "88" : lineColor + "44" }} />
-                            </>
-                          )}
+                          {/* Process column */}
+                          <div style={{ width: ptColWidths.Process || ptDefWidths.Process, flexShrink: 0, position: "relative", display: "flex", alignItems: "center", gap: 4, overflow: "hidden", boxSizing: "border-box" }}>
+                            {/* Connector lines */}
+                            {node.depth > 0 && (node.connectors || []).map((active, d) => (
+                              active ? <div key={`vl${d}`} style={{ position: "absolute", left: LEFT_PAD + d * INDENT + INDENT / 2, top: 0, bottom: 0, width: 1, background: inChain && d >= 0 ? chainColor + "66" : lineColor + "44" }} /> : null
+                            ))}
+                            {node.depth > 0 && (
+                              <>
+                                <div style={{ position: "absolute", left: LEFT_PAD + (node.depth - 1) * INDENT + INDENT / 2, top: 0, height: node.isLast ? ROW_H / 2 : ROW_H, width: 1, background: inChain ? chainColor + "88" : lineColor + "44" }} />
+                                <div style={{ position: "absolute", left: LEFT_PAD + (node.depth - 1) * INDENT + INDENT / 2, top: ROW_H / 2, width: INDENT / 2 + 2, height: 1, background: inChain ? chainColor + "88" : lineColor + "44" }} />
+                              </>
+                            )}
+                            <div style={{ width: LEFT_PAD + node.depth * INDENT, minWidth: LEFT_PAD + node.depth * INDENT, flexShrink: 0 }} />
+                            <span onClick={(e) => { e.stopPropagation(); if (hasChildren) setModal((p) => { const en = { ...p.expandedNodes }; if (en[node.key]) delete en[node.key]; else en[node.key] = true; return { ...p, expandedNodes: en }; }); }}
+                              style={{ width: 14, textAlign: "center", color: hasChildren ? (inChain ? chainColor : th.textDim) : "transparent", fontSize: 10, flexShrink: 0, userSelect: "none" }}>
+                              {hasChildren ? (isExpanded ? "\u25BC" : "\u25B6") : "\u00B7"}
+                            </span>
+                            {inChain && <div style={{ width: 6, height: 6, borderRadius: "50%", background: chainColor, flexShrink: 0 }} />}
+                            {susColor && !inChain && <span style={{ width: 7, height: 7, borderRadius: "50%", background: susColor, flexShrink: 0 }} title={susLabels[sus] || ""} />}
+                            <span style={{ fontWeight: 600, color: isSelected ? chainColor : susColor || th.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }} title={node.image}>{node.processName}</span>
+                            {node.childCount > 0 && <span style={{ fontSize: 10, color: th.accent, flexShrink: 0, paddingRight: 4 }}>({node.childCount})</span>}
+                          </div>
 
-                          {/* Spacer for tree indent */}
-                          <div style={{ width: LEFT_PAD + node.depth * INDENT, minWidth: LEFT_PAD + node.depth * INDENT, flexShrink: 0 }} />
+                          {/* PID column */}
+                          <div style={{ width: ptColWidths.PID || ptDefWidths.PID, flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
+                            <span style={{ fontFamily: "monospace", color: inChain ? chainColor + "cc" : th.textDim, fontSize: 11, whiteSpace: "nowrap" }}>{node.pid}</span>
+                          </div>
 
-                          {/* Chevron */}
-                          <span onClick={(e) => { e.stopPropagation(); if (hasChildren) setModal((p) => { const en = { ...p.expandedNodes }; if (en[node.key]) delete en[node.key]; else en[node.key] = true; return { ...p, expandedNodes: en }; }); }}
-                            style={{ width: 14, textAlign: "center", color: hasChildren ? (inChain ? chainColor : th.textDim) : "transparent", fontSize: 10, flexShrink: 0, userSelect: "none" }}>
-                            {hasChildren ? (isExpanded ? "\u25BC" : "\u25B6") : "\u00B7"}
-                          </span>
-                          {/* Chain dot for highlighted ancestry */}
-                          {inChain && <div style={{ width: 6, height: 6, borderRadius: "50%", background: chainColor, flexShrink: 0 }} />}
-                          {/* Suspicious indicator */}
-                          {susColor && !inChain && <span style={{ width: 7, height: 7, borderRadius: "50%", background: susColor, flexShrink: 0 }} title={sus === 3 ? "Script from Office app" : sus === 2 ? "LOLBin from unusual parent" : "Suspicious path"} />}
-                          {/* Process name */}
-                          <span style={{ fontWeight: 600, color: isSelected ? (chainColor) : susColor || th.text, minWidth: 100, flexShrink: 0 }} title={node.image}>{node.processName}</span>
-                          {/* PID */}
-                          <span style={{ fontFamily: "monospace", color: inChain ? chainColor + "cc" : th.textDim, fontSize: 11, minWidth: 60, flexShrink: 0 }}>PID {node.pid}</span>
-                          {/* User */}
-                          {node.user && <span style={{ color: th.textDim, fontSize: 11, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flexShrink: 0 }}>{node.user}</span>}
-                          {/* Timestamp */}
-                          {tsShort && <span style={{ fontFamily: "monospace", color: th.textDim, fontSize: 11, flexShrink: 0 }}>{tsShort}</span>}
-                          {/* Child count */}
-                          {node.childCount > 0 && <span style={{ fontSize: 10, color: th.accent, flexShrink: 0 }}>({node.childCount})</span>}
-                          {/* Command line (truncated) */}
-                          <span style={{ color: th.textDim, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }} title={node.cmdLine}>{node.cmdLine}</span>
+                          {/* User column */}
+                          <div style={{ width: ptColWidths.User || ptDefWidths.User, flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
+                            <span style={{ color: th.textDim, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.user || ""}</span>
+                          </div>
+
+                          {/* Timestamp column */}
+                          <div style={{ width: ptColWidths.Timestamp || ptDefWidths.Timestamp, flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
+                            <span style={{ fontFamily: "monospace", color: th.textDim, fontSize: 11, whiteSpace: "nowrap" }}>{tsShort}</span>
+                          </div>
+
+                          {/* Command Line column */}
+                          <div style={{ width: ptColWidths["Command Line"] || ptDefWidths["Command Line"], flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
+                            <span style={{ color: th.textDim, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={node.cmdLine}>{node.cmdLine}</span>
+                          </div>
+
                           {/* Filter grid button */}
-                          <button onClick={(e) => {
-                            e.stopPropagation();
-                            if (cols.pid && node.pid) {
-                              const cbf = { ...(ct.checkboxFilters || {}) };
-                              cbf[cols.pid] = [node.pid];
-                              if (cols.eventId) delete cbf[cols.eventId];
-                              up("checkboxFilters", cbf);
-                            }
-                            setModal(null);
-                          }} title="Filter grid to this process" style={{ background: "none", border: `1px solid ${th.border}`, borderRadius: 4, color: th.textDim, fontSize: 10, padding: "2px 6px", cursor: "pointer", flexShrink: 0 }}>Filter</button>
+                          <div style={{ width: 50, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <button onClick={(e) => {
+                              e.stopPropagation();
+                              if (cols.pid && node.pid) {
+                                const cbf = { ...(ct.checkboxFilters || {}) };
+                                cbf[cols.pid] = [node.pid];
+                                if (cols.eventId) delete cbf[cols.eventId];
+                                up("checkboxFilters", cbf);
+                              }
+                              setModal(null);
+                            }} title="Filter grid to this process" style={{ background: "none", border: `1px solid ${th.border}`, borderRadius: 4, color: th.textDim, fontSize: 10, padding: "2px 6px", cursor: "pointer" }}>Filter</button>
+                          </div>
                         </div>
                       );
                     })}
                   </div>
+
+                  {/* Column filter dropdown popup */}
+                  {ptFilterOpen && (
+                    <>
+                      <div style={{ position: "fixed", inset: 0, zIndex: 998 }} onClick={() => setModal((p) => ({ ...p, ptFilterOpen: null }))} />
+                      <div style={{ position: "fixed", left: modal.ptFilterX ?? Math.min(ptFilterPos.x || 0, window.innerWidth - 340), top: modal.ptFilterY ?? Math.min(ptFilterPos.y || 0, window.innerHeight - 440), width: modal.ptFilterW || 320, height: modal.ptFilterH || 420, background: th.modalBg, border: `1px solid ${th.border}`, borderRadius: 8, boxShadow: "0 8px 32px rgba(0,0,0,0.5)", zIndex: 999, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                        <div style={{ padding: "8px 10px", borderBottom: `1px solid ${th.border}33`, display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "grab", userSelect: "none", flexShrink: 0 }}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            const startX = e.clientX, startY = e.clientY;
+                            const startLeft = modal.ptFilterX ?? Math.min(ptFilterPos.x || 0, window.innerWidth - 340);
+                            const startTop = modal.ptFilterY ?? Math.min(ptFilterPos.y || 0, window.innerHeight - 440);
+                            document.body.style.cursor = "grabbing"; document.body.style.userSelect = "none";
+                            const onMove = (ev) => setModal((p) => ({ ...p, ptFilterX: startLeft + ev.clientX - startX, ptFilterY: startTop + ev.clientY - startY }));
+                            const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                            window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+                          }}>
+                          <span style={{ fontSize: 11, fontWeight: 600, color: th.text, fontFamily: "SF Mono, Menlo, monospace" }}>FILTER {"\u2014"} {(ptFilterOpen || "").toUpperCase()}</span>
+                          <span style={{ cursor: "pointer", color: th.textDim, fontSize: 14, lineHeight: 1 }} onClick={() => setModal((p) => ({ ...p, ptFilterOpen: null }))}>{"\u00D7"}</span>
+                        </div>
+                        <div style={{ padding: "6px 10px", flexShrink: 0 }}>
+                          <input type="text" placeholder="Search values..." value={ptFilterSearch} onChange={(e) => setModal((p) => ({ ...p, ptFilterSearch: e.target.value }))}
+                            style={{ width: "100%", boxSizing: "border-box", padding: "5px 8px", fontSize: 11, background: th.bgInput || th.panelBg, border: `1px solid ${th.border}55`, borderRadius: 4, color: th.text, outline: "none", fontFamily: "SF Mono, Menlo, monospace" }}
+                            autoFocus />
+                        </div>
+                        <div style={{ padding: "2px 10px 6px", display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+                          <button onClick={() => setModal((p) => ({ ...p, ptFilterSel: new Set(ptFilterVals) }))} style={{ padding: "2px 8px", fontSize: 10, background: th.bgInput || th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Select All</button>
+                          <button onClick={() => setModal((p) => ({ ...p, ptFilterSel: new Set() }))} style={{ padding: "2px 8px", fontSize: 10, background: th.bgInput || th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Clear</button>
+                          <span style={{ fontSize: 9, color: th.textDim, marginLeft: "auto" }}>{ptFilterSel.size} of {ptFilterVals.length}</span>
+                        </div>
+                        <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "0 4px" }}>
+                          {ptFilterDisplay.map((val) => (
+                            <label key={val} style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 6px", cursor: "pointer", fontSize: 11, fontFamily: "SF Mono, Menlo, monospace", color: th.text, borderRadius: 3 }}
+                              onMouseEnter={(e) => e.currentTarget.style.background = th.bgHover || th.border + "22"}
+                              onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
+                              <input type="checkbox" checked={ptFilterSel.has(val)} onChange={() => setModal((p) => {
+                                const s = new Set(p.ptFilterSel || []);
+                                if (s.has(val)) s.delete(val); else s.add(val);
+                                return { ...p, ptFilterSel: s };
+                              })} style={{ width: 13, height: 13, accentColor: th.accent || "#58a6ff" }} />
+                              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{val || "(empty)"}</span>
+                              <span style={{ fontSize: 9, color: th.textDim, flexShrink: 0 }}>{ptFilterCounts[val] || 0}</span>
+                            </label>
+                          ))}
+                        </div>
+                        <div style={{ padding: "8px 10px", borderTop: `1px solid ${th.border}33`, display: "flex", gap: 6, justifyContent: "flex-end", flexShrink: 0 }}>
+                          <button onClick={() => setModal((p) => ({ ...p, ptFilterOpen: null }))} style={{ padding: "4px 12px", fontSize: 10, background: th.bgInput || th.panelBg, border: `1px solid ${th.border}`, borderRadius: 4, color: th.textDim, cursor: "pointer" }}>Cancel</button>
+                          <button onClick={() => {
+                            const selected = [...ptFilterSel];
+                            const all = ptFilterVals;
+                            setModal((p) => {
+                              const filters = { ...(p.ptColFilters || {}) };
+                              if (selected.length === 0 || selected.length === all.length) { delete filters[ptFilterOpen]; }
+                              else { filters[ptFilterOpen] = selected; }
+                              return { ...p, ptColFilters: filters, ptFilterOpen: null };
+                            });
+                          }} style={{ padding: "4px 12px", fontSize: 10, background: th.accent || "#58a6ff", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>Apply</button>
+                          <button onClick={() => {
+                            setModal((p) => {
+                              const filters = { ...(p.ptColFilters || {}) };
+                              delete filters[ptFilterOpen];
+                              return { ...p, ptColFilters: filters, ptFilterOpen: null };
+                            });
+                          }} style={{ padding: "4px 12px", fontSize: 10, background: "transparent", border: `1px solid ${th.border}`, borderRadius: 4, color: th.textDim, cursor: "pointer" }}>Reset</button>
+                        </div>
+                        {/* Resize grip */}
+                        <div onMouseDown={(e) => {
+                          e.preventDefault(); e.stopPropagation();
+                          const startX = e.clientX, startY = e.clientY;
+                          const startW = modal.ptFilterW || 320, startH = modal.ptFilterH || 420;
+                          document.body.style.cursor = "nwse-resize"; document.body.style.userSelect = "none";
+                          const onMove = (ev) => setModal((p) => ({ ...p, ptFilterW: Math.max(200, startW + ev.clientX - startX), ptFilterH: Math.max(200, startH + ev.clientY - startY) }));
+                          const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                          window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+                        }} style={{ position: "absolute", right: 0, bottom: 0, width: 16, height: 16, cursor: "nwse-resize" }}>
+                          <svg width="16" height="16" viewBox="0 0 16 16" style={{ position: "absolute", right: 2, bottom: 2 }}>
+                            <line x1="12" y1="4" x2="4" y2="12" stroke={th.textDim} strokeWidth="1" />
+                            <line x1="12" y1="8" x2="8" y2="12" stroke={th.textDim} strokeWidth="1" />
+                          </svg>
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Process Detail Panel */}
+                  {selectedKey && (() => {
+                    const selNode = byKeyMap.get(selectedKey);
+                    if (!selNode) return null;
+                    const parentNode = byKeyMap.get(selNode.parentKey);
+                    const selSus = getSusLevel(selNode, parentNode);
+                    const selSusColor = susColors[selSus];
+                    const children = (data?.processes || []).filter((p) => p.parentKey === selectedKey);
+                    const elevMap = { "%%1936": "Full (elevated)", "%%1937": "Limited (not elevated)", "%%1938": "Default" };
+                    const elevLabel = elevMap[selNode.elevation] || selNode.elevation || "";
+                    const integrityLabel = (selNode.integrity || "").replace(/^S-1-16-\d+\s*/i, "").replace(/^.*\\/, "") || selNode.integrity || "";
+                    const copyDetails = () => {
+                      const lines = [
+                        `Process: ${selNode.processName}`,
+                        `PID: ${selNode.pid}`,
+                        `PPID: ${selNode.ppid}`,
+                        selNode.user ? `User: ${selNode.user}` : null,
+                        selNode.ts ? `Timestamp: ${selNode.ts}` : null,
+                        selNode.image ? `Image: ${selNode.image}` : null,
+                        selNode.cmdLine ? `Command Line: ${selNode.cmdLine}` : null,
+                        selNode.parentImage ? `Parent Image: ${selNode.parentImage}` : null,
+                        parentNode ? `Parent Process: ${parentNode.processName} (PID ${parentNode.pid})` : null,
+                        elevLabel ? `Elevation: ${elevLabel}` : null,
+                        integrityLabel ? `Integrity: ${integrityLabel}` : null,
+                        selSus > 0 ? `Suspicious: ${susLabels[selSus]}` : null,
+                        children.length > 0 ? `Children (${children.length}): ${children.map((c) => `${c.processName} (${c.pid})`).join(", ")}` : null,
+                      ].filter(Boolean);
+                      navigator.clipboard.writeText(lines.join("\n"));
+                    };
+                    const tintBg = selSusColor ? selSusColor + "08" : "transparent";
+                    return (
+                      <div style={{ borderTop: `1px solid ${selSusColor || th.border}`, background: tintBg, padding: "10px 20px", flexShrink: 0, maxHeight: 200, overflowY: "auto", fontSize: 12, fontFamily: "-apple-system, sans-serif" }}>
+                        {/* Header row */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                          <span style={{ fontWeight: 700, fontSize: 13, color: selSusColor || th.text }}>{selNode.processName}</span>
+                          {selSus > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: selSusColor + "22", color: selSusColor, fontWeight: 600 }}>{susLabels[selSus]}</span>}
+                          {elevLabel && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: (elevLabel.includes("Full") ? (th.danger || "#f85149") : (th.accent || "#58a6ff")) + "22", color: elevLabel.includes("Full") ? (th.danger || "#f85149") : th.textDim }}>{elevLabel}</span>}
+                          {integrityLabel && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: th.accent + "18", color: th.textDim }}>{integrityLabel}</span>}
+                          <div style={{ flex: 1 }} />
+                          <button onClick={copyDetails} style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}` }}>Copy Details</button>
+                        </div>
+                        {/* 4-column info grid */}
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "4px 16px", marginBottom: 8 }}>
+                          <div><span style={{ color: th.textDim }}>PID: </span><span style={{ fontFamily: "monospace", color: th.text }}>{selNode.pid}</span></div>
+                          <div><span style={{ color: th.textDim }}>PPID: </span><span style={{ fontFamily: "monospace", color: th.text }}>{selNode.ppid}</span></div>
+                          <div><span style={{ color: th.textDim }}>User: </span><span style={{ color: th.text }}>{selNode.user || "\u2014"}</span></div>
+                          <div><span style={{ color: th.textDim }}>Time: </span><span style={{ fontFamily: "monospace", color: th.text }}>{selNode.ts || "\u2014"}</span></div>
+                        </div>
+                        {/* Full-width fields */}
+                        {selNode.image && <div style={{ marginBottom: 4 }}><span style={{ color: th.textDim }}>Image: </span><span style={{ color: th.text, wordBreak: "break-all" }}>{selNode.image}</span></div>}
+                        {selNode.cmdLine && <div style={{ marginBottom: 4, maxHeight: 60, overflowY: "auto", background: th.bgInput, borderRadius: 4, padding: "4px 6px" }}><span style={{ color: th.textDim }}>Cmd: </span><span style={{ fontFamily: "monospace", fontSize: 11, color: th.text, wordBreak: "break-all" }}>{selNode.cmdLine}</span></div>}
+                        {selNode.parentImage && <div style={{ marginBottom: 4 }}><span style={{ color: th.textDim }}>Parent Image: </span><span style={{ color: th.text, wordBreak: "break-all" }}>{selNode.parentImage}</span></div>}
+                        {/* Parent link */}
+                        {parentNode && (
+                          <div style={{ marginBottom: 4 }}>
+                            <span style={{ color: th.textDim }}>Parent: </span>
+                            <span onClick={() => {
+                              const en = { ...(modal.expandedNodes || {}) };
+                              let cur = parentNode.parentKey;
+                              while (cur && byKeyMap.has(cur)) { en[cur] = true; cur = byKeyMap.get(cur).parentKey; }
+                              setModal((p) => p ? { ...p, selectedKey: parentNode.key, expandedNodes: en } : p);
+                            }} style={{ color: th.accent || "#58a6ff", cursor: "pointer", textDecoration: "underline" }}>{parentNode.processName} (PID {parentNode.pid})</span>
+                          </div>
+                        )}
+                        {/* Children chips */}
+                        {children.length > 0 && (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+                            <span style={{ color: th.textDim, marginRight: 4 }}>Children ({children.length}):</span>
+                            {children.slice(0, 20).map((c) => {
+                              const cSus = getSusLevel(c, selNode);
+                              const cColor = susColors[cSus];
+                              return (
+                                <span key={c.key} onClick={() => {
+                                  const en = { ...(modal.expandedNodes || {}), [selectedKey]: true };
+                                  setModal((p) => p ? { ...p, selectedKey: c.key, expandedNodes: en } : p);
+                                }} style={{ padding: "1px 6px", borderRadius: 8, background: (cColor || th.accent || "#58a6ff") + "18", color: cColor || th.textDim, fontSize: 10, cursor: "pointer", border: `1px solid ${(cColor || th.border)}44` }}>{c.processName} ({c.pid})</span>
+                              );
+                            })}
+                            {children.length > 20 && <span style={{ fontSize: 10, color: th.textDim }}>+{children.length - 20} more</span>}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Footer */}
                   <div style={{ padding: "10px 20px", borderTop: `1px solid ${th.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
@@ -4955,24 +5360,95 @@ export default function App() {
 
         const computeForceLayout = (nodes, edges) => {
           if (nodes.length === 0) return {};
+          const N = nodes.length;
           const W = 700, H = 450, CX = W / 2, CY = H / 2;
           const pos = {};
-          nodes.forEach((n, i) => {
-            const angle = (2 * Math.PI * i) / nodes.length;
-            const r = Math.min(W, H) * 0.35;
-            pos[n.id] = { x: CX + r * Math.cos(angle), y: CY + r * Math.sin(angle), vx: 0, vy: 0 };
+          // Smarter initial placement: connected components in clusters
+          const adj = new Map();
+          for (const e of edges) {
+            if (!adj.has(e.source)) adj.set(e.source, []);
+            if (!adj.has(e.target)) adj.set(e.target, []);
+            adj.get(e.source).push(e.target);
+            adj.get(e.target).push(e.source);
+          }
+          const visited = new Set();
+          const components = [];
+          for (const n of nodes) {
+            if (visited.has(n.id)) continue;
+            const comp = [];
+            const q = [n.id];
+            visited.add(n.id);
+            while (q.length) {
+              const c = q.shift();
+              comp.push(c);
+              for (const nb of (adj.get(c) || [])) {
+                if (!visited.has(nb)) { visited.add(nb); q.push(nb); }
+              }
+            }
+            components.push(comp);
+          }
+          // Place each component in a grid cell, nodes in a circle within
+          const gridCols = Math.ceil(Math.sqrt(components.length));
+          const cellW = W / gridCols, cellH = H / Math.ceil(components.length / gridCols);
+          components.forEach((comp, ci) => {
+            const col = ci % gridCols, row = Math.floor(ci / gridCols);
+            const cx = cellW * (col + 0.5), cy = cellH * (row + 0.5);
+            const r = Math.min(cellW, cellH) * 0.35;
+            comp.forEach((id, i) => {
+              const angle = (2 * Math.PI * i) / comp.length;
+              pos[id] = { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle), vx: 0, vy: 0 };
+            });
           });
-          const ITER = 80, REP = 8000, ATT = 0.005, IDEAL = 120, CENTER = 0.01, DAMP = 0.85, MAX_D = 40;
+          // Scale iterations and repulsion based on node count
+          const ITER = N > 200 ? 40 : N > 100 ? 55 : 80;
+          const REP = N > 200 ? 4000 : 8000;
+          const ATT = 0.005, IDEAL = N > 200 ? 80 : 120, CENTER = 0.01, DAMP = 0.85, MAX_D = 40;
+          // For large graphs, use grid-based repulsion approximation
+          const useGrid = N > 100;
+          const GRID_SIZE = 80;
           for (let it = 0; it < ITER; it++) {
             const cool = 1 - it / ITER;
-            for (let i = 0; i < nodes.length; i++) {
-              for (let j = i + 1; j < nodes.length; j++) {
-                const a = pos[nodes[i].id], b = pos[nodes[j].id];
-                let dx = a.x - b.x, dy = a.y - b.y;
-                const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-                const f = REP / (dist * dist) * cool;
-                const fx = (dx / dist) * f, fy = (dy / dist) * f;
-                a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+            if (useGrid) {
+              // Grid-based approximate repulsion O(n * k) instead of O(n²)
+              const cells = new Map();
+              for (const n of nodes) {
+                const p = pos[n.id];
+                const gx = Math.floor(p.x / GRID_SIZE), gy = Math.floor(p.y / GRID_SIZE);
+                for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+                  const key = `${gx + dx},${gy + dy}`;
+                  if (!cells.has(key)) cells.set(key, []);
+                }
+                const key = `${gx},${gy}`;
+                cells.get(key).push(n.id);
+              }
+              for (const n of nodes) {
+                const p = pos[n.id];
+                const gx = Math.floor(p.x / GRID_SIZE), gy = Math.floor(p.y / GRID_SIZE);
+                for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+                  const key = `${gx + dx},${gy + dy}`;
+                  const cell = cells.get(key);
+                  if (!cell) continue;
+                  for (const oid of cell) {
+                    if (oid <= n.id) continue;
+                    const b = pos[oid];
+                    let ddx = p.x - b.x, ddy = p.y - b.y;
+                    const dist = Math.sqrt(ddx * ddx + ddy * ddy) || 1;
+                    const f = REP / (dist * dist) * cool;
+                    const fx = (ddx / dist) * f, fy = (ddy / dist) * f;
+                    p.vx += fx; p.vy += fy; b.vx -= fx; b.vy -= fy;
+                  }
+                }
+              }
+            } else {
+              for (let i = 0; i < N; i++) {
+                for (let j = i + 1; j < N; j++) {
+                  const a = pos[nodes[i].id], b = pos[nodes[j].id];
+                  let dx = a.x - b.x, dy = a.y - b.y;
+                  const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                  const f = REP / (dist * dist) * cool;
+                  const fx = (dx / dist) * f, fy = (dy / dist) * f;
+                  a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+                }
               }
             }
             for (const edge of edges) {
@@ -5055,9 +5531,13 @@ export default function App() {
         };
         const edgeWidth = (count) => Math.max(1, Math.min(6, 1 + Math.log2(count)));
         const nodeRadius = (eventCount) => Math.max(6, Math.min(20, 6 + Math.log2(eventCount + 1) * 2));
+        // Suspicious hostname patterns (VPS/random machine names seen in 4/11 DFIR reports)
+        const SUS_HOSTNAME = /^(VPS|DESKTOP-[A-Z0-9]{7}$|WIN-[A-Z0-9]{8,}$|WINVM)/i;
+        const isSusHost = (name) => SUS_HOSTNAME.test(name);
         const nodeColor = (node) => {
           if (selectedNode === node.id) return th.accent;
           if (node.isOutlier) return th.danger || "#f85149";
+          if (isSusHost(node.id)) return "#f0883e";
           if (node.isBoth) return "#a371f7";
           if (node.isSource && !node.isTarget) return "#3fb950";
           return "#58a6ff";
@@ -5068,11 +5548,55 @@ export default function App() {
           return false;
         };
 
+        const lmW = modal.lmW || 960, lmH = modal.lmH || Math.round(window.innerHeight * 0.88);
+        const lmX = modal.lmX ?? Math.round((window.innerWidth - lmW) / 2);
+        const lmY = modal.lmY ?? Math.round((window.innerHeight - lmH) / 2);
+
+        const startLmDrag = (e) => {
+          e.preventDefault();
+          const sx = e.clientX - lmX, sy = e.clientY - lmY;
+          document.body.style.cursor = "grabbing"; document.body.style.userSelect = "none";
+          const onMove = (ev) => setModal((p) => p ? { ...p, lmX: Math.max(0, Math.min(window.innerWidth - 100, ev.clientX - sx)), lmY: Math.max(0, Math.min(window.innerHeight - 40, ev.clientY - sy)) } : p);
+          const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+          window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+        };
+
+        const startLmResize = (e, edge) => {
+          e.preventDefault(); e.stopPropagation();
+          const sx = e.clientX, sy = e.clientY, sw = lmW, sh = lmH, sleft = lmX, stop = lmY;
+          document.body.style.userSelect = "none";
+          const onMove = (ev) => {
+            const dx = ev.clientX - sx, dy = ev.clientY - sy;
+            setModal((p) => {
+              if (!p) return p;
+              let nw = sw, nh = sh, nx = sleft, ny = stop;
+              if (edge.includes("r")) nw = Math.max(600, sw + dx);
+              if (edge.includes("b")) nh = Math.max(400, sh + dy);
+              if (edge.includes("l")) { nw = Math.max(600, sw - dx); nx = sleft + sw - nw; }
+              if (edge.includes("t")) { nh = Math.max(400, sh - dy); ny = stop + sh - nh; }
+              return { ...p, lmW: nw, lmH: nh, lmX: nx, lmY: ny };
+            });
+          };
+          const onUp = () => { document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+          window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+        };
+
+        const lmEdge = (cursor, pos) => ({ position: "absolute", ...pos, zIndex: 2, cursor });
+
         return (
-          <div onClick={() => setModal(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }}>
-            <div onClick={(e) => e.stopPropagation()} style={{ background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, width: 880, maxWidth: "96vw", maxHeight: "92vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)" }}>
-              {/* Header */}
-              <div style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}22`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, background: `linear-gradient(135deg, ${th.panelBg}ee, ${th.modalBg}dd)`, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)" }}>
+          <div style={{ position: "fixed", inset: 0, background: th.overlay, zIndex: 100, backdropFilter: "blur(4px)", WebkitAppRegion: "drag" }}>
+            <div style={{ WebkitAppRegion: "no-drag", position: "absolute", left: lmX, top: lmY, width: lmW, height: lmH, background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)", overflow: "hidden" }}>
+              {/* Resize handles */}
+              <div onMouseDown={(e) => startLmResize(e, "t")} style={lmEdge("ns-resize", { top: 0, left: 8, right: 8, height: 5 })} />
+              <div onMouseDown={(e) => startLmResize(e, "b")} style={lmEdge("ns-resize", { bottom: 0, left: 8, right: 8, height: 5 })} />
+              <div onMouseDown={(e) => startLmResize(e, "l")} style={lmEdge("ew-resize", { left: 0, top: 8, bottom: 8, width: 5 })} />
+              <div onMouseDown={(e) => startLmResize(e, "r")} style={lmEdge("ew-resize", { right: 0, top: 8, bottom: 8, width: 5 })} />
+              <div onMouseDown={(e) => startLmResize(e, "tl")} style={lmEdge("nwse-resize", { top: 0, left: 0, width: 10, height: 10 })} />
+              <div onMouseDown={(e) => startLmResize(e, "tr")} style={lmEdge("nesw-resize", { top: 0, right: 0, width: 10, height: 10 })} />
+              <div onMouseDown={(e) => startLmResize(e, "bl")} style={lmEdge("nesw-resize", { bottom: 0, left: 0, width: 10, height: 10 })} />
+              <div onMouseDown={(e) => startLmResize(e, "br")} style={lmEdge("nwse-resize", { bottom: 0, right: 0, width: 10, height: 10 })} />
+              {/* Header — draggable */}
+              <div onMouseDown={startLmDrag} style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}22`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, background: `linear-gradient(135deg, ${th.panelBg}ee, ${th.modalBg}dd)`, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", cursor: "grab" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <div style={{ width: 32, height: 32, borderRadius: 8, background: `linear-gradient(135deg, ${th.danger || "#f85149"}33, ${th.danger || "#f85149"}11)`, border: `1px solid ${th.danger || "#f85149"}33`, display: "flex", alignItems: "center", justifyContent: "center" }}>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={th.danger || "#f85149"} strokeWidth="1.5" strokeLinecap="round"><circle cx="5" cy="12" r="2.5" fill={`${th.danger || "#f85149"}33`}/><circle cx="19" cy="5" r="2.5" fill={`${th.danger || "#f85149"}33`}/><circle cx="19" cy="19" r="2.5" fill={`${th.danger || "#f85149"}33`}/><line x1="7.5" y1="11" x2="16.5" y2="6"/><line x1="7.5" y1="13" x2="16.5" y2="18"/></svg>
@@ -5116,7 +5640,7 @@ export default function App() {
                     </div>
                     <div style={ms.fg}>
                       <label style={ms.lb}>Event IDs (comma-separated, leave empty for all events)</label>
-                      <input value={eventIds} onChange={(e) => setModal((p) => ({ ...p, eventIds: e.target.value }))} style={ms.ip} placeholder="4624,4625,4648" />
+                      <input value={eventIds} onChange={(e) => setModal((p) => ({ ...p, eventIds: e.target.value }))} style={ms.ip} placeholder="4624,4625,4648,4778" />
                     </div>
                     <div style={{ display: "flex", gap: 16, marginBottom: 10 }}>
                       <label style={{ fontSize: 11, color: th.textDim, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontFamily: "-apple-system, sans-serif" }}>
@@ -5168,14 +5692,26 @@ export default function App() {
                         { val: data.stats.longestChain, label: "longest chain", color: "#d29922", icon: "M13 17l5-5-5-5M6 17l5-5-5-5" },
                         { val: data.nodes.filter(n => n.isOutlier).length, label: "outliers", color: th.danger || "#f85149", icon: "M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" },
                         { val: data.stats.totalEvents?.toLocaleString(), label: "logon events", color: "#3fb950", icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8" },
-                      ].map((c, i) => (
-                        <div key={i} style={{ flex: 1, textAlign: "center", padding: "10px 6px 8px", background: `linear-gradient(160deg, ${c.color}08, ${c.color}03)`, borderRadius: 10, border: `1px solid ${c.color}20`, position: "relative", overflow: "hidden" }}>
+                      ].map((c, i) => {
+                        const isOutlierCard = c.label === "outliers" && Number(c.val) > 0;
+                        return (
+                        <div key={i} onClick={isOutlierCard ? () => {
+                          // Switch to graph view and zoom to first outlier
+                          const outlierNode = data.nodes.find(n => n.isOutlier);
+                          if (outlierNode && positions && positions[outlierNode.id]) {
+                            const p = positions[outlierNode.id];
+                            setModal((prev) => ({ ...prev, viewTab: "graph", selectedNode: outlierNode.id, selectedEdge: null, viewBox: { x: p.x - 90, y: p.y - 60, w: 180, h: 120 }, lmFlagIdx: 1 }));
+                          }
+                        } : undefined} style={{ flex: 1, textAlign: "center", padding: "10px 6px 8px", background: `linear-gradient(160deg, ${c.color}08, ${c.color}03)`, borderRadius: 10, border: `1px solid ${c.color}20`, position: "relative", overflow: "hidden", cursor: isOutlierCard ? "pointer" : "default", transition: "border-color 0.15s" }}
+                          onMouseEnter={isOutlierCard ? (e) => e.currentTarget.style.borderColor = c.color + "60" : undefined}
+                          onMouseLeave={isOutlierCard ? (e) => e.currentTarget.style.borderColor = c.color + "20" : undefined}>
                           <div style={{ position: "absolute", top: -8, right: -8, width: 40, height: 40, borderRadius: 20, background: `radial-gradient(circle, ${c.color}12, transparent)` }} />
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={c.color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5, marginBottom: 2 }}><path d={c.icon}/></svg>
                           <div style={{ fontSize: 22, fontWeight: 700, color: c.color, fontFamily: "-apple-system, sans-serif", letterSpacing: "-0.5px", lineHeight: 1 }}>{c.val}</div>
-                          <div style={{ fontSize: 9, color: th.textMuted, marginTop: 3, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 500 }}>{c.label}</div>
+                          <div style={{ fontSize: 9, color: th.textMuted, marginTop: 3, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 500 }}>{c.label}{isOutlierCard && " ▸"}</div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
 
                     {modal.truncatedGraph && <div style={{ padding: "6px 10px", background: th.warning + "15", border: `1px solid ${th.warning}33`, borderRadius: 6, color: th.warning, fontSize: 10, marginBottom: 10, fontFamily: "-apple-system, sans-serif" }}>Graph showing top 500 hosts by activity. {data.nodes.length} total hosts detected.</div>}
@@ -5218,6 +5754,7 @@ export default function App() {
                       };
 
                       const onWheel = (ev) => {
+                        if (selectedNode || selectedEdge) return; // Allow page scroll when node/edge selected
                         ev.preventDefault();
                         const svg = ev.currentTarget;
                         const pt = svgToWorld(ev.clientX, ev.clientY, svg);
@@ -5334,8 +5871,31 @@ export default function App() {
                               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={th.textDim} strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                               Export
                             </button>
+                            {(() => {
+                              const outliers = graphNodes.filter(n => n.isOutlier);
+                              const susHosts = graphNodes.filter(n => isSusHost(n.id) && !n.isOutlier);
+                              const flagged = [...outliers, ...susHosts];
+                              if (flagged.length === 0) return null;
+                              const curIdx = modal.lmFlagIdx || 0;
+                              return (
+                                <>
+                                  <div style={{ width: 1, height: 16, background: th.border + "44", margin: "0 2px" }} />
+                                  <button onClick={() => {
+                                    const node = flagged[curIdx % flagged.length];
+                                    const p = positions[node.id];
+                                    if (p) {
+                                      const zoomW = 180, zoomH = 120;
+                                      setModal((prev) => ({ ...prev, selectedNode: node.id, selectedEdge: null, viewBox: { x: p.x - zoomW / 2, y: p.y - zoomH / 2, w: zoomW, h: zoomH }, lmFlagIdx: (curIdx + 1) % flagged.length }));
+                                    }
+                                  }} style={{ ...tbtn, background: `${(th.danger || "#f85149")}15`, color: th.danger || "#f85149", border: `1px solid ${(th.danger || "#f85149")}33` }} title={`${outliers.length} outlier(s), ${susHosts.length} suspicious host(s) — click to cycle through`}>
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={th.danger || "#f85149"} strokeWidth="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                                    Find Flagged ({flagged.length})
+                                  </button>
+                                </>
+                              );
+                            })()}
                             <div style={{ flex: 1 }} />
-                            <span style={{ fontSize: 9, color: th.textMuted, fontFamily: "-apple-system, sans-serif" }}>Scroll to zoom \u00B7 Drag background to pan \u00B7 Drag nodes to reposition</span>
+                            <span style={{ fontSize: 9, color: th.textMuted, fontFamily: "-apple-system, sans-serif" }}>{selectedNode || selectedEdge ? "Zoom locked \u00B7 Click background to deselect & unlock" : "Scroll to zoom \u00B7 Drag background to pan \u00B7 Drag nodes to reposition"}</span>
                           </div>
 
                           <svg data-lm-graph="1" width="100%" height={480} viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
@@ -5443,6 +6003,8 @@ export default function App() {
                                   {isSel && <circle cx={p.x} cy={p.y} r={r + 6} fill="none" stroke={th.accent} strokeWidth={1.5} strokeOpacity={0.5} strokeDasharray="4,3" />}
                                   {/* Outlier pulse ring */}
                                   {n.isOutlier && <circle cx={p.x} cy={p.y} r={r + 4} fill="none" stroke={dangerCol} strokeWidth={1.2} strokeOpacity={0.6} strokeDasharray="3,2" style={{ animation: "tle-pulse 2s ease-in-out infinite" }}><title>{n.outlierReason}</title></circle>}
+                                  {/* Suspicious hostname indicator */}
+                                  {isSusHost(n.id) && <g transform={`translate(${p.x + r - 2}, ${p.y - r - 2})`}><polygon points="0,-6 5.2,3 -5.2,3" fill="#f0883e" stroke={th.modalBg} strokeWidth={1} /><text x={0} y={1.5} textAnchor="middle" fill={th.modalBg} fontSize={6} fontWeight={700}>!</text><title>Suspicious hostname pattern — possible threat actor workstation</title></g>}
                                   {/* Inner icon text */}
                                   {ip ? (
                                     <text x={p.x} y={p.y + 1} textAnchor="middle" dominantBaseline="middle" fill={col} fontSize={r * 0.6} fontWeight={600} fontFamily="-apple-system,sans-serif" fillOpacity={0.7}>IP</text>
@@ -5460,7 +6022,7 @@ export default function App() {
 
                             {/* Legend — glass panel (fixed in top-left of viewport) */}
                             <g transform={`translate(${vb.x + 10}, ${vb.y + 10})`}>
-                              <rect x={-6} y={-6} width={140} height={120} rx={8} fill={th.panelBg} fillOpacity={0.88} stroke={th.border} strokeWidth={0.5} strokeOpacity={0.3} />
+                              <rect x={-6} y={-6} width={140} height={135} rx={8} fill={th.panelBg} fillOpacity={0.88} stroke={th.border} strokeWidth={0.5} strokeOpacity={0.3} />
                               <text x={0} y={6} fill={th.textMuted} fontSize={7.5} fontWeight={600} fontFamily="-apple-system,sans-serif" letterSpacing="0.08em" textTransform="uppercase">CONNECTIONS</text>
                               {[
                                 { color: "#58a6ff", label: "RDP (type 10)" },
@@ -5491,6 +6053,10 @@ export default function App() {
                               <g transform="translate(4, 112)">
                                 <rect x={0} y={-3} width={9} height={6} rx={2} fill="url(#lm-grad-red)" stroke={th.danger || "#f85149"} strokeWidth={0.8} strokeDasharray="2,1.5" />
                                 <text x={15} y={3} fill={th.danger || "#f85149"} fontSize={7.5} fontWeight={600} fontFamily="-apple-system,sans-serif">Outlier</text>
+                              </g>
+                              <g transform="translate(68, 112)">
+                                <polygon points="4,-5 8.2,2 -0.2,2" fill="#f0883e" />
+                                <text x={14} y={3} fill="#f0883e" fontSize={7.5} fontWeight={500} fontFamily="-apple-system,sans-serif">Sus Host</text>
                               </g>
                             </g>
                           </svg>
@@ -5532,7 +6098,7 @@ export default function App() {
                                   {[...inbound.map((e) => ({ ...e, dir: "in" })), ...outbound.map((e) => ({ ...e, dir: "out" }))].map((e, i) => (
                                     <div key={i} style={{ fontSize: 10, padding: "4px 0", color: th.textDim, fontFamily: "monospace", display: "flex", alignItems: "center", gap: 6, borderBottom: `1px solid ${th.border}22` }}>
                                       <span style={{ padding: "1px 4px", background: e.dir === "in" ? "#58a6ff22" : "#3fb95022", color: e.dir === "in" ? "#58a6ff" : "#3fb950", borderRadius: 2, fontSize: 8, fontWeight: 600 }}>{e.dir === "in" ? "IN" : "OUT"}</span>
-                                      <span>{e.source} {"\u2192"} {e.target}</span>
+                                      <span>{e.source}{isSusHost(e.source) && <span title="Suspicious hostname" style={{ fontSize: 7, color: "#f0883e", marginLeft: 2 }}>&#9888;</span>} {"\u2192"} {e.target}{isSusHost(e.target) && <span title="Suspicious hostname" style={{ fontSize: 7, color: "#f0883e", marginLeft: 2 }}>&#9888;</span>}</span>
                                       <span style={{ color: th.accent }}>{e.count}x</span>
                                       <span style={{ color: th.textMuted }}>{e.users.join(", ")}</span>
                                       <span style={{ color: logonColor(e.logonTypes), fontSize: 9 }}>{logonLabel(e.logonTypes)}</span>
@@ -5550,9 +6116,9 @@ export default function App() {
                               <div style={{ marginTop: 10, padding: 14, background: `linear-gradient(135deg, ${ec}06, ${th.panelBg}ee)`, borderRadius: 10, border: `1px solid ${ec}22`, backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)" }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                                   <span style={{ fontWeight: 600, fontSize: 12, color: th.text, fontFamily: "-apple-system, sans-serif", display: "flex", alignItems: "center", gap: 6 }}>
-                                    <span style={{ padding: "2px 8px", background: "#3fb95018", color: "#3fb950", borderRadius: 5, fontSize: 10 }}>{selectedEdge.source}</span>
+                                    <span style={{ padding: "2px 8px", background: isSusHost(selectedEdge.source) ? "#f0883e18" : "#3fb95018", color: isSusHost(selectedEdge.source) ? "#f0883e" : "#3fb950", borderRadius: 5, fontSize: 10 }}>{selectedEdge.source}{isSusHost(selectedEdge.source) && " \u26a0"}</span>
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={ec} strokeWidth="2" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-                                    <span style={{ padding: "2px 8px", background: "#58a6ff18", color: "#58a6ff", borderRadius: 5, fontSize: 10 }}>{selectedEdge.target}</span>
+                                    <span style={{ padding: "2px 8px", background: isSusHost(selectedEdge.target) ? "#f0883e18" : "#58a6ff18", color: isSusHost(selectedEdge.target) ? "#f0883e" : "#58a6ff", borderRadius: 5, fontSize: 10 }}>{selectedEdge.target}{isSusHost(selectedEdge.target) && " \u26a0"}</span>
                                   </span>
                                   {selectedEdge.hasFailures && <span style={{ padding: "2px 8px", background: (th.danger || "#f85149") + "18", color: th.danger || "#f85149", borderRadius: 5, fontSize: 9, fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>FAILED</span>}
                                 </div>
@@ -5603,22 +6169,69 @@ export default function App() {
 
                     {/* Connections table tab */}
                     {viewTab === "table" && (() => {
-                      const lmHeaders = ["Source", "Target", "Count", "Users", "Logon Types", "First Seen", "Last Seen"];
-                      const lmDefWidths = { Source: 130, Target: 130, Count: 60, Users: 180, "Logon Types": 90, "First Seen": 150, "Last Seen": 150 };
+                      const lmHeaders = ["Source", "Target", "Count", "Users", "Logon Types", "Client Name", "Client Address", "First Seen", "Last Seen", "Duration"];
+                      const lmDefWidths = { Source: 130, Target: 130, Count: 60, Users: 180, "Logon Types": 90, "Client Name": 140, "Client Address": 120, "First Seen": 150, "Last Seen": 150, Duration: 130 };
                       const lmColWidths = modal.colWidths || lmDefWidths;
                       const lmSortCol = modal.tableSortCol || "Count";
                       const lmSortDir = modal.tableSortDir || "desc";
+
+                      const durationMs = (e) => {
+                        if (!e.firstSeen || !e.lastSeen) return 0;
+                        const a = new Date(e.firstSeen), b = new Date(e.lastSeen);
+                        return isNaN(a) || isNaN(b) ? 0 : Math.max(0, b - a);
+                      };
+                      const formatDuration = (ms) => {
+                        if (ms <= 0) return "\u2014";
+                        const s = Math.floor(ms / 1000), m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+                        const rh = h % 24, rm = m % 60;
+                        if (d > 0 && rh > 0) return `${d}d ${rh}h`;
+                        if (d > 0) return `${d}d`;
+                        if (h > 0 && rm > 0) return `${h}h ${rm}m`;
+                        if (h > 0) return `${h}h`;
+                        if (m > 0) return `${m}m`;
+                        return `${s}s`;
+                      };
+
                       const lmSortKey = (e, col) => {
                         if (col === "Count") return e.count;
                         if (col === "Source") return e.source;
                         if (col === "Target") return e.target;
                         if (col === "Users") return e.users.join(", ");
                         if (col === "Logon Types") return e.logonTypes.join(", ");
+                        if (col === "Client Name") return (e.clientNames || []).join(", ");
+                        if (col === "Client Address") return (e.clientAddresses || []).join(", ");
                         if (col === "First Seen") return e.firstSeen || "";
                         if (col === "Last Seen") return e.lastSeen || "";
+                        if (col === "Duration") return durationMs(e);
                         return "";
                       };
-                      const sortedEdges = [...data.edges].sort((a, b) => {
+
+                      const lmCellVal = (e, h) => {
+                        if (h === "Source") return e.source;
+                        if (h === "Target") return e.target;
+                        if (h === "Count") return String(e.count);
+                        if (h === "Users") return e.users.join(", ");
+                        if (h === "Logon Types") return e.logonTypes.join(", ");
+                        if (h === "Client Name") return (e.clientNames || []).join(", ");
+                        if (h === "Client Address") return (e.clientAddresses || []).join(", ");
+                        if (h === "First Seen") return e.firstSeen?.slice(0, 19) || "";
+                        if (h === "Last Seen") return e.lastSeen?.slice(0, 19) || "";
+                        if (h === "Duration") return formatDuration(durationMs(e));
+                        return "";
+                      };
+
+                      // Column filters
+                      const lmColFilters = modal.lmColFilters || {};
+                      const filteredEdges = data.edges.filter((e) => {
+                        for (const [col, allowed] of Object.entries(lmColFilters)) {
+                          if (!allowed || allowed.length === 0) continue;
+                          const val = lmCellVal(e, col);
+                          if (!allowed.includes(val)) return false;
+                        }
+                        return true;
+                      });
+
+                      const sortedEdges = [...filteredEdges].sort((a, b) => {
                         const av = lmSortKey(a, lmSortCol), bv = lmSortKey(b, lmSortCol);
                         const cmp = typeof av === "number" ? av - bv : String(av).localeCompare(String(bv));
                         return lmSortDir === "asc" ? cmp : -cmp;
@@ -5631,86 +6244,197 @@ export default function App() {
                         }));
                       };
 
-                      const lmCellVal = (e, h) => {
-                        if (h === "Source") return e.source;
-                        if (h === "Target") return e.target;
-                        if (h === "Count") return String(e.count);
-                        if (h === "Users") return e.users.join(", ");
-                        if (h === "Logon Types") return e.logonTypes.join(", ");
-                        if (h === "First Seen") return e.firstSeen?.slice(0, 19) || "";
-                        if (h === "Last Seen") return e.lastSeen?.slice(0, 19) || "";
-                        return "";
+                      // Checkbox state
+                      const lmChecked = modal.lmCheckedRows || new Set();
+                      const rowKey = (e) => `${e.source}|${e.target}|${e.firstSeen}`;
+                      const isLmChecked = (e) => lmChecked.has(rowKey(e));
+                      const toggleLmCheck = (e, ev) => {
+                        ev.stopPropagation();
+                        const k = rowKey(e);
+                        setModal((p) => {
+                          const s = new Set(p.lmCheckedRows || []);
+                          s.has(k) ? s.delete(k) : s.add(k);
+                          return { ...p, lmCheckedRows: s };
+                        });
                       };
+                      const allChecked = sortedEdges.length > 0 && sortedEdges.every((e) => isLmChecked(e));
+                      const toggleAllLm = (ev) => {
+                        ev.stopPropagation();
+                        setModal((p) => {
+                          if (allChecked) return { ...p, lmCheckedRows: new Set() };
+                          return { ...p, lmCheckedRows: new Set(sortedEdges.map(rowKey)) };
+                        });
+                      };
+                      const checkedCount = sortedEdges.filter((e) => isLmChecked(e)).length;
 
-                      const copyRow = (e) => {
-                        const line = lmHeaders.map((h) => lmCellVal(e, h)).join("\t");
-                        navigator.clipboard.writeText(line);
-                      };
+                      // Copy (selected or all)
                       const copyAll = () => {
                         const headerLine = lmHeaders.join("\t");
-                        const lines = sortedEdges.map((e) => lmHeaders.map((h) => lmCellVal(e, h)).join("\t"));
+                        const selected = sortedEdges.filter((e) => isLmChecked(e));
+                        const toCopy = selected.length > 0 ? selected : sortedEdges;
+                        const lines = toCopy.map((e) => lmHeaders.map((h) => lmCellVal(e, h)).join("\t"));
                         navigator.clipboard.writeText([headerLine, ...lines].join("\n"));
                       };
 
-                      const onResizeStart = (colName, startX) => {
+                      // Resize
+                      const onResizeStart = (colName, e) => {
+                        e.preventDefault(); e.stopPropagation();
+                        const startX = e.clientX;
                         const startW = lmColWidths[colName] || lmDefWidths[colName];
+                        document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none";
                         const move = (ev) => {
-                          const delta = ev.clientX - startX;
-                          const newW = Math.max(40, startW + delta);
+                          const newW = Math.max(40, startW + ev.clientX - startX);
                           setModal((p) => ({ ...p, colWidths: { ...(p.colWidths || lmDefWidths), [colName]: newW } }));
                         };
-                        const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+                        const up = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
                         document.addEventListener("mousemove", move);
                         document.addEventListener("mouseup", up);
                       };
 
+                      // Column filter dropdown
+                      const openLmFilter = (colName, e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const counts = {};
+                        for (const edge of data.edges) { const v = lmCellVal(edge, colName); counts[v] = (counts[v] || 0) + 1; }
+                        const allVals = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+                        const current = lmColFilters[colName];
+                        const selected = new Set(current && current.length > 0 ? current : allVals);
+                        setModal((p) => ({ ...p, lmFilterOpen: colName, lmFilterPos: { x: rect.left, y: rect.bottom + 2 }, lmFilterVals: allVals, lmFilterCounts: counts, lmFilterSel: selected, lmFilterSearch: "", lmFilterX: null, lmFilterY: null }));
+                      };
+                      const filterOpen = modal.lmFilterOpen;
+                      const filterPos = modal.lmFilterPos || {};
+                      const filterVals = modal.lmFilterVals || [];
+                      const filterCounts = modal.lmFilterCounts || {};
+                      const filterSel = modal.lmFilterSel || new Set();
+                      const filterSearch = modal.lmFilterSearch || "";
+                      const displayVals = filterSearch ? filterVals.filter((v) => v.toLowerCase().includes(filterSearch.toLowerCase())) : filterVals;
+                      const activeFilterCount = Object.values(lmColFilters).filter((v) => v && v.length > 0).length;
+                      const totalTableW = 30 + lmHeaders.reduce((s, h) => s + (lmColWidths[h] || lmDefWidths[h]), 0);
+
                       return (
                         <div>
-                          <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginBottom: 6 }}>
-                            <button onClick={copyAll} style={{ padding: "3px 10px", fontSize: 10, background: th.btnBg, color: th.text, border: `1px solid ${th.border}`, borderRadius: 4, cursor: "pointer", fontFamily: "-apple-system, sans-serif" }}
-                              onMouseEnter={(ev) => { ev.currentTarget.style.background = th.accent + "22"; }} onMouseLeave={(ev) => { ev.currentTarget.style.background = th.btnBg; }}>
-                              Copy All ({sortedEdges.length})
-                            </button>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                            {activeFilterCount > 0 && (
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: `${th.accent}11`, borderRadius: 6, fontSize: 10, color: th.accent, fontFamily: "-apple-system, sans-serif" }}>
+                                <span style={{ fontWeight: 600 }}>Filter active ({activeFilterCount} column{activeFilterCount > 1 ? "s" : ""})</span>
+                                <span style={{ fontSize: 10, color: th.textMuted }}>{"\u2014"} {filteredEdges.length} of {data.edges.length} connections</span>
+                                <button onClick={() => setModal((p) => ({ ...p, lmColFilters: {} }))} style={{ padding: "1px 8px", fontSize: 9, background: th.accent, color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>Clear All</button>
+                              </div>
+                            )}
+                            <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+                              <button onClick={copyAll} style={{ padding: "3px 10px", fontSize: 10, background: th.btnBg, color: th.text, border: `1px solid ${th.border}`, borderRadius: 4, cursor: "pointer", fontFamily: "-apple-system, sans-serif" }}
+                                onMouseEnter={(ev) => { ev.currentTarget.style.background = th.accent + "22"; }} onMouseLeave={(ev) => { ev.currentTarget.style.background = th.btnBg; }}>
+                                {checkedCount > 0 ? `Copy Selected (${checkedCount})` : `Copy All (${sortedEdges.length})`}
+                              </button>
+                            </div>
                           </div>
                           <div style={{ maxHeight: 360, overflow: "auto", border: `1px solid ${th.border}`, borderRadius: 6 }}>
-                            <table style={{ borderCollapse: "collapse", fontSize: 10, fontFamily: "monospace", tableLayout: "fixed", width: lmHeaders.reduce((s, h) => s + (lmColWidths[h] || lmDefWidths[h]), 0) }}>
+                            <table style={{ borderCollapse: "collapse", fontSize: 10, fontFamily: "monospace", tableLayout: "fixed", width: totalTableW }}>
                               <thead>
                                 <tr>
+                                  <th style={{ position: "sticky", top: 0, width: 30, background: th.headerBg || th.panelBg, borderBottom: `1px solid ${th.border}`, zIndex: 2, textAlign: "center", padding: "6px 4px" }}>
+                                    <input type="checkbox" checked={allChecked} onChange={toggleAllLm} style={{ width: 13, height: 13, cursor: "pointer", accentColor: th.accent }} />
+                                  </th>
                                   {lmHeaders.map((h) => (
-                                    <th key={h} onClick={() => toggleSort(h)} style={{ position: "sticky", top: 0, width: lmColWidths[h] || lmDefWidths[h], minWidth: 40, background: th.headerBg || th.panelBg, color: lmSortCol === h ? th.text : th.accent, padding: "6px 8px", textAlign: "left", fontSize: 9, borderBottom: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", overflow: "hidden", boxSizing: "border-box", userSelect: "none", zIndex: 2, cursor: "pointer" }}>
-                                      <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
-                                        <span>{h}</span>
+                                    <th key={h} style={{ position: "sticky", top: 0, width: lmColWidths[h] || lmDefWidths[h], minWidth: 40, background: th.headerBg || th.panelBg, color: lmSortCol === h ? th.text : th.accent, padding: "6px 8px", textAlign: "left", fontSize: 9, borderBottom: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", overflow: "hidden", boxSizing: "border-box", userSelect: "none", zIndex: 2 }}>
+                                      <div style={{ display: "flex", alignItems: "center", gap: 3, position: "relative" }}>
+                                        <span onClick={() => toggleSort(h)} style={{ cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis" }}>{h}</span>
                                         {lmSortCol === h && <span style={{ fontSize: 7, color: th.accent }}>{lmSortDir === "asc" ? "\u25B2" : "\u25BC"}</span>}
-                                        <div style={{ width: 4, cursor: "col-resize", height: 16, position: "absolute", right: 0, top: 0, bottom: 0 }}
-                                          onMouseDown={(ev) => { ev.preventDefault(); ev.stopPropagation(); onResizeStart(h, ev.clientX); }} />
+                                        <span onClick={(e) => openLmFilter(h, e)} style={{ cursor: "pointer", fontSize: 7, color: lmColFilters[h] ? th.accent : th.textMuted + "66", flexShrink: 0, marginLeft: "auto", paddingRight: 8 }}>{"\u25BC"}</span>
+                                        <div onMouseDown={(e) => onResizeStart(h, e)} style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 6, cursor: "col-resize" }}>
+                                          <div style={{ position: "absolute", right: 2, top: 2, bottom: 2, width: 1, background: th.border }} />
+                                        </div>
                                       </div>
                                     </th>
                                   ))}
-                                  <th style={{ position: "sticky", top: 0, width: 28, background: th.headerBg || th.panelBg, borderBottom: `1px solid ${th.border}`, zIndex: 2 }} />
                                 </tr>
                               </thead>
                               <tbody>
                                 {sortedEdges.map((e, i) => (
-                                  <tr key={i} style={{ background: i % 2 === 0 ? "transparent" : (th.rowAlt || th.panelBg + "44") }}>
-                                    <td style={{ padding: "4px 8px", color: th.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.source}</td>
-                                    <td style={{ padding: "4px 8px", color: th.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.target}</td>
+                                  <tr key={i} style={{ background: isLmChecked(e) ? `${th.accent}0a` : i % 2 === 0 ? "transparent" : (th.rowAlt || th.panelBg + "44") }}>
+                                    <td style={{ padding: "4px 4px", textAlign: "center" }}>
+                                      <input type="checkbox" checked={isLmChecked(e)} onChange={(ev) => toggleLmCheck(e, ev)} style={{ width: 13, height: 13, cursor: "pointer", accentColor: th.accent }} />
+                                    </td>
+                                    <td style={{ padding: "4px 8px", color: isSusHost(e.source) ? "#f0883e" : th.text, fontWeight: isSusHost(e.source) ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.source}{isSusHost(e.source) && <span title="Suspicious hostname pattern" style={{ marginLeft: 4, fontSize: 9 }}>&#9888;</span>}</td>
+                                    <td style={{ padding: "4px 8px", color: isSusHost(e.target) ? "#f0883e" : th.text, fontWeight: isSusHost(e.target) ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.target}{isSusHost(e.target) && <span title="Suspicious hostname pattern" style={{ marginLeft: 4, fontSize: 9 }}>&#9888;</span>}</td>
                                     <td style={{ padding: "4px 8px", fontWeight: 600, color: th.text }}>{e.count}</td>
                                     <td style={{ padding: "4px 8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: th.textDim }}>{e.users.join(", ")}</td>
                                     <td style={{ padding: "4px 8px", color: th.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.logonTypes.join(", ")}</td>
+                                    <td style={{ padding: "4px 8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: (e.clientNames || []).length > 0 ? "#d2a8ff" : th.textDim, fontWeight: (e.clientNames || []).length > 0 ? 600 : 400 }}>{(e.clientNames || []).join(", ")}</td>
+                                    <td style={{ padding: "4px 8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: (e.clientAddresses || []).length > 0 ? "#d2a8ff" : th.textDim }}>{(e.clientAddresses || []).join(", ")}</td>
                                     <td style={{ padding: "4px 8px", color: th.textDim, whiteSpace: "nowrap" }}>{e.firstSeen?.slice(0, 19)}</td>
                                     <td style={{ padding: "4px 8px", color: th.textDim, whiteSpace: "nowrap" }}>{e.lastSeen?.slice(0, 19)}</td>
-                                    <td style={{ padding: "2px 4px", textAlign: "center" }}>
-                                      <button onClick={() => copyRow(e)} title="Copy row" style={{ background: "none", border: "none", cursor: "pointer", padding: "2px 4px", fontSize: 10, color: th.textMuted, borderRadius: 3 }}
-                                        onMouseEnter={(ev) => { ev.currentTarget.style.background = th.accent + "22"; ev.currentTarget.style.color = th.accent; }}
-                                        onMouseLeave={(ev) => { ev.currentTarget.style.background = "none"; ev.currentTarget.style.color = th.textMuted; }}>
-                                        {"\u2398"}
-                                      </button>
-                                    </td>
+                                    <td style={{ padding: "4px 8px", whiteSpace: "nowrap", color: durationMs(e) >= 86400000 ? (th.danger || "#f85149") : durationMs(e) >= 3600000 ? "#f0883e" : th.textDim, fontWeight: durationMs(e) >= 86400000 ? 600 : 400 }}>{formatDuration(durationMs(e))}</td>
                                   </tr>
                                 ))}
                               </tbody>
                             </table>
                           </div>
+                          {/* Column filter dropdown popup */}
+                          {filterOpen && (
+                            <>
+                              <div style={{ position: "fixed", inset: 0, zIndex: 998 }} onClick={() => setModal((p) => ({ ...p, lmFilterOpen: null }))} />
+                              <div style={{ position: "fixed", left: modal.lmFilterX ?? Math.min(filterPos.x || 0, window.innerWidth - 340), top: modal.lmFilterY ?? Math.min(filterPos.y || 0, window.innerHeight - 440), width: modal.lmFilterW || 320, height: modal.lmFilterH || 420, background: th.modalBg, border: `1px solid ${th.border}`, borderRadius: 8, boxShadow: "0 8px 32px rgba(0,0,0,0.5)", zIndex: 999, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                                <div style={{ padding: "8px 10px", borderBottom: `1px solid ${th.border}33`, display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "grab", userSelect: "none", flexShrink: 0 }}
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    const startX = e.clientX, startY = e.clientY;
+                                    const startLeft = modal.lmFilterX ?? Math.min(filterPos.x || 0, window.innerWidth - 340);
+                                    const startTop = modal.lmFilterY ?? Math.min(filterPos.y || 0, window.innerHeight - 440);
+                                    document.body.style.cursor = "grabbing"; document.body.style.userSelect = "none";
+                                    const onMove = (ev) => setModal((p) => ({ ...p, lmFilterX: startLeft + ev.clientX - startX, lmFilterY: startTop + ev.clientY - startY }));
+                                    const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                                    window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+                                  }}>
+                                  <span style={{ fontSize: 11, fontWeight: 600, color: th.text, fontFamily: "SF Mono, Menlo, monospace" }}>FILTER {"\u2014"} {filterOpen.toUpperCase()}</span>
+                                  <span style={{ cursor: "pointer", color: th.textMuted, fontSize: 14, lineHeight: 1 }} onClick={() => setModal((p) => ({ ...p, lmFilterOpen: null }))}>{"\u00D7"}</span>
+                                </div>
+                                <div style={{ padding: "6px 10px", flexShrink: 0 }}>
+                                  <input type="text" placeholder="Search values..." value={filterSearch} onChange={(e) => setModal((p) => ({ ...p, lmFilterSearch: e.target.value }))}
+                                    style={{ width: "100%", boxSizing: "border-box", padding: "5px 8px", fontSize: 11, background: th.panelBg, border: `1px solid ${th.border}55`, borderRadius: 4, color: th.text, outline: "none", fontFamily: "SF Mono, Menlo, monospace" }}
+                                    autoFocus />
+                                </div>
+                                <div style={{ padding: "2px 10px 6px", display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+                                  <button onClick={() => setModal((p) => ({ ...p, lmFilterSel: new Set(filterVals) }))} style={{ padding: "2px 8px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Select All</button>
+                                  <button onClick={() => setModal((p) => ({ ...p, lmFilterSel: new Set() }))} style={{ padding: "2px 8px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Clear</button>
+                                  <span style={{ marginLeft: "auto", fontSize: 10, color: th.textMuted }}>{filterVals.length} values</span>
+                                </div>
+                                <div style={{ flex: 1, overflow: "auto", padding: "0 6px", minHeight: 0 }}>
+                                  {displayVals.slice(0, 1000).map((v) => (
+                                    <div key={v} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 4px", borderRadius: 3, cursor: "pointer" }}
+                                      onClick={() => setModal((p) => { const s = new Set(p.lmFilterSel || []); s.has(v) ? s.delete(v) : s.add(v); return { ...p, lmFilterSel: s }; })}
+                                      onMouseEnter={(e) => e.currentTarget.style.background = `${th.accent}0a`}
+                                      onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
+                                      <input type="checkbox" checked={filterSel.has(v)} readOnly style={{ width: 13, height: 13, accentColor: th.accent, cursor: "pointer", flexShrink: 0 }} />
+                                      <span style={{ fontSize: 11, color: th.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "SF Mono, Menlo, monospace" }}>{v || "(empty)"}</span>
+                                      <span style={{ fontSize: 10, color: th.textMuted, flexShrink: 0 }}>{filterCounts[v]}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div style={{ padding: "8px 10px", borderTop: `1px solid ${th.border}33`, display: "flex", gap: 6, justifyContent: "flex-end", flexShrink: 0 }}>
+                                  <button onClick={() => setModal((p) => { const cf = { ...(p.lmColFilters || {}) }; delete cf[filterOpen]; return { ...p, lmColFilters: cf, lmFilterOpen: null }; })}
+                                    style={{ padding: "4px 12px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Reset</button>
+                                  <button onClick={() => setModal((p) => ({ ...p, lmFilterOpen: null }))}
+                                    style={{ padding: "4px 12px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Cancel</button>
+                                  <button onClick={() => setModal((p) => ({ ...p, lmColFilters: { ...(p.lmColFilters || {}), [filterOpen]: [...(p.lmFilterSel || [])] }, lmFilterOpen: null }))}
+                                    style={{ padding: "4px 12px", fontSize: 10, background: th.accent, border: "none", borderRadius: 4, color: "#fff", cursor: "pointer", fontWeight: 600 }}>Apply</button>
+                                </div>
+                                <div onMouseDown={(e) => {
+                                  e.preventDefault(); e.stopPropagation();
+                                  const startX = e.clientX, startY = e.clientY, startW = modal.lmFilterW || 320, startH = modal.lmFilterH || 420;
+                                  document.body.style.cursor = "nwse-resize"; document.body.style.userSelect = "none";
+                                  const onMove = (ev) => setModal((p) => ({ ...p, lmFilterW: Math.max(240, startW + ev.clientX - startX), lmFilterH: Math.max(250, startH + ev.clientY - startY) }));
+                                  const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                                  window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+                                }} style={{ position: "absolute", bottom: 0, right: 0, width: 14, height: 14, cursor: "nwse-resize" }}>
+                                  <svg width="10" height="10" viewBox="0 0 10 10" style={{ position: "absolute", bottom: 2, right: 2 }}>
+                                    <path d="M8 2L2 8M8 5L5 8M8 8L8 8" stroke={th.textMuted} strokeWidth="1.5" strokeLinecap="round" />
+                                  </svg>
+                                </div>
+                              </div>
+                            </>
+                          )}
                         </div>
                       );
                     })()}
@@ -5764,9 +6488,16 @@ export default function App() {
             return { ...p, checkedItems: s };
           });
         };
+        const persistItemKey = (item) => item.rowid + "|" + item.name + "|" + item.timestamp;
         const itemForKey = (key) => {
           const items = data?.items || [];
-          return items.find((i) => (i.rowid + "|" + i.name + "|" + i.timestamp) === key);
+          return items.find((i) => persistItemKey(i) === key);
+        };
+        const selectedPersistKey = modal.selectedPersistKey || null;
+        const isSelPersist = (item) => selectedPersistKey === persistItemKey(item);
+        const toggleSelPersist = (item) => {
+          const k = persistItemKey(item);
+          setModal((p) => ({ ...p, selectedPersistKey: p.selectedPersistKey === k ? null : k }));
         };
         const formatItemText = (i) => `[${i.severity.toUpperCase()}] ${i.name}\t${i.detailsSummary}\t${i.timestamp || "N/A"}\t${i.computer || "N/A"}\t${i.user || "N/A"}\t${i.source}\t${i.riskScore}/10`;
 
@@ -5884,23 +6615,56 @@ export default function App() {
         const allCategories = data?.stats?.byCategory ? Object.keys(data.stats.byCategory).sort() : [];
         const collapsedCats = modal.collapsedCats || new Set();
 
-        return (
-          <div style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }} onMouseDown={(e) => { if (e.target === e.currentTarget) setModal(null); }}>
-            <div style={{ width: modal.modalW || 920, height: modal.modalH || undefined, maxWidth: "96vw", maxHeight: modal.modalH ? undefined : "92vh", display: "flex", flexDirection: "column", background: `linear-gradient(160deg, ${th.modalBg}, ${th.panelBg})`, borderRadius: 16, border: `1px solid ${th.modalBorder}44`, boxShadow: `0 25px 60px rgba(0,0,0,0.5), 0 0 0 1px ${th.border}22`, overflow: "hidden", position: "relative" }}>
-              {/* Resize handle — bottom-right corner */}
-              <div onMouseDown={(e) => {
-                e.preventDefault();
-                const startX = e.clientX, startY = e.clientY, startW = modal.modalW || 920, startH = modal.modalH || e.currentTarget.parentElement.offsetHeight;
-                document.body.style.cursor = "nwse-resize"; document.body.style.userSelect = "none";
-                const onMove = (ev) => setModal((p) => ({ ...p, modalW: Math.max(600, startW + ev.clientX - startX), modalH: Math.max(400, startH + ev.clientY - startY) }));
-                const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
-                window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
-              }} style={{ position: "absolute", right: 0, bottom: 0, width: 18, height: 18, cursor: "nwse-resize", zIndex: 10 }}>
-                <svg width="10" height="10" viewBox="0 0 10 10" style={{ position: "absolute", right: 4, bottom: 4, opacity: 0.3 }}><path d="M9 1L1 9M9 5L5 9M9 9L9 9" stroke={th.textMuted} strokeWidth="1.5" strokeLinecap="round"/></svg>
-              </div>
+        const paW = modal.modalW || 960, paH = modal.modalH || Math.round(window.innerHeight * 0.88);
+        const paX = modal.paX ?? Math.round((window.innerWidth - paW) / 2);
+        const paY = modal.paY ?? Math.round((window.innerHeight - paH) / 2);
 
-              {/* Header */}
-              <div style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}22`, display: "flex", alignItems: "center", justifyContent: "space-between", background: `linear-gradient(135deg, ${th.panelBg}ee, ${th.modalBg}dd)`, backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", flexShrink: 0 }}>
+        const startPaDrag = (e) => {
+          e.preventDefault();
+          const sx = e.clientX - paX, sy = e.clientY - paY;
+          document.body.style.cursor = "grabbing"; document.body.style.userSelect = "none";
+          const onMove = (ev) => setModal((p) => p ? { ...p, paX: Math.max(0, Math.min(window.innerWidth - 100, ev.clientX - sx)), paY: Math.max(0, Math.min(window.innerHeight - 40, ev.clientY - sy)) } : p);
+          const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+          window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+        };
+
+        const startPaResize = (e, edge) => {
+          e.preventDefault(); e.stopPropagation();
+          const sx = e.clientX, sy = e.clientY, sw = paW, sh = paH, sleft = paX, stop = paY;
+          document.body.style.userSelect = "none";
+          const onMove = (ev) => {
+            const dx = ev.clientX - sx, dy = ev.clientY - sy;
+            setModal((p) => {
+              if (!p) return p;
+              let nw = sw, nh = sh, nx = sleft, ny = stop;
+              if (edge.includes("r")) nw = Math.max(600, sw + dx);
+              if (edge.includes("b")) nh = Math.max(400, sh + dy);
+              if (edge.includes("l")) { nw = Math.max(600, sw - dx); nx = sleft + sw - nw; }
+              if (edge.includes("t")) { nh = Math.max(400, sh - dy); ny = stop + sh - nh; }
+              return { ...p, modalW: nw, modalH: nh, paX: nx, paY: ny };
+            });
+          };
+          const onUp = () => { document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+          window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+        };
+
+        const paEdge = (cursor, pos) => ({ position: "absolute", ...pos, zIndex: 10, cursor });
+
+        return (
+          <div style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", WebkitAppRegion: "drag" }}>
+            <div style={{ WebkitAppRegion: "no-drag", position: "absolute", left: paX, top: paY, width: paW, height: paH, display: "flex", flexDirection: "column", background: `linear-gradient(160deg, ${th.modalBg}, ${th.panelBg})`, borderRadius: 16, border: `1px solid ${th.modalBorder}44`, boxShadow: `0 25px 60px rgba(0,0,0,0.5), 0 0 0 1px ${th.border}22`, overflow: "hidden" }}>
+              {/* Resize handles */}
+              <div onMouseDown={(e) => startPaResize(e, "t")} style={paEdge("ns-resize", { top: 0, left: 8, right: 8, height: 5 })} />
+              <div onMouseDown={(e) => startPaResize(e, "b")} style={paEdge("ns-resize", { bottom: 0, left: 8, right: 8, height: 5 })} />
+              <div onMouseDown={(e) => startPaResize(e, "l")} style={paEdge("ew-resize", { left: 0, top: 8, bottom: 8, width: 5 })} />
+              <div onMouseDown={(e) => startPaResize(e, "r")} style={paEdge("ew-resize", { right: 0, top: 8, bottom: 8, width: 5 })} />
+              <div onMouseDown={(e) => startPaResize(e, "tl")} style={paEdge("nwse-resize", { top: 0, left: 0, width: 10, height: 10 })} />
+              <div onMouseDown={(e) => startPaResize(e, "tr")} style={paEdge("nesw-resize", { top: 0, right: 0, width: 10, height: 10 })} />
+              <div onMouseDown={(e) => startPaResize(e, "bl")} style={paEdge("nesw-resize", { bottom: 0, left: 0, width: 10, height: 10 })} />
+              <div onMouseDown={(e) => startPaResize(e, "br")} style={paEdge("nwse-resize", { bottom: 0, right: 0, width: 10, height: 10 })} />
+
+              {/* Header — draggable */}
+              <div onMouseDown={startPaDrag} style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}22`, display: "flex", alignItems: "center", justifyContent: "space-between", background: `linear-gradient(135deg, ${th.panelBg}ee, ${th.modalBg}dd)`, backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", flexShrink: 0, cursor: "grab" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <svg width="22" height="22" viewBox="0 0 24 24" fill={(th.danger||"#f85149")+"22"} stroke={th.danger||"#f85149"} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4M12 16h.01"/></svg>
                   <div>
@@ -6153,11 +6917,23 @@ export default function App() {
                     </div>
 
                     {/* View tabs */}
-                    <div style={{ display: "flex", gap: 0, marginBottom: 14, background: th.border + "22", borderRadius: 8, padding: 2, width: "fit-content" }}>
-                      {["grouped", "timeline", "table"].map((tab) => (
-                        <button key={tab} onClick={() => setModal((p) => ({ ...p, viewTab: tab }))}
-                          style={{ padding: "5px 16px", fontSize: 11, fontWeight: viewTab === tab ? 600 : 400, fontFamily: "-apple-system, sans-serif", background: viewTab === tab ? th.accent + "20" : "transparent", color: viewTab === tab ? th.accent : th.textMuted, border: "none", borderRadius: 6, cursor: "pointer", textTransform: "capitalize", transition: "all 0.15s" }}>{tab}</button>
-                      ))}
+                    <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center" }}>
+                      <div style={{ display: "flex", gap: 0, background: th.border + "22", borderRadius: 8, padding: 2, width: "fit-content" }}>
+                        {["grouped", "timeline", "table"].map((tab) => (
+                          <button key={tab} onClick={() => setModal((p) => ({ ...p, viewTab: tab }))}
+                            style={{ padding: "5px 16px", fontSize: 11, fontWeight: viewTab === tab ? 600 : 400, fontFamily: "-apple-system, sans-serif", background: viewTab === tab ? th.accent + "20" : "transparent", color: viewTab === tab ? th.accent : th.textMuted, border: "none", borderRadius: 6, cursor: "pointer", textTransform: "capitalize", transition: "all 0.15s" }}>{tab}</button>
+                        ))}
+                      </div>
+                      <div style={{ display: "flex", gap: 4, marginLeft: "auto", alignItems: "center" }}>
+                        <button onClick={() => {
+                          setModal((p) => {
+                            const s = new Set(p.checkedItems || []);
+                            filteredItems.forEach((i) => s.add(persistItemKey(i)));
+                            return { ...p, checkedItems: s };
+                          });
+                        }} style={{ padding: "3px 8px", fontSize: 10, background: "transparent", color: th.accent, border: `1px solid ${th.accent}33`, borderRadius: 5, cursor: "pointer", fontFamily: "-apple-system, sans-serif", fontWeight: 500 }}>Select All ({filteredItems.length})</button>
+                        {checkedItems.size > 0 && <button onClick={() => setModal((p) => ({ ...p, checkedItems: new Set() }))} style={{ padding: "3px 8px", fontSize: 10, background: "transparent", color: th.textMuted, border: `1px solid ${th.border}`, borderRadius: 5, cursor: "pointer", fontFamily: "-apple-system, sans-serif" }}>Clear ({checkedItems.size})</button>}
+                      </div>
                     </div>
 
                     {filteredItems.length === 0 && (
@@ -6198,6 +6974,7 @@ export default function App() {
                                 onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
                                 <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 4, background: (SEVERITY_COLORS[item.severity] || th.textMuted) + "20", color: SEVERITY_COLORS[item.severity] || th.textMuted, fontWeight: 700, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase", flexShrink: 0, marginTop: 1 }}>{item.severity}</span>
                                 {item.isSuspicious && <span title={item.suspiciousReasons?.join(", ")} style={{ fontSize: 8, padding: "1px 5px", borderRadius: 3, background: `${th.danger || "#f85149"}22`, color: th.danger || "#f85149", fontWeight: 700, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase", flexShrink: 0, marginTop: 1 }}>SUSPICIOUS</span>}
+                                {item.rmmTool && <span title="Remote Management tool installed — commonly used for persistence by threat actors (seen in 7/11 recent DFIR reports)" style={{ fontSize: 8, padding: "1px 5px", borderRadius: 3, background: "#f0883e22", color: "#f0883e", fontWeight: 700, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase", flexShrink: 0, marginTop: 1 }}>RMM</span>}
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                                     <span style={{ fontSize: 12, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif" }}>{item.name}</span>
@@ -6235,26 +7012,183 @@ export default function App() {
                     ))}
 
                     {/* Timeline view */}
-                    {viewTab === "timeline" && (
+                    {viewTab === "timeline" && (() => {
+                      const tlCols = [
+                        { key: "timestamp", label: "Timestamp", dw: 160 },
+                        { key: "severity", label: "Severity", dw: 75 },
+                        { key: "name", label: "Detection", dw: 170 },
+                        { key: "artifact", label: "Artifact", dw: 250 },
+                        { key: "command", label: "Command/Path", dw: 450 },
+                      ];
+                      const tlWidths = modal.tlColWidths || {};
+                      const gtlw = (k) => tlWidths[k] || tlCols.find((c) => c.key === k)?.dw || 120;
+                      const onTlResize = (colKey, e) => {
+                        e.preventDefault(); e.stopPropagation();
+                        const startX = e.clientX, startW = gtlw(colKey);
+                        document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none";
+                        const onMove = (ev) => setModal((p) => ({ ...p, tlColWidths: { ...(p.tlColWidths || {}), [colKey]: Math.max(50, startW + ev.clientX - startX) } }));
+                        const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                        window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+                      };
+                      // Sort (default by timestamp asc, click header to change)
+                      const tlSortCol = modal.tlSortCol || "timestamp";
+                      const tlSortDir = modal.tlSortDir || "asc";
+                      const toggleTlSort = (col) => setModal((p) => ({ ...p, tlSortCol: col, tlSortDir: p.tlSortCol === col && p.tlSortDir === "asc" ? "desc" : "asc" }));
+                      // Column filters (shared tableColFilters state)
+                      const colFilters = modal.tableColFilters || {};
+                      const tlFiltered = filteredItems.filter((item) => {
+                        for (const [col, allowed] of Object.entries(colFilters)) {
+                          if (!allowed || allowed.length === 0) continue;
+                          const val = String(item[col] ?? "");
+                          if (!allowed.includes(val)) return false;
+                        }
+                        return true;
+                      });
+                      const sorted = [...tlFiltered].sort((a, b) => {
+                        const av = a[tlSortCol] ?? "", bv = b[tlSortCol] ?? "";
+                        const cmp = typeof av === "number" ? av - bv : String(av).localeCompare(String(bv));
+                        return tlSortDir === "desc" ? -cmp : cmp;
+                      });
+                      const openTlFilter = (colKey, e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const counts = {};
+                        for (const item of filteredItems) { const v = String(item[colKey] ?? ""); counts[v] = (counts[v] || 0) + 1; }
+                        const allVals = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+                        const current = colFilters[colKey];
+                        const selected = new Set(current && current.length > 0 ? current : allVals);
+                        setModal((p) => ({ ...p, colFilterOpen: colKey, colFilterPos: { x: rect.left, y: rect.bottom + 2 }, colFilterVals: allVals, colFilterCounts: counts, colFilterSel: selected, colFilterSearch: "", colFilterX: null, colFilterY: null }));
+                      };
+                      const filterOpen = modal.colFilterOpen;
+                      const filterPos = modal.colFilterPos || {};
+                      const filterVals = modal.colFilterVals || [];
+                      const filterCounts = modal.colFilterCounts || {};
+                      const filterSel = modal.colFilterSel || new Set();
+                      const filterSearch = modal.colFilterSearch || "";
+                      const displayVals = filterSearch ? filterVals.filter((v) => v.toLowerCase().includes(filterSearch.toLowerCase())) : filterVals;
+                      const tlTotalW = 20 + 26 + tlCols.reduce((s, c) => s + gtlw(c.key), 0) + tlCols.length * 8;
+                      const activeFilterCount = Object.values(colFilters).filter((v) => v && v.length > 0).length;
+                      return (
                       <div style={{ position: "relative", paddingLeft: 20 }}>
                         <div style={{ position: "absolute", left: 6, top: 0, bottom: 0, width: 2, background: th.border + "33" }} />
-                        {filteredItems.sort((a, b) => a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0).slice(0, 500).map((item, idx) => (
-                          <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer", position: "relative", background: isChecked(item) ? `${th.accent}0a` : "transparent" }}
-                            onMouseEnter={(e) => { if (!isChecked(item)) e.currentTarget.style.background = `${th.accent}08`; }}
-                            onMouseLeave={(e) => { if (!isChecked(item)) e.currentTarget.style.background = isChecked(item) ? `${th.accent}0a` : "transparent"; }}>
+                        {/* Active filter indicator */}
+                        {activeFilterCount > 0 && (
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", marginBottom: 6, background: `${th.accent}11`, borderRadius: 6, fontSize: 10, color: th.accent, fontFamily: "-apple-system, sans-serif" }}>
+                            <span style={{ fontWeight: 600 }}>Filter active ({activeFilterCount} column{activeFilterCount > 1 ? "s" : ""})</span>
+                            <span style={{ fontSize: 10, color: th.textMuted }}>— {tlFiltered.length} of {filteredItems.length} items</span>
+                            <button onClick={() => setModal((p) => ({ ...p, tableColFilters: {} }))} style={{ marginLeft: "auto", padding: "1px 8px", fontSize: 9, background: th.accent, color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>Clear All</button>
+                          </div>
+                        )}
+                        {/* Header */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", borderBottom: `1px solid ${th.border}`, marginBottom: 2, position: "sticky", top: 0, zIndex: 2, background: th.modalBg, minWidth: tlTotalW }}>
+                          <input type="checkbox" checked={sorted.length > 0 && sorted.slice(0, 500).every((i) => isChecked(i))} onChange={() => {
+                            const visible = sorted.slice(0, 500);
+                            const allChecked = visible.every((i) => isChecked(i));
+                            setModal((p) => {
+                              const s = new Set(p.checkedItems || []);
+                              if (allChecked) { visible.forEach((i) => s.delete(persistItemKey(i))); }
+                              else { visible.forEach((i) => s.add(persistItemKey(i))); }
+                              return { ...p, checkedItems: s };
+                            });
+                          }} style={{ width: 13, height: 13, cursor: "pointer", accentColor: th.accent, flexShrink: 0 }} title={sorted.length > 0 && sorted.slice(0, 500).every((i) => isChecked(i)) ? "Deselect all" : "Select all visible"} />
+                          {tlCols.map((col) => (
+                            <div key={col.key} style={{ width: gtlw(col.key), minWidth: 50, flexShrink: 0, display: "flex", alignItems: "center", position: "relative", userSelect: "none", gap: 3 }}>
+                              <span onClick={() => toggleTlSort(col.key)} style={{ fontSize: 10, fontWeight: 600, color: tlSortCol === col.key ? th.accent : th.textMuted, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase", letterSpacing: 0.5, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {col.label}{tlSortCol === col.key ? (tlSortDir === "asc" ? " ▲" : " ▼") : ""}
+                              </span>
+                              <span style={{ cursor: "pointer", fontSize: 7, color: colFilters[col.key] ? th.accent : th.textMuted + "66", flexShrink: 0, marginLeft: "auto", paddingRight: 8 }}
+                                onClick={(e) => openTlFilter(col.key, e)}>▼</span>
+                              <div onMouseDown={(e) => onTlResize(col.key, e)} style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 6, cursor: "col-resize" }}>
+                                <div style={{ position: "absolute", right: 2, top: 2, bottom: 2, width: 1, background: th.border }} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        {/* Rows */}
+                        {sorted.slice(0, 500).map((item, idx) => (
+                          <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer", position: "relative", background: isSelPersist(item) ? `${th.accent}14` : isChecked(item) ? `${th.accent}0a` : "transparent", minWidth: tlTotalW }}
+                            onClick={() => toggleSelPersist(item)}
+                            onMouseEnter={(e) => { if (!isSelPersist(item) && !isChecked(item)) e.currentTarget.style.background = `${th.accent}08`; }}
+                            onMouseLeave={(e) => { if (!isSelPersist(item)) e.currentTarget.style.background = isChecked(item) ? `${th.accent}0a` : "transparent"; }}>
                             <div style={{ position: "absolute", left: -17, width: 8, height: 8, borderRadius: 4, background: SEVERITY_COLORS[item.severity] || th.textMuted, border: `2px solid ${th.modalBg}`, zIndex: 1 }} />
                             <input type="checkbox" checked={isChecked(item)} onChange={(e) => toggleCheck(item, e)} onClick={(e) => e.stopPropagation()} style={{ width: 13, height: 13, cursor: "pointer", accentColor: th.accent, flexShrink: 0 }} />
-                            <span style={{ fontSize: 10, color: th.textMuted, fontFamily: "SF Mono, Menlo, monospace", minWidth: 130, flexShrink: 0 }}>{item.timestamp ? String(item.timestamp).substring(0, 19) : "—"}</span>
-                            <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: (SEVERITY_COLORS[item.severity] || th.textMuted) + "20", color: SEVERITY_COLORS[item.severity] || th.textMuted, fontWeight: 700, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase", flexShrink: 0 }}>{item.severity.substring(0, 4)}</span>
-                            <span style={{ fontSize: 11, fontWeight: 500, color: th.text, fontFamily: "-apple-system, sans-serif", flexShrink: 0 }}>{item.name}</span>
-                            {item.isSuspicious && <span style={{ fontSize: 7, padding: "1px 4px", borderRadius: 2, background: `${th.danger || "#f85149"}22`, color: th.danger || "#f85149", fontWeight: 700, flexShrink: 0, textTransform: "uppercase" }}>!</span>}
-                            <span style={{ fontSize: 10, color: item.isSuspicious ? (th.danger || "#f85149") : th.textMuted, fontWeight: item.isSuspicious ? 500 : 400, fontFamily: "SF Mono, Menlo, monospace", flexShrink: 0, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.artifact || ""}</span>
-                            <span style={{ fontSize: 10, color: th.textDim, fontFamily: "SF Mono, Menlo, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.command || item.detailsSummary?.substring(0, 150) || ""}</span>
+                            <span style={{ width: gtlw("timestamp"), minWidth: 50, fontSize: 10, color: th.textMuted, fontFamily: "SF Mono, Menlo, monospace", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.timestamp ? String(item.timestamp).substring(0, 19) : "—"}</span>
+                            <span style={{ width: gtlw("severity"), minWidth: 50, fontSize: 9, flexShrink: 0 }}>
+                              <span style={{ padding: "1px 5px", borderRadius: 3, background: (SEVERITY_COLORS[item.severity] || th.textMuted) + "20", color: SEVERITY_COLORS[item.severity] || th.textMuted, fontWeight: 700, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase" }}>{item.severity.substring(0, 4)}</span>
+                            </span>
+                            <span style={{ width: gtlw("name"), minWidth: 50, fontSize: 11, fontWeight: 500, color: th.text, fontFamily: "-apple-system, sans-serif", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {item.name}{item.isSuspicious && <span style={{ fontSize: 7, padding: "1px 4px", marginLeft: 4, borderRadius: 2, background: `${th.danger || "#f85149"}22`, color: th.danger || "#f85149", fontWeight: 700, textTransform: "uppercase" }}>!</span>}{item.rmmTool && <span title="Remote Management tool — common persistence mechanism" style={{ fontSize: 7, padding: "1px 4px", marginLeft: 4, borderRadius: 2, background: "#f0883e22", color: "#f0883e", fontWeight: 700, textTransform: "uppercase" }}>RMM</span>}
+                            </span>
+                            <span title={item.artifact || ""} style={{ width: gtlw("artifact"), minWidth: 50, fontSize: 10, color: item.isSuspicious ? (th.danger || "#f85149") : th.textMuted, fontWeight: item.isSuspicious ? 500 : 400, fontFamily: "SF Mono, Menlo, monospace", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.artifact || ""}</span>
+                            <span title={item.command || item.detailsSummary || ""} style={{ width: gtlw("command"), minWidth: 50, fontSize: 10, color: th.textDim, fontFamily: "SF Mono, Menlo, monospace", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.command || item.detailsSummary || ""}</span>
                           </div>
                         ))}
-                        {filteredItems.length > 500 && <div style={{ padding: "8px 0 4px 10px", fontSize: 10, color: th.textMuted, fontStyle: "italic" }}>Showing first 500 of {filteredItems.length}</div>}
+                        {sorted.length > 500 && <div style={{ padding: "8px 0 4px 10px", fontSize: 10, color: th.textMuted, fontStyle: "italic" }}>Showing first 500 of {sorted.length}</div>}
+                        {sorted.length === 0 && <div style={{ padding: "20px 10px", fontSize: 11, color: th.textMuted, textAlign: "center", fontFamily: "-apple-system, sans-serif" }}>No items match current filters</div>}
+                        {/* Column filter dropdown popup */}
+                        {filterOpen && (
+                          <>
+                            <div style={{ position: "fixed", inset: 0, zIndex: 998 }} onClick={() => setModal((p) => ({ ...p, colFilterOpen: null }))} />
+                            <div style={{ position: "fixed", left: modal.colFilterX ?? Math.min(filterPos.x || 0, window.innerWidth - 340), top: modal.colFilterY ?? Math.min(filterPos.y || 0, window.innerHeight - 440), width: modal.colFilterW || 320, height: modal.colFilterH || 420, background: th.modalBg, border: `1px solid ${th.border}`, borderRadius: 8, boxShadow: "0 8px 32px rgba(0,0,0,0.5)", zIndex: 999, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                              <div style={{ padding: "8px 10px", borderBottom: `1px solid ${th.border}33`, display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "grab", userSelect: "none", flexShrink: 0 }}
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  const startX = e.clientX, startY = e.clientY;
+                                  const startLeft = modal.colFilterX ?? Math.min(filterPos.x || 0, window.innerWidth - 340);
+                                  const startTop = modal.colFilterY ?? Math.min(filterPos.y || 0, window.innerHeight - 440);
+                                  document.body.style.cursor = "grabbing"; document.body.style.userSelect = "none";
+                                  const onMove = (ev) => setModal((p) => ({ ...p, colFilterX: startLeft + ev.clientX - startX, colFilterY: startTop + ev.clientY - startY }));
+                                  const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                                  window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+                                }}>
+                                <span style={{ fontSize: 11, fontWeight: 600, color: th.text, fontFamily: "SF Mono, Menlo, monospace" }}>FILTER — {(tlCols.find((c) => c.key === filterOpen)?.label || filterOpen).toUpperCase()}</span>
+                                <span style={{ cursor: "pointer", color: th.textMuted, fontSize: 14, lineHeight: 1 }} onClick={() => setModal((p) => ({ ...p, colFilterOpen: null }))}>×</span>
+                              </div>
+                              <div style={{ padding: "6px 10px", flexShrink: 0 }}>
+                                <input type="text" placeholder="Search values..." value={filterSearch} onChange={(e) => setModal((p) => ({ ...p, colFilterSearch: e.target.value }))}
+                                  style={{ width: "100%", boxSizing: "border-box", padding: "5px 8px", fontSize: 11, background: th.panelBg, border: `1px solid ${th.border}55`, borderRadius: 4, color: th.text, outline: "none", fontFamily: "SF Mono, Menlo, monospace" }}
+                                  autoFocus />
+                              </div>
+                              <div style={{ padding: "2px 10px 6px", display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+                                <button onClick={() => setModal((p) => ({ ...p, colFilterSel: new Set(filterVals) }))} style={{ padding: "2px 8px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Select All</button>
+                                <button onClick={() => setModal((p) => ({ ...p, colFilterSel: new Set() }))} style={{ padding: "2px 8px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Clear</button>
+                                <span style={{ marginLeft: "auto", fontSize: 10, color: th.textMuted }}>{filterVals.length} values</span>
+                              </div>
+                              <div style={{ flex: 1, overflow: "auto", padding: "0 6px", minHeight: 0 }}>
+                                {displayVals.slice(0, 1000).map((v) => (
+                                  <div key={v} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 4px", borderRadius: 3, cursor: "pointer" }}
+                                    onClick={() => setModal((p) => { const s = new Set(p.colFilterSel || []); s.has(v) ? s.delete(v) : s.add(v); return { ...p, colFilterSel: s }; })}
+                                    onMouseEnter={(e) => e.currentTarget.style.background = `${th.accent}0a`}
+                                    onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
+                                    <input type="checkbox" checked={filterSel.has(v)} readOnly style={{ width: 13, height: 13, accentColor: th.accent, cursor: "pointer", flexShrink: 0 }} />
+                                    <span style={{ fontSize: 11, color: th.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "SF Mono, Menlo, monospace" }}>{v || "(empty)"}</span>
+                                    <span style={{ fontSize: 10, color: th.textMuted, flexShrink: 0 }}>{filterCounts[v]}</span>
+                                  </div>
+                                ))}
+                              </div>
+                              <div style={{ padding: "8px 10px", borderTop: `1px solid ${th.border}33`, display: "flex", gap: 6, justifyContent: "flex-end", flexShrink: 0 }}>
+                                <button onClick={() => setModal((p) => { const cf = { ...(p.tableColFilters || {}) }; delete cf[filterOpen]; return { ...p, tableColFilters: cf, colFilterOpen: null }; })}
+                                  style={{ padding: "4px 12px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Reset</button>
+                                <button onClick={() => setModal((p) => ({ ...p, colFilterOpen: null }))}
+                                  style={{ padding: "4px 12px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Cancel</button>
+                                <button onClick={() => setModal((p) => ({ ...p, tableColFilters: { ...(p.tableColFilters || {}), [filterOpen]: [...(p.colFilterSel || [])] }, colFilterOpen: null }))}
+                                  style={{ padding: "4px 12px", fontSize: 10, background: th.accent, border: "none", borderRadius: 4, color: "#fff", cursor: "pointer", fontWeight: 600 }}>Apply</button>
+                              </div>
+                              <div onMouseDown={(e) => {
+                                e.preventDefault(); e.stopPropagation();
+                                const startX = e.clientX, startY = e.clientY, startW = modal.colFilterW || 320, startH = modal.colFilterH || 420;
+                                document.body.style.cursor = "nwse-resize"; document.body.style.userSelect = "none";
+                                const onMove = (ev) => setModal((p) => ({ ...p, colFilterW: Math.max(240, startW + ev.clientX - startX), colFilterH: Math.max(250, startH + ev.clientY - startY) }));
+                                const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                                window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+                              }} style={{ position: "absolute", right: 0, bottom: 0, width: 16, height: 16, cursor: "nwse-resize", zIndex: 2 }}>
+                                <svg width="8" height="8" viewBox="0 0 10 10" style={{ position: "absolute", right: 3, bottom: 3, opacity: 0.3 }}><path d="M9 1L1 9M9 5L5 9M9 9L9 9" stroke={th.textMuted} strokeWidth="1.5" strokeLinecap="round"/></svg>
+                              </div>
+                            </div>
+                          </>
+                        )}
                       </div>
-                    )}
+                    ); })()}
 
                     {/* Table view */}
                     {viewTab === "table" && (() => {
@@ -6334,6 +7268,7 @@ export default function App() {
                       const renderCell = (item, col) => {
                         if (col.key === "riskScore") return <span style={{ fontWeight: 700, color: item.riskScore >= 8 ? "#f85149" : item.riskScore >= 6 ? "#f0883e" : th.textMuted, display: "flex", alignItems: "center", gap: 3 }}>{item.riskScore}{item.isSuspicious && <span title={item.suspiciousReasons?.join(", ")} style={{ fontSize: 8, color: "#f85149" }}>!</span>}</span>;
                         if (col.key === "severity") return <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: (SEVERITY_COLORS[item.severity] || th.textMuted) + "20", color: SEVERITY_COLORS[item.severity] || th.textMuted, fontWeight: 700, textTransform: "uppercase" }}>{item.severity}</span>;
+                        if (col.key === "name") return <span style={{ display: "flex", alignItems: "center", gap: 4 }}>{item.name}{item.rmmTool && <span title="Remote Management tool — common persistence mechanism" style={{ fontSize: 7, padding: "1px 4px", borderRadius: 2, background: "#f0883e22", color: "#f0883e", fontWeight: 700, textTransform: "uppercase" }}>RMM</span>}</span>;
                         if (col.key === "timestamp") return item.timestamp ? String(item.timestamp).substring(0, 19) : "";
                         return item[col.key] || "";
                       };
@@ -6377,10 +7312,13 @@ export default function App() {
                                   </div>
                                 ))}
                               </div>
-                              {sorted.slice(0, 500).map((item, idx) => (
-                                <div key={idx} style={{ display: "flex", borderBottom: `1px solid ${th.border}11`, borderLeft: item.isSuspicious ? `3px solid ${th.danger || "#f85149"}` : "3px solid transparent", transition: "background 0.1s", background: isChecked(item) ? `${th.accent}0a` : item.isSuspicious ? `${(th.danger || "#f85149")}06` : "transparent" }}
-                                  onMouseEnter={(e) => { if (!isChecked(item)) e.currentTarget.style.background = `${th.accent}06`; }}
-                                  onMouseLeave={(e) => { if (!isChecked(item)) e.currentTarget.style.background = isChecked(item) ? `${th.accent}0a` : item.isSuspicious ? `${(th.danger || "#f85149")}06` : "transparent"; }}>
+                              {sorted.slice(0, 500).map((item, idx) => {
+                                const isSelItem = isSelPersist(item);
+                                return (
+                                <div key={idx} style={{ display: "flex", borderBottom: `1px solid ${th.border}11`, borderLeft: item.isSuspicious ? `3px solid ${th.danger || "#f85149"}` : "3px solid transparent", transition: "background 0.1s", background: isSelItem ? `${th.accent}14` : isChecked(item) ? `${th.accent}0a` : item.isSuspicious ? `${(th.danger || "#f85149")}06` : "transparent", cursor: "pointer" }}
+                                  onClick={() => toggleSelPersist(item)}
+                                  onMouseEnter={(e) => { if (!isSelItem && !isChecked(item)) e.currentTarget.style.background = `${th.accent}06`; }}
+                                  onMouseLeave={(e) => { if (!isSelItem) e.currentTarget.style.background = isChecked(item) ? `${th.accent}0a` : item.isSuspicious ? `${(th.danger || "#f85149")}06` : "transparent"; }}>
                                   <div style={{ width: 30, flexShrink: 0, padding: "5px 8px", display: "flex", alignItems: "center" }}>
                                     <input type="checkbox" checked={isChecked(item)} onChange={(e) => toggleCheck(item, e)} style={{ width: 13, height: 13, cursor: "pointer", accentColor: th.accent }} />
                                   </div>
@@ -6390,7 +7328,7 @@ export default function App() {
                                     </div>
                                   ))}
                                 </div>
-                              ))}
+                              ); })}
                             </div>
                           </div>
                           {sorted.length > 500 && <div style={{ padding: "6px 10px", fontSize: 10, color: th.textMuted, fontStyle: "italic", borderTop: `1px solid ${th.border}11` }}>Showing first 500 of {sorted.length}</div>}
@@ -6464,6 +7402,89 @@ export default function App() {
                   </div>
                 )}
               </div>
+
+              {/* Event Detail Panel — shared across all views */}
+              {phase === "results" && selectedPersistKey && (() => {
+                const selItem = itemForKey(selectedPersistKey);
+                if (!selItem) return null;
+                const sevCol = SEVERITY_COLORS[selItem.severity] || th.textMuted;
+                return (
+                  <div style={{ borderTop: `2px solid ${sevCol}44`, background: `linear-gradient(135deg, ${sevCol}06, ${th.panelBg}ee)`, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10, flexShrink: 0, maxHeight: 280, overflow: "auto" }}>
+                    {/* Header row */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 4, background: sevCol + "20", color: sevCol, fontWeight: 700, textTransform: "uppercase" }}>{selItem.severity}</span>
+                      {selItem.isSuspicious && <span style={{ fontSize: 8, padding: "1px 5px", borderRadius: 3, background: `${th.danger || "#f85149"}22`, color: th.danger || "#f85149", fontWeight: 700, textTransform: "uppercase" }}>SUSPICIOUS</span>}
+                      {selItem.rmmTool && <span style={{ fontSize: 8, padding: "1px 5px", borderRadius: 3, background: "#f0883e22", color: "#f0883e", fontWeight: 700, textTransform: "uppercase" }}>RMM</span>}
+                      {(selItem.tags || []).filter(t => t !== "RMM Tool").map((t, i) => <span key={i} style={{ fontSize: 8, padding: "1px 5px", borderRadius: 3, background: `${th.accent}22`, color: th.accent, fontWeight: 600, textTransform: "uppercase" }}>{t}</span>)}
+                      <span style={{ fontSize: 13, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif" }}>{selItem.name}</span>
+                      <span style={{ fontSize: 10, color: th.textMuted, marginLeft: "auto" }}>Risk Score: <span style={{ fontWeight: 700, color: selItem.riskScore >= 8 ? "#f85149" : selItem.riskScore >= 6 ? "#f0883e" : th.textMuted }}>{selItem.riskScore}/10</span></span>
+                      <button onClick={() => setModal((p) => ({ ...p, selectedPersistKey: null }))} style={{ background: "none", border: "none", color: th.textMuted, cursor: "pointer", fontSize: 14, padding: "0 4px", lineHeight: 1 }} title="Close">&times;</button>
+                    </div>
+                    {/* Info grid */}
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "6px 16px" }}>
+                      {[
+                        { label: "Category", value: selItem.category },
+                        { label: "Source", value: selItem.source },
+                        { label: "Timestamp", value: selItem.timestamp ? String(selItem.timestamp).substring(0, 23) : "" },
+                        { label: "Computer", value: selItem.computer },
+                        { label: "User", value: selItem.user },
+                      ].filter(f => f.value).map((f, i) => (
+                        <div key={i} style={{ display: "flex", gap: 6, alignItems: "baseline" }}>
+                          <span style={{ fontSize: 10, color: th.accent, fontWeight: 600, fontFamily: "-apple-system, sans-serif", flexShrink: 0 }}>{f.label}:</span>
+                          <span style={{ fontSize: 10, color: th.text, fontFamily: "SF Mono, Menlo, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                    {/* Artifact + Command */}
+                    {selItem.artifact && (
+                      <div style={{ display: "flex", gap: 6, alignItems: "baseline" }}>
+                        <span style={{ fontSize: 10, color: th.accent, fontWeight: 600, fontFamily: "-apple-system, sans-serif", flexShrink: 0 }}>Artifact:</span>
+                        <span style={{ fontSize: 10, color: selItem.isSuspicious ? (th.danger || "#f85149") : th.text, fontWeight: selItem.isSuspicious ? 600 : 400, fontFamily: "SF Mono, Menlo, monospace", wordBreak: "break-all" }}>{selItem.artifact}</span>
+                      </div>
+                    )}
+                    {selItem.command && (
+                      <div style={{ display: "flex", gap: 6, alignItems: "baseline" }}>
+                        <span style={{ fontSize: 10, color: th.accent, fontWeight: 600, fontFamily: "-apple-system, sans-serif", flexShrink: 0 }}>Command:</span>
+                        <span style={{ fontSize: 10, color: th.text, fontFamily: "SF Mono, Menlo, monospace", wordBreak: "break-all", maxHeight: 60, overflow: "auto" }}>{selItem.command}</span>
+                      </div>
+                    )}
+                    {/* All extracted details */}
+                    {selItem.details && Object.keys(selItem.details).length > 0 && (
+                      <div style={{ background: `${th.modalBg}cc`, borderRadius: 6, padding: "8px 10px", border: `1px solid ${th.border}22` }}>
+                        <div style={{ fontSize: 9, color: th.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4, fontFamily: "-apple-system, sans-serif" }}>Extracted Fields</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: "3px 16px" }}>
+                          {Object.entries(selItem.details).map(([k, v]) => (
+                            <div key={k} style={{ display: "flex", gap: 6, alignItems: "baseline" }}>
+                              <span style={{ fontSize: 10, color: th.accent + "cc", fontWeight: 500, fontFamily: "-apple-system, sans-serif", flexShrink: 0 }}>{k}:</span>
+                              <span style={{ fontSize: 10, color: th.text, fontFamily: "SF Mono, Menlo, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={v}>{v}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {/* Suspicious reasons */}
+                    {selItem.isSuspicious && selItem.suspiciousReasons?.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                        {selItem.suspiciousReasons.map((r, i) => (
+                          <span key={i} style={{ fontSize: 9, padding: "2px 6px", borderRadius: 4, background: `${th.danger || "#f85149"}15`, color: th.danger || "#f85149", fontFamily: "-apple-system, sans-serif" }}>{r}</span>
+                        ))}
+                      </div>
+                    )}
+                    {/* Copy button */}
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      <button onClick={() => {
+                        const lines = [`[${selItem.severity.toUpperCase()}] ${selItem.name}`, `Category: ${selItem.category}`, `Source: ${selItem.source}`, `Timestamp: ${selItem.timestamp}`, `Computer: ${selItem.computer}`, `User: ${selItem.user}`];
+                        if (selItem.artifact) lines.push(`Artifact: ${selItem.artifact}`);
+                        if (selItem.command) lines.push(`Command: ${selItem.command}`);
+                        if (selItem.details) { for (const [k, v] of Object.entries(selItem.details)) lines.push(`  ${k}: ${v}`); }
+                        if (selItem.suspiciousReasons?.length) lines.push(`Suspicious: ${selItem.suspiciousReasons.join("; ")}`);
+                        lines.push(`Risk Score: ${selItem.riskScore}/10`);
+                        navigator.clipboard.writeText(lines.join("\n"));
+                      }} style={{ fontSize: 10, padding: "3px 10px", borderRadius: 5, background: th.accent + "18", color: th.accent, border: `1px solid ${th.accent}33`, cursor: "pointer", fontFamily: "-apple-system, sans-serif", fontWeight: 500 }}>Copy Details</button>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Footer */}
               <div style={{ padding: "12px 20px", borderTop: `1px solid ${th.border}22`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, background: `linear-gradient(135deg, ${th.panelBg}ee, ${th.modalBg}dd)`, backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)" }}>

@@ -137,6 +137,70 @@ class TimelineDB {
       return null;
     });
 
+    // Register sort_datetime — normalizes any timestamp format to sortable ISO string (yyyy-MM-dd HH:mm:ss.fff)
+    // Used in ORDER BY for timestamp columns to ensure correct chronological sort regardless of input format
+    db.function("sort_datetime", { deterministic: true }, (val) => {
+      if (val == null || val === "") return null;
+      const s = String(val).trim();
+      // Fast path: ISO format (most common in forensic data) — already sortable
+      if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(s)) return s.replace("T", " ");
+      // ISO date-only: 2026-02-05
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s + " 00:00:00";
+      // US date: M/D/YYYY or MM/DD/YYYY with optional time
+      let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\s*(.*)/);
+      if (m) {
+        const rest = m[4] ? " " + m[4].replace(/\s*[AP]M$/i, (ap) => {
+          // Convert 12h to 24h
+          const parts = m[4].replace(/\s*[AP]M$/i, "").trim().split(":");
+          if (parts.length >= 2) {
+            let h = parseInt(parts[0]);
+            if (/PM$/i.test(ap) && h !== 12) h += 12;
+            if (/AM$/i.test(ap) && h === 12) h = 0;
+            return ""; // will be handled below
+          }
+          return "";
+        }) : " 00:00:00";
+        // Re-parse with AM/PM handling
+        let timePart = m[4] || "00:00:00";
+        const ampm = timePart.match(/\s*([AP]M)\s*$/i);
+        timePart = timePart.replace(/\s*[AP]M\s*$/i, "").trim();
+        if (ampm && timePart) {
+          const tp = timePart.split(":");
+          let h = parseInt(tp[0]) || 0;
+          if (/PM/i.test(ampm[1]) && h !== 12) h += 12;
+          if (/AM/i.test(ampm[1]) && h === 12) h = 0;
+          tp[0] = String(h).padStart(2, "0");
+          timePart = tp.join(":");
+        }
+        return `${m[3]}-${m[1].padStart(2,"0")}-${m[2].padStart(2,"0")} ${timePart || "00:00:00"}`;
+      }
+      // Unix timestamp (seconds, 10 digits)
+      if (/^\d{10}(\.\d+)?$/.test(s)) {
+        const d = new Date(parseFloat(s) * 1000);
+        if (!isNaN(d)) return d.toISOString().replace("T", " ").replace("Z", "");
+      }
+      // Unix timestamp (milliseconds, 13 digits)
+      if (/^\d{13}$/.test(s)) {
+        const d = new Date(parseInt(s));
+        if (!isNaN(d)) return d.toISOString().replace("T", " ").replace("Z", "");
+      }
+      // Excel serial date
+      if (/^\d{1,5}(\.\d+)?$/.test(s)) {
+        const serial = parseFloat(s);
+        if (serial >= 1 && serial <= 73050) {
+          const d = new Date(Math.round((serial - 25569) * 86400000));
+          if (!isNaN(d.getTime()) && d.getFullYear() >= 1900 && d.getFullYear() <= 2100)
+            return d.toISOString().replace("T", " ").replace("Z", "");
+        }
+      }
+      // Fallback: JS Date parse
+      const d = new Date(s);
+      if (!isNaN(d) && d.getFullYear() > 1970 && d.getFullYear() < 2100)
+        return d.toISOString().replace("T", " ").replace("Z", "");
+      // Unparseable — return original so it still sorts somehow
+      return s;
+    });
+
     // page_size MUST be set before any tables are created
     // 64KB pages: fewer B-tree nodes, faster bulk writes & index creation
     db.pragma("page_size = 65536");
@@ -337,11 +401,16 @@ class TimelineDB {
 
     meta.numericColumns = new Set();
     meta.safeCols.forEach((col) => {
+      // Skip columns already detected as timestamps — parseFloat("2026-01-17 01:26:27")
+      // returns 2026 (the year), falsely classifying timestamps as numeric.
+      if (meta.tsColumns.has(col.original)) return;
       const values = sampleRows
         .map((r) => r[col.safe])
         .filter((v) => v && v.trim());
       if (values.length > 0) {
-        const numCount = values.filter((v) => !isNaN(parseFloat(v))).length;
+        // Use Number() instead of parseFloat() — Number() requires the ENTIRE string
+        // to be a valid number, preventing false positives like "2026-01-17" → 2026
+        const numCount = values.filter((v) => v.trim() !== "" && !isNaN(Number(v.trim()))).length;
         if (numCount / values.length > 0.8) {
           meta.numericColumns.add(col.original);
         }
@@ -707,11 +776,12 @@ class TimelineDB {
         // Lazy-build index on first sort for this column
         this._ensureIndex(tabId, sortCol);
         const dir = sortDir === "desc" ? "DESC" : "ASC";
-        // If numeric or timestamp, cast for proper sorting
-        if (meta.numericColumns.has(sortCol)) {
+        // Timestamp columns checked first (takes priority over numeric — prevents
+        // false-positive numeric detection from breaking timestamp sorting)
+        if (meta.tsColumns.has(sortCol)) {
+          orderClause = `ORDER BY sort_datetime(${safeCol}) ${dir}`;
+        } else if (meta.numericColumns.has(sortCol)) {
           orderClause = `ORDER BY CAST(${safeCol} AS REAL) ${dir}`;
-        } else if (meta.tsColumns.has(sortCol)) {
-          orderClause = `ORDER BY ${safeCol} ${dir}`;
         } else {
           orderClause = `ORDER BY ${safeCol} COLLATE NOCASE ${dir}`;
         }
@@ -1482,7 +1552,13 @@ class TimelineDB {
       const safeCol = meta.colMap[sortCol];
       if (safeCol) {
         const dir = sortDir === "desc" ? "DESC" : "ASC";
-        orderClause = `ORDER BY ${safeCol} ${dir}`;
+        if (meta.tsColumns.has(sortCol)) {
+          orderClause = `ORDER BY sort_datetime(${safeCol}) ${dir}`;
+        } else if (meta.numericColumns.has(sortCol)) {
+          orderClause = `ORDER BY CAST(${safeCol} AS REAL) ${dir}`;
+        } else {
+          orderClause = `ORDER BY ${safeCol} COLLATE NOCASE ${dir}`;
+        }
       }
     }
 
@@ -1568,7 +1644,7 @@ class TimelineDB {
       // Timestamp stats
       if (meta.tsColumns.has(colName)) {
         const tsRange = db.prepare(
-          `SELECT MIN(${safeCol}) as earliest, MAX(${safeCol}) as latest FROM data ${neWhere}`
+          `SELECT MIN(sort_datetime(${safeCol})) as earliest, MAX(sort_datetime(${safeCol})) as latest FROM data ${neWhere}`
         ).get(...params);
         if (tsRange && tsRange.earliest) {
           result.tsStats = { earliest: tsRange.earliest, latest: tsRange.latest };
@@ -2272,15 +2348,18 @@ class TimelineDB {
     const isEvtxECmdPT = meta.headers.some((h) => /^PayloadData1$/i.test(h)) && meta.headers.some((h) => /^ExecutableInfo$/i.test(h));
 
     const columns = {
-      pid:         userPidCol        || detect([/^ProcessId$/i, /^pid$/i, /^process_id$/i]),
-      ppid:        userPpidCol       || detect([/^ParentProcessId$/i, /^ppid$/i, /^parent_process_id$/i, /^parent_pid$/i]),
+      pid:         userPidCol        || detect([/^ProcessId$/i, /^pid$/i, /^process_id$/i, /^NewProcessId$/i]),
+      ppid:        userPpidCol       || detect([/^ParentProcessId$/i, /^ppid$/i, /^parent_process_id$/i, /^parent_pid$/i, /^CreatorProcessId$/i]),
       guid:        userGuidCol       || detect([/^ProcessGuid$/i, /^process_guid$/i]),
       parentGuid:  userParentGuidCol || detect([/^ParentProcessGuid$/i, /^parent_process_guid$/i]),
-      image:       userImageCol      || detect([/^Image$/i, /^process_name$/i, /^exe$/i, /^FileName$/i, /^ImagePath$/i]),
-      cmdLine:     userCmdLineCol    || detect([/^CommandLine$/i, /^command_line$/i, /^cmd$/i, /^cmdline$/i]),
-      user:        userUserCol       || detect([/^User$/i, /^UserName$/i, /^user_name$/i, /^SubjectUserName$/i]),
+      image:       userImageCol      || detect([/^Image$/i, /^process_name$/i, /^exe$/i, /^FileName$/i, /^ImagePath$/i, /^NewProcessName$/i]),
+      parentImage: detect([/^ParentImage$/i, /^ParentProcessName$/i]),
+      cmdLine:     userCmdLineCol    || detect([/^CommandLine$/i, /^command_line$/i, /^cmd$/i, /^cmdline$/i, /^ProcessCommandLine$/i]),
+      user:        userUserCol       || detect([/^User$/i, /^UserName$/i, /^user_name$/i, /^SubjectUserName$/i, /^TargetUserName$/i]),
       ts:          userTsCol         || detect([/^UtcTime$/i, /^datetime$/i, /^TimeCreated$/i, /^timestamp$/i]),
       eventId:     userEventIdCol    || detect([/^EventID$/i, /^event_id$/i, /^eventid$/i, /^EventId$/]),
+      elevation:   detect([/^TokenElevationType$/i, /^Token_Elevation_Type$/i]),
+      integrity:   detect([/^MandatoryLabel$/i, /^Mandatory_Label$/i, /^IntegrityLevel$/i]),
     };
 
     // EvtxECmd: OVERRIDE columns — ProcessId in CSV header is the logging service PID (e.g., Sysmon 5464),
@@ -2306,10 +2385,14 @@ class TimelineDB {
     const params = [];
     const whereConditions = [];
 
-    // Filter to EventID value if column exists
+    // Filter to EventID value(s) — supports comma-separated (e.g., "1,4688")
     if (columns.eventId && eventIdValue) {
       const safeEid = meta.colMap[columns.eventId];
-      if (safeEid) { whereConditions.push(`${safeEid} = ?`); params.push(eventIdValue); }
+      if (safeEid) {
+        const eids = eventIdValue.split(",").map(s => s.trim()).filter(Boolean);
+        if (eids.length === 1) { whereConditions.push(`${safeEid} = ?`); params.push(eids[0]); }
+        else if (eids.length > 1) { whereConditions.push(`${safeEid} IN (${eids.map(() => "?").join(",")})`); params.push(...eids); }
+      }
     }
 
     // Standard filter application
@@ -2398,6 +2481,10 @@ class TimelineDB {
           }
         }
 
+        // Hex PID conversion (Security 4688 format: "0x1a2c")
+        if (typeof pid === "string" && /^0x[0-9a-f]+$/i.test(pid.trim())) pid = String(parseInt(pid.trim(), 16));
+        if (typeof ppid === "string" && /^0x[0-9a-f]+$/i.test(ppid.trim())) ppid = String(parseInt(ppid.trim(), 16));
+
         const key = useGuid && guid
           ? guid
           : `pid:${pid}:${row._rowid}`;
@@ -2410,8 +2497,9 @@ class TimelineDB {
         const node = {
           key, parentKey, rowid: row._rowid,
           pid, ppid, guid, parentGuid,
-          image: imagePath, processName,
+          image: imagePath, processName, parentImage: row.parentImage || "",
           cmdLine, user: row.user || "", ts: row.ts || "",
+          elevation: row.elevation || "", integrity: row.integrity || "",
           childCount: 0, depth: 0,
         };
         processes.push(node);
@@ -2458,7 +2546,7 @@ class TimelineDB {
       sourceCol: userSourceCol, targetCol: userTargetCol,
       userCol: userUserCol, logonTypeCol: userLogonTypeCol,
       eventIdCol: userEventIdCol, tsCol: userTsCol, domainCol: userDomainCol,
-      eventIds = ["4624", "4625", "4648"],
+      eventIds = ["4624", "4625", "4648", "4778"],
       excludeLocalLogons = true,
       excludeServiceAccounts = true,
       searchTerm = "", searchMode = "mixed", searchCondition = "contains",
@@ -2488,6 +2576,9 @@ class TimelineDB {
       eventId:     userEventIdCol   || detect([/^EventID$/i, /^event_id$/i, /^eventid$/i, /^EventId$/]),
       ts:          userTsCol        || detect([/^datetime$/i, /^UtcTime$/i, /^TimeCreated$/i, /^timestamp$/i]),
       domain:      userDomainCol    || detect([/^TargetDomainName$/i, /^Target_Domain_Name$/i, /^SubjectDomainName$/i]),
+      // 4778 session reconnect columns (RDP lateral movement — attacker hostname/IP)
+      clientName:    detect([/^ClientName$/i, /^Client_Name$/i]),
+      clientAddress: detect([/^ClientAddress$/i, /^Client_Address$/i, /^ClientIP$/i]),
       // EvtxECmd extra columns for value parsing
       _remoteHost: isEvtxECmd ? detect([/^RemoteHost$/i]) : null,
       _payloadData1: isEvtxECmd ? detect([/^PayloadData1$/i]) : null,
@@ -2560,21 +2651,44 @@ class TimelineDB {
         const targetHost = (row.target || "").toUpperCase().trim();
         if (!targetHost) continue;
 
-        let sourceHost = (row.workstation || "").toUpperCase().trim();
-        if (!sourceHost || sourceHost === "-") sourceHost = (row.source || "").toUpperCase().trim();
+        const eventId = row.eventId || "";
 
-        // EvtxECmd: RemoteHost format is "WorkstationName (IpAddress)" e.g. "- (::1)" or "WKST01 (10.0.0.5)"
-        if (isEvtxECmd && row.source) {
-          const rh = row.source.trim();
-          // Skip non-host values from firewall/other events: *:, *: 445, LOCALSUBNET:*, LOCAL, etc.
-          if (/^\*/.test(rh) || /^LOCALSUBNET/i.test(rh) || /^LOCAL$/i.test(rh)) { continue; }
-          const rhMatch = rh.match(/^(.+?)\s*\(([^)]+)\)$/);
-          if (rhMatch) {
-            const wkst = rhMatch[1].trim();
-            const ip = rhMatch[2].trim();
-            sourceHost = (wkst && wkst !== "-") ? wkst.toUpperCase() : ip.toUpperCase();
-          } else {
-            sourceHost = rh.toUpperCase();
+        // 4778: Session reconnected — ClientName is attacker hostname, ClientAddress is attacker IP
+        let clientName = "";
+        let clientAddress = "";
+        let sourceHost = "";
+
+        if (eventId === "4778") {
+          clientName = (row.clientName || "").trim();
+          clientAddress = (row.clientAddress || "").trim();
+          // For EvtxECmd, ClientName/ClientAddress may be in PayloadData fields
+          if (isEvtxECmd && !clientName && row._payloadData1) {
+            const cnMatch = row._payloadData1.match(/ClientName:\s*(.+?)(?:\s*$|,)/i);
+            if (cnMatch) clientName = cnMatch[1].trim();
+          }
+          if (isEvtxECmd && !clientAddress && row._payloadData2) {
+            const caMatch = row._payloadData2.match(/ClientAddress:\s*(.+?)(?:\s*$|,)/i);
+            if (caMatch) clientAddress = caMatch[1].trim();
+          }
+          // Use ClientName as source host (attacker hostname), fall back to ClientAddress
+          sourceHost = clientName ? clientName.toUpperCase() : clientAddress ? clientAddress.toUpperCase() : "";
+        } else {
+          sourceHost = (row.workstation || "").toUpperCase().trim();
+          if (!sourceHost || sourceHost === "-") sourceHost = (row.source || "").toUpperCase().trim();
+
+          // EvtxECmd: RemoteHost format is "WorkstationName (IpAddress)" e.g. "- (::1)" or "WKST01 (10.0.0.5)"
+          if (isEvtxECmd && row.source) {
+            const rh = row.source.trim();
+            // Skip non-host values from firewall/other events: *:, *: 445, LOCALSUBNET:*, LOCAL, etc.
+            if (/^\*/.test(rh) || /^LOCALSUBNET/i.test(rh) || /^LOCAL$/i.test(rh)) { continue; }
+            const rhMatch = rh.match(/^(.+?)\s*\(([^)]+)\)$/);
+            if (rhMatch) {
+              const wkst = rhMatch[1].trim();
+              const ip = rhMatch[2].trim();
+              sourceHost = (wkst && wkst !== "-") ? wkst.toUpperCase() : ip.toUpperCase();
+            } else {
+              sourceHost = rh.toUpperCase();
+            }
           }
         }
 
@@ -2598,7 +2712,6 @@ class TimelineDB {
           else logonType = "";  // Not a logon event — PayloadData2 has unrelated data
         }
 
-        const eventId = row.eventId || "";
         const ts = row.ts || "";
         const isFailure = eventId === "4625";
 
@@ -2611,7 +2724,7 @@ class TimelineDB {
 
         const edgeKey = `${sourceHost}->${targetHost}`;
         if (!edgeMap.has(edgeKey)) {
-          edgeMap.set(edgeKey, { source: sourceHost, target: targetHost, count: 0, users: new Set(), logonTypes: new Set(), firstSeen: ts, lastSeen: ts, hasFailures: false });
+          edgeMap.set(edgeKey, { source: sourceHost, target: targetHost, count: 0, users: new Set(), logonTypes: new Set(), firstSeen: ts, lastSeen: ts, hasFailures: false, clientNames: new Set(), clientAddresses: new Set() });
         }
         const edge = edgeMap.get(edgeKey);
         edge.count++;
@@ -2620,6 +2733,8 @@ class TimelineDB {
         if (ts && ts < edge.firstSeen) edge.firstSeen = ts;
         if (ts && ts > edge.lastSeen) edge.lastSeen = ts;
         if (isFailure) edge.hasFailures = true;
+        if (clientName) edge.clientNames.add(clientName);
+        if (clientAddress && clientAddress !== "LOCAL") edge.clientAddresses.add(clientAddress);
 
         timeOrdered.push({ source: sourceHost, target: targetHost, user, ts, logonType });
       }
@@ -2694,7 +2809,7 @@ class TimelineDB {
           };
         }),
         edges: [...edgeMap.values()].map((e) => ({
-          ...e, users: [...e.users], logonTypes: [...e.logonTypes],
+          ...e, users: [...e.users], logonTypes: [...e.logonTypes], clientNames: [...e.clientNames], clientAddresses: [...e.clientAddresses],
         })),
         chains,
         stats: {
@@ -2819,6 +2934,22 @@ class TimelineDB {
       { category: "Scheduled Tasks", name: "Logon Trigger Fired", eventIds: ["119"], channels: ["taskscheduler"], severity: "medium",
         extractors: { taskName: [P("Task"), P("TaskName"), P("Name")], userName: [P("UserName"), P("User")] },
         topFields: ["taskName", "userName"], payloadFilter: null },
+      // --- Account Persistence (DFIR report-derived: 7/11 reports) ---
+      { category: "Account Persistence", name: "User Account Created", eventIds: ["4720"], channels: ["security"], severity: "high",
+        extractors: { targetUser: [P("TargetUserName"), P("Target_User_Name")], subjectUser: [P("SubjectUserName")], samAccountName: [P("SamAccountName"), P("SAMAccountName")] },
+        topFields: ["targetUser", "subjectUser", "samAccountName"], payloadFilter: null },
+      { category: "Account Persistence", name: "Member Added to Global Security Group", eventIds: ["4728"], channels: ["security"], severity: "critical",
+        extractors: { groupName: [P("TargetUserName")], memberName: [P("MemberName"), P("Member_Name")], subjectUser: [P("SubjectUserName")] },
+        topFields: ["groupName", "memberName", "subjectUser"], payloadFilter: null },
+      { category: "Account Persistence", name: "Member Added to Local Security Group", eventIds: ["4732"], channels: ["security"], severity: "high",
+        extractors: { groupName: [P("TargetUserName")], memberName: [P("MemberName")], subjectUser: [P("SubjectUserName")] },
+        topFields: ["groupName", "memberName", "subjectUser"], payloadFilter: null },
+      { category: "Account Persistence", name: "Member Added to Universal Security Group", eventIds: ["4756"], channels: ["security"], severity: "critical",
+        extractors: { groupName: [P("TargetUserName")], memberName: [P("MemberName")], subjectUser: [P("SubjectUserName")] },
+        topFields: ["groupName", "memberName", "subjectUser"], payloadFilter: null },
+      { category: "Account Persistence", name: "User Password Reset", eventIds: ["4724"], channels: ["security"], severity: "medium",
+        extractors: { targetUser: [P("TargetUserName")], subjectUser: [P("SubjectUserName")] },
+        topFields: ["targetUser", "subjectUser"], payloadFilter: null },
     ];
 
     const REGISTRY_RULES = [
@@ -2976,7 +3107,7 @@ class TimelineDB {
       const sql = `SELECT ${selectParts.join(", ")} FROM data ${whereClause} ${orderClause} LIMIT ${maxRows}`;
       const rows = db.prepare(sql).all(...params);
 
-      const items = [];
+      let items = [];
 
       if (mode === "evtx") {
         for (const row of rows) {
@@ -3018,6 +3149,11 @@ class TimelineDB {
               detailsSummary = [row.payload, row.payload2, row.payload3, row.payload4, row.payload5].filter(Boolean).join(" | ");
             }
 
+            // RMM tool detection for service installs (seen in 7/11 DFIR reports)
+            const RMM_PATTERNS = /anydesk|splashtop|rustdesk|atera|screenconnect|teamviewer|supremo|connectwise|bomgar|logmein/i;
+            const rmmMatch = (eid === "7045") && (RMM_PATTERNS.test(details.serviceName || "") || RMM_PATTERNS.test(details.imagePath || "") || RMM_PATTERNS.test(row.execInfo || ""));
+            const tags = rmmMatch ? ["RMM Tool"] : [];
+
             items.push({
               rowid: row._rowid,
               category: rule.category,
@@ -3031,6 +3167,8 @@ class TimelineDB {
               details,
               detailsSummary: detailsSummary.substring(0, 400),
               mode: "evtx",
+              tags,
+              rmmTool: rmmMatch,
             });
           }
         }
@@ -3097,6 +3235,107 @@ class TimelineDB {
         }
       }
 
+      // --- Known AV/EDR whitelist: suppress legitimate security products from expected paths ---
+      const AV_EDR_WHITELIST = [
+        // Palo Alto / Cortex XDR / Traps
+        { namePattern: /^(?:cyvrmtgn|cyverak|cyvrfsfd|tedrdrv|tdevflt|telam|Cortex\s*XDR|Cortex\s*XDR\s*Health\s*Helper|CyMemDef|CyProtectDrv|CyOpticsRuntimeDriver|TrapsSupervisor|PanGPS|PanUpdater)$/i,
+          pathPattern: /(?:Palo\s*Alto\s*Networks|Cortex\s*XDR)/i },
+        // Microsoft Defender / MpKsl* drivers / MsMpEng / NisSrv
+        { namePattern: /^(?:Microsoft\s*Defender|MpDefender|WinDefend|MsMpSvc|NisSrv|MpKsl[0-9a-f]+|WdNisSvc|WdNisDrv|WdFilter|WdBoot|SecurityHealthService|Sense|MsSecCore|Microsoft\s*Defender\s*Core\s*Service)$/i,
+          pathPattern: /(?:Windows\s*Defender|Microsoft\s*Defender|Microsoft\\Windows\s*Defender|ProgramData\\Microsoft\\Windows\s*Defender)/i },
+        // CrowdStrike Falcon
+        { namePattern: /^(?:CSFalcon|CsFalconService|csagent|CSAgent|csdevicecontrol|CrowdStrike|CsInstallerService|CsDisk[A-Z]|CsBoot|CsEFW)$/i,
+          pathPattern: /CrowdStrike/i },
+        // SentinelOne
+        { namePattern: /^(?:SentinelAgent|SentinelOne|SentinelMonitor|SentinelStaticEngine|LogProcessorService|SentinelStaticEngineScanner|SentinelHelperService)$/i,
+          pathPattern: /SentinelOne/i },
+        // Carbon Black (VMware/Broadcom)
+        { namePattern: /^(?:CbDefense|CbDefenseSensor|CarbonBlack|cb\.exe|RepMgr|CbStream|carbonblackk|CbSensor)$/i,
+          pathPattern: /(?:CarbonBlack|Carbon\s*Black|Cb\\)/i },
+        // Sophos
+        { namePattern: /^(?:Sophos|SAVService|SAVAdminService|SophosHealth|SophosCleanup|SophosFileScanner|SophosFS|SophosNtpService|hmpalert|SophosUI)$/i,
+          pathPattern: /Sophos/i },
+        // Symantec / Broadcom / Norton
+        { namePattern: /^(?:SepMaster|SepScan|ccSvcHst|SymCorpUI|SymEFA|Norton|NortonSecurity|smc|SmcService|Symantec|SylinkDrop|ccEvtMgr)$/i,
+          pathPattern: /(?:Symantec|Norton|Broadcom)/i },
+        // McAfee / Trellix
+        { namePattern: /^(?:McAfee|McShield|mfemms|mfefire|mfevtp|TrellixENS|TrellixEDR|masvc|macmnsvc|mfewc|mfetp)$/i,
+          pathPattern: /(?:McAfee|Trellix)/i },
+        // Kaspersky
+        { namePattern: /^(?:AVP|avp|kavsvc|kavfs|klnagent|KAVFS|KESCapability|KLSysEvLog)$/i,
+          pathPattern: /Kaspersky/i },
+        // ESET
+        { namePattern: /^(?:ekrn|ESET|EsetService|ERAAgent|eamonm|ehdrv|epfwwfp|epfw)$/i,
+          pathPattern: /ESET/i },
+        // Trend Micro
+        { namePattern: /^(?:TrendMicro|Ntrtscan|tmlisten|TmFilter|TmPreFilter|ds_agent|Apex\s*One)$/i,
+          pathPattern: /(?:Trend\s*Micro|TrendMicro)/i },
+        // Bitdefender
+        { namePattern: /^(?:EPSecurityService|EPProtectedService|EPUpdateService|EPIntegrationService|EPRedline|BDAuxSrv|TRUFOS|bdservicehost)$/i,
+          pathPattern: /Bitdefender/i },
+        // Cylance (BlackBerry)
+        { namePattern: /^(?:CylanceSvc|CylanceUI|CylanceDrv|CylanceProtect|CyOptics)$/i,
+          pathPattern: /Cylance/i },
+        // Elastic Agent / Endpoint Security
+        { namePattern: /^(?:elastic-agent|elastic-endpoint|ElasticEndpoint|winlogbeat|filebeat)$/i,
+          pathPattern: /(?:Elastic|elastic)/i },
+        // Fortinet FortiClient / FortiEDR
+        { namePattern: /^(?:FortiClient|FortiEDR|FortiGate|FA_Scheduler|FortiClientProductUpdate)$/i,
+          pathPattern: /Fortinet/i },
+      ];
+
+      // Check if a service item matches a known AV/EDR product from expected path
+      const isWhitelistedAV = (serviceName, commandPath) => {
+        if (!serviceName && !commandPath) return false;
+        const sn = serviceName || "";
+        const cp = commandPath || "";
+        for (const entry of AV_EDR_WHITELIST) {
+          if (entry.namePattern.test(sn) && entry.pathPattern.test(cp)) return true;
+        }
+        return false;
+      };
+
+      // --- Known browser services: downgrade to low if running from expected paths ---
+      const BROWSER_WHITELIST = [
+        // Google Chrome
+        { namePattern: /^(?:Google\s*Chrome|gupdate|gupdatem|GoogleChromeElevationService|ChromeElevation)$/i,
+          legitimatePath: /(?:Program\s*Files(?:\s*\(x86\))?\\Google\\Chrome|Program\s*Files(?:\s*\(x86\))?\\Google\\Update)/i },
+        // Microsoft Edge
+        { namePattern: /^(?:Microsoft\s*Edge|edge\s*update|MicrosoftEdgeElevationService|edgeupdatem?|MsEdge)$/i,
+          legitimatePath: /(?:Program\s*Files(?:\s*\(x86\))?\\Microsoft\\Edge|Program\s*Files(?:\s*\(x86\))?\\Microsoft\\EdgeUpdate)/i },
+        // Mozilla Firefox
+        { namePattern: /^(?:Mozilla\s*Firefox|MozillaMaintenance|Firefox)$/i,
+          legitimatePath: /(?:Program\s*Files(?:\s*\(x86\))?\\Mozilla\s*Firefox|Program\s*Files(?:\s*\(x86\))?\\Mozilla\s*Maintenance)/i },
+        // Brave Browser
+        { namePattern: /^(?:Brave|BraveUpdate|brave\s*update|BraveElevationService)$/i,
+          legitimatePath: /(?:Program\s*Files(?:\s*\(x86\))?\\Brave(?:Software)?\\)/i },
+        // Opera
+        { namePattern: /^(?:Opera|OperaUpdate|opera\s*update)$/i,
+          legitimatePath: /(?:Program\s*Files(?:\s*\(x86\))?\\Opera\\)/i },
+        // Vivaldi
+        { namePattern: /^(?:Vivaldi|VivaldiUpdate)$/i,
+          legitimatePath: /(?:Program\s*Files(?:\s*\(x86\))?\\Vivaldi\\)/i },
+      ];
+
+      const checkBrowserService = (serviceName, commandPath) => {
+        const sn = serviceName || "";
+        const cp = commandPath || "";
+        for (const entry of BROWSER_WHITELIST) {
+          if (entry.namePattern.test(sn)) {
+            // Name matches a browser — check if path is legitimate
+            if (entry.legitimatePath.test(cp)) return "legitimate";
+            return "suspicious"; // browser name but wrong path — possible mimicry
+          }
+        }
+        return null; // not a browser service
+      };
+
+      // --- Known malicious tools: auto-escalate severity ---
+      const MALICIOUS_TOOLS = [
+        { namePattern: /^PSEXE[SC]SVC$/i, severity: "critical", reasons: ["PsExec remote execution tool — commonly abused for lateral movement"] },
+        { namePattern: /^(?:DVCEMUMANAGER|anydesk|TeamViewer|ScreenConnect|SimpleHelp|RustDesk|meshagent)$/i, severity: "high", reasons: ["Remote access tool — verify legitimacy"] },
+      ];
+
       // --- Risk scoring + suspicious detection ---
       const SUSPICIOUS_PATHS = /\\(?:Temp|AppData|Downloads|Users\\Public|ProgramData\\[^\\]*$|Recycle)/i;
       const SUSPICIOUS_CMDS = /(?:powershell|pwsh|cmd\.exe\s*\/c|certutil|bitsadmin|mshta|regsvr32|wscript|cscript|rundll32|msiexec.*\/q)/i;
@@ -3105,6 +3344,35 @@ class TimelineDB {
       // Known-legitimate task name prefixes (not suspicious)
       const LEGIT_TASK_PREFIXES = /^\\(?:Microsoft\\|Apple\\|Google\\|Adobe\\|Mozilla\\)/i;
 
+      // Known-legitimate Windows task executables and action handlers (noisy FPs)
+      const LEGIT_TASK_EXECUTABLES = /^(?:taskhostw\.exe|InputToCdsTaskHandler|svchost\.exe|conhost\.exe|backgroundTaskHost\.exe|RuntimeBroker\.exe|MusNotification\.exe|devicecensus\.exe|AppHostRegistrationVerifier\.exe|dstokenclean\.exe|UsoClient\.exe|OfficeBackgroundTaskHandlerRegistration|OfficeBackgroundTaskHandlerLogon|WaaSMedicAgent\.exe)$/i;
+
+      // Known-legitimate browser scheduled tasks (task name patterns)
+      const LEGIT_BROWSER_TASKS = /^\\?(?:MicrosoftEdgeUpdate|GoogleUpdate|Google(?:Chrome)?Update|ChromeUpdate|BraveSoftwareUpdate|MozillaUpdate|OperaSoftwareUpdate|VivaldiUpdate|Firefox\s*Default\s*Browser\s*Agent)/i;
+      // Known-legitimate browser executables (expected paths)
+      const LEGIT_BROWSER_PATHS = /(?:Program\s*Files(?:\s*\(x86\))?\\(?:Microsoft\\Edge|Google\\(?:Chrome|Update)|Mozilla\s*Firefox|BraveSoftware|Opera|Vivaldi)|\\AppData\\Local\\(?:Microsoft\\Edge|Google\\Chrome|BraveSoftware|Mozilla\s*Firefox)\\)/i;
+
+      // Filter out whitelisted items
+      items = items.filter((item) => {
+        // AV/EDR services from expected paths
+        if (item.category === "Services" && item.name === "Service Installed") {
+          const sn = item.artifact || item.details?.serviceName || "";
+          const cp = item.command || item.details?.imagePath || item.details?.serviceFile || "";
+          if (isWhitelistedAV(sn, cp)) return false;
+        }
+        // Scheduled Tasks: suppress known legitimate tasks
+        if (item.category === "Scheduled Tasks") {
+          const art = item.artifact || item.details?.taskName || "";
+          const cmd = item.command || item.details?.executable || "";
+          // Legitimate Windows system tasks with known system executables
+          if ((item.name === "Task Process Created" || item.name === "Task Action Started")
+            && LEGIT_TASK_PREFIXES.test(art) && LEGIT_TASK_EXECUTABLES.test(cmd.split("\\").pop())) return false;
+          // Browser update tasks from expected paths (all task event types)
+          if (LEGIT_BROWSER_TASKS.test(art) && (!cmd || LEGIT_BROWSER_PATHS.test(cmd))) return false;
+        }
+        return true;
+      });
+
       for (const item of items) {
         let score = SEVERITY_SCORES[item.severity] || 4;
         const blob = item.detailsSummary + " " + JSON.stringify(item.details);
@@ -3112,9 +3380,32 @@ class TimelineDB {
         if (SUSPICIOUS_CMDS.test(blob)) score += 1;
         if (ENCODING_INDICATORS.test(blob)) score += 1;
 
-        // Suspicious artifact/task indicators
-        const reasons = [];
+        // Check for known malicious tools — escalate severity
         const art = item.artifact || "";
+        if (item.category === "Services" && art) {
+          for (const mt of MALICIOUS_TOOLS) {
+            if (mt.namePattern.test(art)) {
+              item.severity = mt.severity;
+              score = Math.max(score, SEVERITY_SCORES[mt.severity] || 6);
+              item.isSuspicious = true;
+              item.suspiciousReasons = (item.suspiciousReasons || []).concat(mt.reasons);
+            }
+          }
+          // Browser services: downgrade if legitimate path, escalate if mimicked
+          const browserCheck = checkBrowserService(art, item.command || "");
+          if (browserCheck === "legitimate") {
+            item.severity = "low";
+            score = SEVERITY_SCORES.low;
+          } else if (browserCheck === "suspicious") {
+            item.severity = "high";
+            score = Math.max(score, SEVERITY_SCORES.high);
+            item.isSuspicious = true;
+            (item.suspiciousReasons = item.suspiciousReasons || []).push("Browser service name from unexpected path — possible mimicry");
+          }
+        }
+
+        // Suspicious artifact/task indicators
+        const reasons = item.suspiciousReasons || [];
         if (art && item.category === "Scheduled Tasks") {
           if (art.startsWith("\\") && !LEGIT_TASK_PREFIXES.test(art)) {
             reasons.push("Non-standard task path");
