@@ -12,8 +12,8 @@ IRFlow Timeline is built on the shoulders of incredible open source projects and
 | [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) | MIT | High-performance SQLite bindings with WAL mode and FTS5 |
 | [ExcelJS](https://github.com/exceljs/exceljs) | MIT | XLSX streaming reader |
 | [SheetJS](https://sheetjs.com/) | Apache-2.0 | Legacy XLS binary (OLE2/BIFF) parser |
-| [@ts-evtx/core](https://github.com/nicholasgasior/ts-evtx) | MIT | Windows Event Log (EVTX) parser |
-| [@ts-evtx/messages](https://github.com/nicholasgasior/ts-evtx) | MIT | EVTX event message resolution |
+| [@ts-evtx/core](https://github.com/NickSmet/ts-evtx) | MIT | Windows Event Log (EVTX) parser |
+| [@ts-evtx/messages](https://github.com/NickSmet/ts-evtx) | MIT | EVTX event message resolution |
 | [csv-parser](https://github.com/mafintosh/csv-parser) | MIT | CSV/TSV streaming parser |
 
 ## Build Tools
