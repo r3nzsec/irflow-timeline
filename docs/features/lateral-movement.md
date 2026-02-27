@@ -105,7 +105,14 @@ The tracker automatically flags hosts with suspicious or default hostnames that 
 | `USER-PC`, `ADMIN`, `TEST`, `HACKER`, etc. | Generic or suspicious hostname |
 | Non-ASCII characters | Unusual encoding in hostname |
 
-Outlier nodes are visually highlighted in the graph so they stand out during investigation.
+### Visual Treatment
+
+Outlier nodes receive distinct visual treatment in the graph so they stand out immediately:
+
+- **Red node color** — outlier nodes are rendered in red instead of the default node color
+- **Pulsing dashed ring** — a dashed circle animates around each outlier node with a 2-second pulse, drawing the eye to suspicious hosts
+- **Hover tooltip** — hovering over an outlier node displays the specific detection reason (e.g., "Default Windows hostname", "Kali Linux default")
+- **Stats card** — the summary stats panel includes an outlier count so you can see at a glance how many suspicious hostnames were detected
 
 ## Noise Filtering
 
