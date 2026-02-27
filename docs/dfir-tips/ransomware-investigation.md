@@ -77,7 +77,7 @@ Filter the merged timeline to the earliest suspicious timeframe. Common initial 
 | Prefetch | `OUTLOOK.EXE`, `WINWORD.EXE` | Office app execution preceding payload |
 | MFT | Zone.Identifier ADS | Files downloaded from the internet |
 
-Use the [Histogram](/features/histogram) at minute-level granularity to find the burst of activity around the initial compromise. Tag the relevant rows with `initial-access`.
+Use the [Histogram](/features/histogram) at hour granularity to find the burst of activity around the initial compromise, then run [Burst Analysis](/features/gap-burst-analysis) with a 1-minute window for precise timing. Tag the relevant rows with `initial-access`.
 
 ### 4. Trace the Execution Chain
 
@@ -191,7 +191,7 @@ The final phase is the ransomware deployment itself. Key indicators:
 | Security 4688 | Process creation for `vssadmin.exe delete shadows /all /quiet` or `wmic shadowcopy delete` |
 | System 7036 | Volume Shadow Copy service stopped |
 
-Switch the [Histogram](/features/histogram) to minute granularity and look for the characteristic spike -- a massive burst of file system events concentrated in a narrow time window. This spike marks the encryption start time.
+Switch the [Histogram](/features/histogram) to hour granularity to spot the general encryption window, then use [Burst Analysis](/features/gap-burst-analysis) with a 1-minute window to pinpoint the characteristic spike -- a massive burst of file system events concentrated in a narrow time window. This spike marks the encryption start time.
 
 Tag all encryption-phase artifacts with `encryption`.
 

@@ -39,7 +39,7 @@ cd tle-app
 npm install
 
 # Rebuild native modules for Electron
-npm run rebuild
+npx electron-rebuild -f -w better-sqlite3
 
 # Run in development mode
 npm run dev

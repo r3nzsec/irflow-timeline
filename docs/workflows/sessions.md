@@ -49,7 +49,7 @@ The `.tle` file is a JSON structure:
 
 ```json
 {
-  "version": "2.1",
+  "version": "1.0",
   "tabs": [
     {
       "name": "Security.evtx",

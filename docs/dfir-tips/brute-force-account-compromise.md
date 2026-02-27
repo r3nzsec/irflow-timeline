@@ -4,7 +4,7 @@ Brute force and password spraying attacks generate distinctive authentication pa
 
 ::: info Features Used
 - [Burst Analysis](/features/gap-burst-analysis) -- detect high-frequency authentication spikes
-- [Histogram](/features/histogram) -- visualize attack windows at minute granularity
+- [Histogram](/features/histogram) -- visualize attack windows at hour granularity
 - [Stacking](/features/stacking) -- identify targeted accounts and source addresses
 - [Checkbox Filters](/features/search-filtering) -- isolate specific logon types and event IDs
 - [Bookmarks & Tags](/features/bookmarks-tags) -- mark key events for reporting
@@ -75,7 +75,7 @@ If burst analysis returns too many results, increase the burst factor to 10x or 
 
 ### 3. Visualize the Attack with the Histogram
 
-Click the **Histogram** button in the main toolbar and set granularity to **Minute**.
+Click the **Histogram** button in the main toolbar and set granularity to **Hour**.
 
 With your authentication filter still active, the histogram will show clear spikes during the attack windows identified by Burst Analysis. Look for:
 
