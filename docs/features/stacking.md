@@ -7,45 +7,64 @@ Stacking provides frequency analysis of unique values in any column, presented a
 ## Opening Stacking
 
 - **Menu:** Tools > Stacking
-- Or `Cmd+Click` a column header and select **Stack this column**
+- Or right-click a column header and select **Stack this column**
 
 ## How It Works
 
 1. Select a column to analyze
-2. IRFlow Timeline queries SQLite for distinct values and their counts
-3. Results are displayed as a horizontal bar chart with:
-   - Value name
+2. IRFlow Timeline queries SQLite for distinct values and their counts using `GROUP BY` with `COUNT(*)`
+3. Results are displayed in a resizable modal (default 860px wide) with:
+   - Row index
+   - Value name (resizable column, default 420px, min 120px)
    - Count (absolute number)
    - Percentage of total rows
-   - Visual bar proportional to count
+   - Visual distribution bar proportional to count with heatmap coloring
 
-## Filter Awareness
+Up to **10,000 unique values** are returned. If a column exceeds this limit, a truncation notice is displayed.
 
-Stacking respects all active filters. If you have a search term, date range, or column filter active, the stacking analysis only considers the filtered rows. This lets you answer questions like:
+## Stats Cards
 
-- "What executables ran during the suspicious time window?"
-- "What event types are associated with this user account?"
-- "Which computers generated the most logon failures?"
+Two summary metrics appear above the results:
+
+- **Unique values** — count of distinct values in the column
+- **Total events** — total rows in the filtered dataset
 
 ## Sorting
 
-Results can be sorted by:
+Toggle between two sort modes using the button in the toolbar:
 
-- **Count (descending)** — most frequent values first (default)
-- **Count (ascending)** — least frequent / rarest values first
-- **Alphabetical** — sorted by value name
+| Mode | Order | Use Case |
+|------|-------|----------|
+| **Count ↓** | Most frequent first (default) | Find dominant values |
+| **A→Z** | Alphabetical by value | Browse values systematically |
 
 ::: tip Rare Values
-Sort ascending to find rare values. In many forensic scenarios, the most interesting entries are the ones that appear only once or a handful of times — a rare executable, an unusual path, or a one-time network connection.
+In count mode, scroll to the bottom to find rare values. Values appearing less than 1% of the time are flagged with italic styling. In many forensic scenarios, the most interesting entries are the ones that appear only once or a handful of times — a rare executable, an unusual path, or a one-time network connection.
 :::
+
+## Search Filter
+
+Type in the filter input to narrow the displayed values in real time. This searches within the value names, not the underlying data — useful for quickly finding a specific value in a large distribution.
 
 ## Click-to-Filter
 
-Click any value in the stacking chart to instantly filter the main grid to rows containing that value. This provides a quick drill-down workflow:
+Click any value in the stacking table to instantly filter the main grid to rows containing that value via checkbox filter. This provides a quick drill-down workflow:
 
 1. Stack a column to see the distribution
 2. Click an interesting value
 3. Examine the matching rows in full detail
+
+## Copy to Clipboard
+
+Click the copy button to export the full stacking results as tab-separated values (TSV) with headers: `Value`, `Count`, `Percent`. Paste directly into a spreadsheet or report.
+
+## Filter Awareness
+
+Stacking respects all active filters — column filters, checkbox filters, date range filters, search terms, advanced filters, and bookmark filters. If you have filters active, the stacking analysis only considers the filtered rows. This lets you answer questions like:
+
+- "What executables ran during the suspicious time window?"
+- "What event types are associated with this user account?"
+- "Which computers generated the most logon failures?"
 
 ## Common DFIR Use Cases
 
@@ -55,7 +74,9 @@ Click any value in the stacking chart to instantly filter the main grid to rows 
 | **EventID** | Unexpected event types |
 | **Computer** | Hosts with unusual activity volume |
 | **User** | Accounts with anomalous behavior |
-| **Channel** | Log source distribution |
+| **Channel / Provider** | Log source distribution |
 | **Source Address** | Unusual network origins |
 | **Parent Process** | Unexpected parent-child relationships |
 | **Target Path** | Unusual file access patterns |
+| **LogonType** | Distribution of authentication methods |
+| **CommandLine** | Repeated or suspicious commands |

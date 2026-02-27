@@ -18,21 +18,53 @@ Gap analysis identifies periods where no events were recorded, which may indicat
 ### How to Use
 
 1. Open **Tools > Gap Analysis**
-2. Set the **gap threshold** — minimum duration to consider as a gap (e.g., 1 hour, 4 hours, 24 hours)
-3. Results show each detected gap with:
-   - Start timestamp (last event before the gap)
-   - End timestamp (first event after the gap)
-   - Duration of the gap
-   - Number of events before and after
+2. Select the **timestamp column** to analyze
+3. Set the **gap threshold** — minimum duration to consider as a gap
+
+| Preset | Duration |
+|--------|----------|
+| 15 min | Short gaps — quick service restarts |
+| 30 min | Medium gaps |
+| **60 min** | Default — standard activity gaps |
+| 2 hours | Extended gaps |
+| 8 hours | Long gaps — overnight or weekend |
+| Custom | Any minute value |
 
 ### How It Works
 
-The analysis runs entirely in SQL:
-
-1. Events are ordered by timestamp
-2. Time difference between consecutive events is calculated
-3. Gaps exceeding the threshold are reported
+1. Events are bucketed by minute using `extract_datetime_minute()` in SQL
+2. Minute-level buckets are grouped into **sessions** — continuous sequences of activity without exceeding the gap threshold
+3. Silence periods between sessions that exceed the threshold are reported as **gaps**
 4. No in-memory sorting required — SQLite handles the ordering
+
+### Results
+
+**Summary cards** display three metrics:
+
+- **Sessions** — number of distinct activity periods detected
+- **Gaps** — number of silence periods exceeding the threshold
+- **Total events** — events in the filtered dataset
+
+**Sessions list** shows each activity period with:
+
+- Session index badge with color coding (cycles through 8 colors)
+- Time range (from → to)
+- Event count within the session
+- Duration
+
+**Gaps list** shows each quiet period with:
+
+- Pause icon
+- Time range (last event before → first event after)
+- Duration in minutes/hours
+
+### Click to Zoom
+
+Click any session or gap row to zoom the main grid's date range filter to that time window. Timestamps are converted to second-level precision for accurate filtering.
+
+### Tag Sessions
+
+Click **Tag Sessions** to auto-tag all events within each session. Tags are named `Session 1`, `Session 2`, etc. and assigned distinct colors from an 8-color palette. A confirmation shows the total rows tagged across all sessions.
 
 ### Investigation Tips
 
@@ -58,38 +90,80 @@ Burst analysis identifies abnormal spikes in event volume that stand out from th
 ### How to Use
 
 1. Open **Tools > Burst Analysis**
-2. Configure:
-   - **Window size** — aggregation interval (1-60 minutes)
-   - **Burst factor** — how many times above baseline qualifies as a burst (e.g., 3x)
-3. Results show:
-   - Time window of each burst
-   - Event count in the burst window
-   - Baseline (median) event count
-   - Burst ratio (burst count / baseline)
-   - Sparkline visualization
+2. Select the **timestamp column** to analyze
+3. Configure the detection parameters:
+
+**Window size** — aggregation interval:
+
+| Preset | Best For |
+|--------|----------|
+| 1 min | Precise spike detection |
+| **5 min** | Default — general burst detection |
+| 15 min | Broader activity windows |
+| 30 min | Extended patterns |
+| 1 hour | Coarse-grained analysis |
+| Custom | Any minute value |
+
+**Threshold multiplier** — how many times above baseline qualifies as a burst:
+
+| Preset | Sensitivity |
+|--------|-------------|
+| 3× | High sensitivity — more bursts detected |
+| **5×** | Default — balanced detection |
+| 10× | Low sensitivity — only major spikes |
+| 20× | Very low — extreme anomalies only |
+| Custom | Any value (step 0.5) |
 
 ### How It Works
 
-1. Events are bucketed into fixed-width time windows
-2. The **median** event count across all windows becomes the baseline
-3. Windows exceeding `baseline × burst_factor` are flagged
-4. Results are sorted by burst ratio (highest spikes first)
+The algorithm runs in six steps:
 
-### Sparkline
+1. **Minute bucketing** — events grouped by minute using SQL
+2. **Window aggregation** — minute buckets combined into windows of the configured size. For 1-minute windows, minute buckets are used directly
+3. **Median baseline** — the median event count across all windows becomes the baseline (minimum 1 to avoid division by zero)
+4. **Threshold calculation** — `baseline × multiplier` sets the burst threshold
+5. **Burst detection and merging** — windows exceeding the threshold are flagged, and adjacent burst windows are merged into contiguous burst periods
+6. **Sparkline generation** — all windows mapped to `{timestamp, count, isBurst}` for visualization
 
-Each burst result includes a sparkline showing the event density around the burst window, providing visual context for whether the spike is isolated or part of a trend.
+### Results
 
-### Configuration
+**Summary cards** display four metrics:
 
-| Parameter | Default | Range | Description |
-|-----------|---------|-------|-------------|
-| **Window size** | 5 minutes | 1-60 min | Aggregation bucket width |
-| **Burst factor** | 3x | 2-20x | Multiplier above baseline |
+- **Bursts** — number of burst periods detected (highlighted red if any found)
+- **Baseline** — median events per window period
+- **Peak rate** — maximum events in any single window
+- **Total events** — events in the filtered dataset
+
+**Sparkline chart** shows event density across the entire timeline:
+
+- Red bars for burst windows, blue bars for normal windows
+- Red dashed horizontal line at the threshold level
+- Labels showing earliest timestamp, threshold value, and latest timestamp
+
+**Bursts list** shows each detected burst with:
+
+- Red "Burst N" badge
+- Time range (from → to)
+- Event count
+- Burst factor (e.g., `×4.2`) — ratio of burst activity to baseline
+- Duration
+
+### Click to Zoom
+
+Click any burst row to zoom the main grid's date range filter to that burst window.
+
+### Tag Bursts
+
+Click **Tag Bursts** to auto-tag all events within each burst period. Tags are named `Burst 1`, `Burst 2`, etc. and assigned colors from a red-heavy 8-color palette. A confirmation shows the total rows tagged.
+
+### Filter Awareness
+
+Both gap and burst analysis respect all active filters — column filters, checkbox filters, search terms, date range filters, advanced filters, and bookmark filters. This lets you narrow your timeline before analysis, for example filtering to authentication events only and then looking for brute force bursts.
 
 ### Investigation Tips
 
 ::: tip Narrow the Window
-Start with a larger window (15-30 min) to find general areas of interest, then narrow to 1-5 minutes for precise spike identification.
+Start with a larger window (15–30 min) to find general areas of interest, then narrow to 1–5 minutes for precise spike identification.
 :::
 
 ::: tip Filter First
@@ -97,5 +171,5 @@ Apply filters before running burst analysis. For example, filter to authenticati
 :::
 
 ::: tip Cross-Reference
-After identifying a burst, filter the main grid to that time range and examine the individual events. Look for repeated patterns (same source, same target, same event type).
+After identifying a burst, click to zoom into that time range and examine the individual events. Look for repeated patterns — same source, same target, same event type.
 :::
