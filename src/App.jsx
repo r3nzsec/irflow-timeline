@@ -668,10 +668,11 @@ export default function App() {
         return { ...t, expandedGroups: { ...t.expandedGroups, [pathKey]: { subGroups: subGroups || [], depth: nextLevel } } };
       }));
     } else {
-      // Leaf level — fetch actual rows
+      // Leaf level — fetch actual rows (initial batch)
       const af = activeFilters(tab);
+      const GROUP_BATCH = 100000;
       const result = await tle.queryRows(tab.id, {
-        offset: 0, limit: 50000,
+        offset: 0, limit: GROUP_BATCH,
         sortCol: tab.sortCol, sortDir: tab.sortDir,
         searchTerm: tab.searchHighlight ? "" : tab.searchTerm, searchMode: tab.searchMode, searchCondition: tab.searchCondition || "contains",
         columnFilters: af.columnFilters, checkboxFilters: af.checkboxFilters,
@@ -679,14 +680,47 @@ export default function App() {
         dateRangeFilters: tab.dateRangeFilters || {}, advancedFilters: tab.advancedFilters || [],
         groupFilters: parentFilters,
       });
+      if (!result || result.__ipcError || !Array.isArray(result.rows)) return;
       setTabs((prev) => prev.map((t) => {
         if (t.id !== tab.id) return t;
         const newBm = new Set(t.bookmarkedSet);
         (result.bookmarkedRows || []).forEach((id) => newBm.add(id));
         const newTags = { ...t.rowTags, ...(result.rowTags || {}) };
-        return { ...t, bookmarkedSet: newBm, rowTags: newTags, expandedGroups: { ...t.expandedGroups, [pathKey]: { rows: result.rows, totalFiltered: result.totalFiltered } } };
+        return { ...t, bookmarkedSet: newBm, rowTags: newTags, expandedGroups: { ...t.expandedGroups, [pathKey]: { rows: result.rows, totalFiltered: result.totalFiltered, groupFilters: parentFilters } } };
       }));
     }
+  }, [tle]);
+
+  // Load more rows for an expanded group (append next batch or load all remaining)
+  const loadMoreGroupRows = useCallback(async (pathKey, loadAll) => {
+    if (!tle || !ctRef.current) return;
+    const tab = ctRef.current;
+    const existing = tab.expandedGroups?.[pathKey];
+    if (!existing || !existing.rows || !existing.groupFilters) return;
+    const GROUP_BATCH = 100000;
+    const loaded = existing.rows.length;
+    const remaining = existing.totalFiltered - loaded;
+    if (remaining <= 0) return;
+    const af = activeFilters(tab);
+    const result = await tle.queryRows(tab.id, {
+      offset: loaded, limit: loadAll ? remaining : GROUP_BATCH,
+      sortCol: tab.sortCol, sortDir: tab.sortDir,
+      searchTerm: tab.searchHighlight ? "" : tab.searchTerm, searchMode: tab.searchMode, searchCondition: tab.searchCondition || "contains",
+      columnFilters: af.columnFilters, checkboxFilters: af.checkboxFilters,
+      bookmarkedOnly: tab.showBookmarkedOnly,
+      dateRangeFilters: tab.dateRangeFilters || {}, advancedFilters: tab.advancedFilters || [],
+      groupFilters: existing.groupFilters,
+    });
+    if (!result || result.__ipcError || !Array.isArray(result.rows)) return;
+    setTabs((prev) => prev.map((t) => {
+      if (t.id !== tab.id) return t;
+      const eg = t.expandedGroups[pathKey];
+      if (!eg) return t;
+      const newBm = new Set(t.bookmarkedSet);
+      (result.bookmarkedRows || []).forEach((id) => newBm.add(id));
+      const newTags = { ...t.rowTags, ...(result.rowTags || {}) };
+      return { ...t, bookmarkedSet: newBm, rowTags: newTags, expandedGroups: { ...t.expandedGroups, [pathKey]: { ...eg, rows: [...eg.rows, ...result.rows] } } };
+    }));
   }, [tle]);
 
   const collapseGroup = useCallback((pathKey) => {
@@ -2672,9 +2706,16 @@ export default function App() {
                   // ── Grouped mode: "load more" indicator ──
                   if (isGrouped && item.type === "more") {
                     const indent = (item.depth || 0) * 20 + 32;
+                    const remaining = item.total - item.loaded;
                     return (
-                      <div key={`m-${item.pathKey}`} style={{ height: ROW_HEIGHT, position: "absolute", top: ai * ROW_HEIGHT, display: "flex", alignItems: "center", paddingLeft: indent, color: th.textMuted, fontSize: 11, fontStyle: "italic", fontFamily: "-apple-system, sans-serif" }}>
-                        Showing {formatNumber(item.loaded)} of {formatNumber(item.total)} rows in this group
+                      <div key={`m-${item.pathKey}`} style={{ height: ROW_HEIGHT, position: "absolute", top: ai * ROW_HEIGHT, display: "flex", alignItems: "center", paddingLeft: indent, color: th.textMuted, fontSize: 11, fontFamily: "-apple-system, sans-serif", gap: 8 }}>
+                        <span style={{ fontStyle: "italic" }}>Showing {formatNumber(item.loaded)} of {formatNumber(item.total)}</span>
+                        <button onClick={() => loadMoreGroupRows(item.pathKey, false)}
+                          style={{ background: th.accent + "22", color: th.accent, border: `1px solid ${th.accent}44`, borderRadius: 3, padding: "1px 8px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>
+                          Load more ({formatNumber(Math.min(remaining, 100000))})</button>
+                        {remaining > 100000 && <button onClick={() => loadMoreGroupRows(item.pathKey, true)}
+                          style={{ background: th.warning + "22", color: th.warning, border: `1px solid ${th.warning}44`, borderRadius: 3, padding: "1px 8px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>
+                          Load all ({formatNumber(remaining)})</button>}
                       </div>
                     );
                   }

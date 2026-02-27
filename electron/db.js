@@ -807,15 +807,18 @@ class TimelineDB {
       rows[r] = row;
     }
 
-    // Get bookmark + tag data for fetched rows in single passes
+    // Get bookmark + tag data for fetched rows in batches
+    // (SQLite max variable limit is ~32766, so batch large sets)
     const rowIds = rawRows.map((r) => r._rowid);
     const bookmarkedSet = new Set();
     const rowTags = {};
-    if (rowIds.length > 0) {
-      const placeholders = rowIds.map(() => "?").join(",");
-      const bm = db.prepare(`SELECT rowid FROM bookmarks WHERE rowid IN (${placeholders})`).all(...rowIds);
+    const BATCH = 5000;
+    for (let i = 0; i < rowIds.length; i += BATCH) {
+      const batch = rowIds.slice(i, i + BATCH);
+      const placeholders = batch.map(() => "?").join(",");
+      const bm = db.prepare(`SELECT rowid FROM bookmarks WHERE rowid IN (${placeholders})`).all(...batch);
       for (const b of bm) bookmarkedSet.add(b.rowid);
-      const tags = db.prepare(`SELECT rowid, tag FROM tags WHERE rowid IN (${placeholders})`).all(...rowIds);
+      const tags = db.prepare(`SELECT rowid, tag FROM tags WHERE rowid IN (${placeholders})`).all(...batch);
       for (const t of tags) {
         if (!rowTags[t.rowid]) rowTags[t.rowid] = [];
         rowTags[t.rowid].push(t.tag);
