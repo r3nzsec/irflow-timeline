@@ -92,11 +92,15 @@ A tabular view of all connections with full details:
 | Logon Type | Windows logon type |
 | Count | Number of events |
 
-## Outlier Host Detection
+## Outlier and Suspicious Host Detection
 
 ![Lateral Movement Tracker outlier detection highlighting suspicious hostnames in red with pulsing rings](/dfir-tips/Lateral%20Movement-Outlier.png)
 
-The tracker automatically flags hosts with suspicious or default hostnames that may indicate attacker-controlled machines:
+The tracker uses a two-tier detection system to flag hosts that may indicate attacker-controlled machines.
+
+### Tier 1 — Outliers (Red)
+
+Detected server-side during analysis. These are hostnames that strongly suggest non-corporate, default, or attacker-controlled machines:
 
 | Pattern | Reason |
 |---------|--------|
@@ -104,17 +108,46 @@ The tracker automatically flags hosts with suspicious or default hostnames that 
 | `WIN-XXXXX` | Default Windows hostname |
 | `KALI` | Kali Linux default hostname |
 | `PARROT` | Parrot OS default hostname |
-| `USER-PC`, `ADMIN`, `TEST`, `HACKER`, etc. | Generic or suspicious hostname |
+| `USER-PC`, `YOURNAME`, `ADMIN`, `TEST`, `HACKER`, `ATTACKER`, `ROOT`, etc. | Generic or suspicious hostname |
+| `WIN10`, `WIN11`, `OWNER-PC`, `LOCALHOST` | Generic hostname |
 | Non-ASCII characters | Unusual encoding in hostname |
+
+### Tier 2 — Suspicious Hosts (Orange)
+
+Detected client-side as an additional layer. These catch patterns that may overlap with some legitimate names but warrant investigation:
+
+| Pattern | Reason |
+|---------|--------|
+| `VPS` | Virtual private server — common attacker infrastructure |
+| `DESKTOP-` + 7 alphanumeric chars | Precise default Windows 10/11 naming pattern |
+| `WIN-` + 8+ alphanumeric chars | Longer default Windows Server naming pattern |
+| `WINVM` | Virtual machine default name |
 
 ### Visual Treatment
 
-Outlier nodes receive distinct visual treatment in the graph so they stand out immediately:
+Each tier receives distinct visual treatment in the graph:
 
-- **Red node color** — outlier nodes are rendered in red instead of the default node color
-- **Pulsing dashed ring** — a dashed circle animates around each outlier node with a 2-second pulse, drawing the eye to suspicious hosts
-- **Hover tooltip** — hovering over an outlier node displays the specific detection reason (e.g., "Default Windows hostname", "Kali Linux default")
-- **Stats card** — the summary stats panel includes an outlier count so you can see at a glance how many suspicious hostnames were detected
+**Outlier nodes (Tier 1):**
+- **Red node color** — rendered in red instead of the default node color
+- **Pulsing dashed ring** — a dashed circle animates around the node with a 2-second pulse, drawing the eye to the host
+- **Hover tooltip** — displays the specific detection reason (e.g., "Default Windows hostname", "Kali Linux default")
+
+**Suspicious hosts (Tier 2):**
+- **Orange node color** — rendered in amber/orange to distinguish from confirmed outliers
+- **Warning triangle badge** — a small orange triangle with "!" appears on the node
+- **Hover tooltip** — "Suspicious hostname pattern — possible threat actor workstation"
+
+**Both tiers share:**
+- **Warning icons in Connections table** — orange caution markers appear next to flagged hostnames in the source and target columns
+- **Warning badges in edge detail panel** — source/target badges are highlighted when a flagged host is involved
+
+### Find Flagged Button
+
+When outliers or suspicious hosts are detected, a **Find Flagged** button appears in the graph toolbar showing the total count of flagged nodes. Clicking it cycles through each flagged host one by one, auto-zooming the graph to center on the node and selecting it for detail inspection.
+
+### Outlier Stats Card
+
+The summary stats panel displays an outlier count card. When outliers are present, clicking the card zooms directly to the first outlier in the graph.
 
 ## Noise Filtering
 
