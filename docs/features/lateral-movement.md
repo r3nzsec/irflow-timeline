@@ -94,6 +94,8 @@ A tabular view of all connections with full details:
 
 ## Outlier Host Detection
 
+![Lateral Movement Tracker outlier detection highlighting suspicious hostnames in red with pulsing rings](/dfir-tips/Lateral%20Movement-Outlier.png)
+
 The tracker automatically flags hosts with suspicious or default hostnames that may indicate attacker-controlled machines:
 
 | Pattern | Reason |
