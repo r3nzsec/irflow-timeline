@@ -7,3 +7,4 @@ release/
 .DS_Store
 docs/.vitepress/dist
 docs/.vitepress/cache
+CLAUDE.md
