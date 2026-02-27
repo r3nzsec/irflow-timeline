@@ -45,9 +45,11 @@ Inspired by [Eric Zimmerman's Timeline Explorer](https://ericzimmerman.github.io
 | **@ts-evtx/core** | Native Windows EVTX event log parsing | [nicholasgasior/ts-evtx](https://github.com/nicholasgasior/ts-evtx) |
 | **Plaso (log2timeline)** | Forensic timeline generation (we import Plaso SQLite output) | [log2timeline/plaso](https://github.com/log2timeline/plaso) |
 | **ExcelJS** | XLSX streaming reader | [exceljs/exceljs](https://github.com/exceljs/exceljs) |
+| **SheetJS (xlsx)** | XLSX parsing | [SheetJS/sheetjs](https://github.com/SheetJS/sheetjs) |
 | **csv-parser** | CSV/TSV streaming parser | [mafintosh/csv-parser](https://github.com/mafintosh/csv-parser) |
 | **React** | UI rendering | [facebook/react](https://github.com/facebook/react) |
 | **Vite** | Build tooling and hot-reload | [vitejs/vite](https://github.com/vitejs/vite) |
+| **VitePress** | Documentation site | [vuejs/vitepress](https://github.com/vuejs/vitepress) |
 | **electron-builder** | macOS DMG packaging | [electron-userland/electron-builder](https://github.com/electron-userland/electron-builder) |
 
 ### DFIR Community
@@ -55,6 +57,7 @@ Inspired by [Eric Zimmerman's Timeline Explorer](https://ericzimmerman.github.io
 - [Eric Zimmerman](https://ericzimmerman.github.io/) -- Timeline Explorer for Windows, the original inspiration for this project
 - [log2timeline/Plaso](https://github.com/log2timeline/plaso) -- Super timeline generation framework by Kristinn Gudjonsson and contributors
 - [SANS DFIR](https://www.sans.org/digital-forensics-incident-response/) -- DFIR training and community resources
+- [The DFIR Report](https://thedfirreport.com/) -- Real-world intrusion analysis reports that informed threat detection patterns
 
 ### Beta Testers
 
