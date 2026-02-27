@@ -4,7 +4,7 @@
   "description": "IRFlow Timeline — High-performance DFIR timeline viewer for macOS (30-50GB+ CSV/XLSX)",
   "main": "main.js",
   "author": "DFIR Community",
-  "license": "MIT",
+  "license": "UNLICENSED",
   "scripts": {
     "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "build:renderer": "vite build",
