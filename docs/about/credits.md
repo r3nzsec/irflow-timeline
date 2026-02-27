@@ -41,7 +41,7 @@ Thanks to the following people for testing and providing feedback:
 - [Omar Jbari](https://www.linkedin.com/in/jbariomar/)
 - [Nicolas Bareil](https://www.linkedin.com/in/nbareil/)
 - [Dominic Rathmann](https://www.linkedin.com/in/dominic-rathmann-77664323b/)
-- Chip Riley
+- [Chip Riley](https://www.linkedin.com/in/criley4640/)
 
 ## License
 
