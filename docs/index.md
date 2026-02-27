@@ -25,7 +25,7 @@ features:
     details: GUID-aware process hierarchy visualization from Sysmon and Windows Security logs with suspicious pattern detection for LOLBins, Office spawns, and temp paths.
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#E85D2A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/><line x1="8.5" y1="7.5" x2="15.5" y2="16.5"/><line x1="15.5" y1="7.5" x2="8.5" y2="16.5"/><line x1="6" y1="9" x2="6" y2="15"/><line x1="18" y1="9" x2="18" y2="15"/></svg>'
     title: Lateral Movement Tracker
-    details: Interactive force-directed network graph showing logon events, movement chains, and multi-hop detection across your environment.
+    details: Interactive force-directed network graph with time-ordered multi-hop chain reconstruction, first/last seen timestamps per connection, and outlier hostname detection to flag attacker-controlled machines.
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#E85D2A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="rgba(232,93,42,0.15)"/><path d="M9 12l2 2 4-4"/></svg>'
     title: Persistence Analyzer
     details: Automated detection of 30+ persistence techniques with risk scoring. Scans EVTX logs and registry exports for services, scheduled tasks, WMI subscriptions, autorun keys, and more.
