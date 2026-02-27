@@ -2,31 +2,21 @@
 
 IRFlow Timeline is built on the shoulders of incredible open source projects and the DFIR community.
 
-## Core Dependencies
+## Open Source Projects
 
-| Project | License | Purpose |
-|---------|---------|---------|
-| [Electron](https://www.electronjs.org/) | MIT | Native application framework |
-| [React](https://react.dev/) | MIT | User interface library |
-| [Vite](https://vitejs.dev/) | MIT | Build tooling and dev server |
-| [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) | MIT | High-performance SQLite bindings with WAL mode and FTS5 |
-| [ExcelJS](https://github.com/exceljs/exceljs) | MIT | XLSX streaming reader |
-| [SheetJS](https://sheetjs.com/) | Apache-2.0 | Legacy XLS binary (OLE2/BIFF) parser |
-| [@ts-evtx/core](https://github.com/NickSmet/ts-evtx) | MIT | Windows Event Log (EVTX) parser |
-| [@ts-evtx/messages](https://github.com/NickSmet/ts-evtx) | MIT | EVTX event message resolution |
-| [csv-parser](https://github.com/mafintosh/csv-parser) | MIT | CSV/TSV streaming parser |
-
-## Build Tools
-
-| Project | License | Purpose |
-|---------|---------|---------|
-| [electron-builder](https://www.electron.build/) | MIT | Application packaging and distribution |
-| [@electron/rebuild](https://github.com/electron/rebuild) | MIT | Native module rebuilder for Electron |
-| [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react) | MIT | React JSX support for Vite |
-| [VitePress](https://vitepress.dev/) | MIT | Documentation site generator |
-| [patch-package](https://github.com/ds300/patch-package) | MIT | Post-install dependency patches |
-| [concurrently](https://github.com/open-cli-tools/concurrently) | MIT | Parallel process runner |
-| [wait-on](https://github.com/jeffbski/wait-on) | MIT | Resource availability waiter |
+| Project | Usage | Link |
+|---------|-------|------|
+| **Electron** | Application framework | [electron/electron](https://github.com/electron/electron) |
+| **better-sqlite3** | High-performance SQLite engine with WAL mode, FTS5 | [WiseLibs/better-sqlite3](https://github.com/WiseLibs/better-sqlite3) |
+| **@ts-evtx/core** | Native Windows EVTX event log parsing | [NickSmet/ts-evtx](https://github.com/NickSmet/ts-evtx) |
+| **Plaso (log2timeline)** | Forensic timeline generation (we import Plaso SQLite output) | [log2timeline/plaso](https://github.com/log2timeline/plaso) |
+| **ExcelJS** | XLSX streaming reader | [exceljs/exceljs](https://github.com/exceljs/exceljs) |
+| **SheetJS (xlsx)** | XLSX parsing | [SheetJS/sheetjs](https://github.com/SheetJS/sheetjs) |
+| **csv-parser** | CSV/TSV streaming parser | [mafintosh/csv-parser](https://github.com/mafintosh/csv-parser) |
+| **React** | UI rendering | [facebook/react](https://github.com/facebook/react) |
+| **Vite** | Build tooling and hot-reload | [vitejs/vite](https://github.com/vitejs/vite) |
+| **VitePress** | Documentation site | [vuejs/vitepress](https://github.com/vuejs/vitepress) |
+| **electron-builder** | macOS DMG packaging | [electron-userland/electron-builder](https://github.com/electron-userland/electron-builder) |
 
 ## Inspiration
 
@@ -36,19 +26,22 @@ IRFlow Timeline is built on the shoulders of incredible open source projects and
 - [Hayabusa](https://github.com/Yamato-Security/hayabusa) — Windows event log analysis tool
 - [Chainsaw](https://github.com/WithSecureLabs/chainsaw) — Windows event log detection tool
 
+## DFIR Community
+
+- [Eric Zimmerman](https://ericzimmerman.github.io/) — Timeline Explorer for Windows, the original inspiration for this project
+- [log2timeline/Plaso](https://github.com/log2timeline/plaso) — Super timeline generation framework by Kristinn Gudjonsson and contributors
+- [SANS DFIR](https://www.sans.org/digital-forensics-incident-response/) — DFIR training and community resources
+- [The DFIR Report](https://thedfirreport.com/) — Real-world intrusion analysis reports that informed threat detection patterns
+
 ## Beta Testers
 
 Thanks to the following people for testing and providing feedback:
 
-- Maddy Keller
-- Omar Jbari
-- Nicolas Bareil
-- Dominic Rathmann
+- [Maddy Keller](https://www.linkedin.com/in/madeleinekeller98/)
+- [Omar Jbari](https://www.linkedin.com/in/jbariomar/)
+- [Nicolas Bareil](https://www.linkedin.com/in/nbareil/)
+- [Dominic Rathmann](https://www.linkedin.com/in/dominic-rathmann-77664323b/)
 - Chip Riley
-
-## DFIR Community
-
-Special thanks to the digital forensics and incident response community for feedback, testing, and ongoing support.
 
 ## License
 
