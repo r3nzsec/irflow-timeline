@@ -9,17 +9,21 @@ IRFlow Timeline is built on the shoulders of incredible open source projects and
 | [Electron](https://www.electronjs.org/) | MIT | Native application framework |
 | [React](https://react.dev/) | MIT | User interface library |
 | [Vite](https://vitejs.dev/) | MIT | Build tooling and dev server |
-| [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) | MIT | High-performance SQLite bindings |
-| [ExcelJS](https://github.com/exceljs/exceljs) | MIT | Excel file streaming reader/writer |
-| [@ts-evtx](https://github.com/nicpenning/ts-evtx) | MIT | Windows Event Log (EVTX) parser |
-| [csv-parser](https://github.com/mafintosh/csv-parser) | MIT | CSV streaming parser |
+| [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) | MIT | High-performance SQLite bindings with WAL mode and FTS5 |
+| [ExcelJS](https://github.com/exceljs/exceljs) | MIT | XLSX streaming reader |
+| [SheetJS](https://sheetjs.com/) | Apache-2.0 | Legacy XLS binary (OLE2/BIFF) parser |
+| [@ts-evtx/core](https://github.com/nicholasgasior/ts-evtx) | MIT | Windows Event Log (EVTX) parser |
+| [@ts-evtx/messages](https://github.com/nicholasgasior/ts-evtx) | MIT | EVTX event message resolution |
+| [csv-parser](https://github.com/mafintosh/csv-parser) | MIT | CSV/TSV streaming parser |
 
 ## Build Tools
 
 | Project | License | Purpose |
 |---------|---------|---------|
 | [electron-builder](https://www.electron.build/) | MIT | Application packaging and distribution |
+| [@electron/rebuild](https://github.com/electron/rebuild) | MIT | Native module rebuilder for Electron |
 | [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react) | MIT | React JSX support for Vite |
+| [VitePress](https://vitepress.dev/) | MIT | Documentation site generator |
 | [patch-package](https://github.com/ds300/patch-package) | MIT | Post-install dependency patches |
 | [concurrently](https://github.com/open-cli-tools/concurrently) | MIT | Parallel process runner |
 | [wait-on](https://github.com/jeffbski/wait-on) | MIT | Resource availability waiter |
