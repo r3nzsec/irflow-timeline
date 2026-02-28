@@ -53,12 +53,18 @@ Optionally name your IOC set. This name becomes the tag label suffix when auto-t
 
 ### Run Scan
 
-Click **Match** to scan. The matching engine works in two phases:
+Click **Match** to scan. Progress is shown with a three-phase pipeline indicator (Scanning → Tagging → Refreshing) and a batch progress bar.
+
+![IOC Matching scan in progress showing 64 parsed IOCs with category breakdown, batch progress bar at 63%, and three-phase pipeline indicator](/dfir-tips/Known-Bad%20IOC%20Matching-Scanning.png)
+
+The matching engine works in two phases:
 
 1. **Batched REGEXP scan** — IOCs are grouped into batches of 200 and combined into alternation patterns (`pattern1|pattern2|...`). Each batch runs a single SQL query testing all columns with `REGEXP`, collecting matching row IDs
 2. **Per-IOC hit counting** — matched rows are fetched in 500-row batches and each IOC pattern is tested individually (case-insensitive regex) against all columns to count hits per indicator
 
 ## Results
+
+![IOC Matching results showing 5,243 matching rows, 3 IOCs hit, per-IOC hit counts with category labels, and auto-tagging summary](/dfir-tips/Known-Bad%20IOC%20Matching-Results.png)
 
 **Summary cards** display three metrics:
 
