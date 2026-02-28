@@ -53,6 +53,8 @@ A category breakdown badge displays the count per detected type before you run t
 
 ### Load IOC List
 
+![IOC Matching load dialog showing 61 parsed IOCs with IPv4 addresses, category breakdown chips, and Scan button](/dfir-tips/IOC-Matching-Load-IOC-List.png)
+
 Two methods to input IOCs:
 
 **File load** — click the load button to select a file. Supported formats:
