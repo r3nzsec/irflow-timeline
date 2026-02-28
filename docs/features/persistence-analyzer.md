@@ -22,7 +22,7 @@ In auto-detect mode, the analyzer examines your column headers to determine whet
 
 ## EVTX Detection Rules
 
-When analyzing event logs, the Persistence Analyzer scans for 18 indicator types across multiple log channels:
+When analyzing event logs, the Persistence Analyzer scans for 27 indicator types across multiple log channels:
 
 ### Services
 
@@ -39,7 +39,10 @@ When analyzing event logs, the Persistence Analyzer scans for 18 indicator types
 | 4699 | Security | Scheduled task deleted |
 | 106 | Task Scheduler | Task registered |
 | 129 | Task Scheduler | Task launch attempt |
+| 118 | Task Scheduler | Boot trigger fired |
+| 119 | Task Scheduler | Logon trigger fired |
 | 140 | Task Scheduler | Task updated |
+| 141 | Task Scheduler | Task deleted |
 | 200 | Task Scheduler | Task action started |
 
 ### WMI Persistence
@@ -62,6 +65,16 @@ When analyzing event logs, the Persistence Analyzer scans for 18 indicator types
 | Sysmon 13 | Sysmon | Registry value set (autorun modifications) |
 | Sysmon 15 | Sysmon | Alternate data stream created |
 | Sysmon 25 | Sysmon | Process tampering |
+
+### Account Persistence
+
+| Event ID | Source | Description |
+|----------|--------|-------------|
+| 4720 | Security | User account created |
+| 4724 | Security | Password reset attempt |
+| 4728 | Security | Member added to global security group |
+| 4732 | Security | Member added to local security group |
+| 4756 | Security | Member added to universal security group |
 
 ## Registry Detection Rules
 

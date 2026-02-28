@@ -52,7 +52,7 @@ IRFlow Timeline includes common DFIR investigation tags:
 | **Persistence** | Persistence mechanism installation |
 | **C2** | Command and control communication |
 | **Initial Access** | Entry point indicators |
-| **Privilege Escalation** | Privilege elevation events |
+| **Execution** | Malicious execution events |
 | **Credential Access** | Credential harvesting/dumping |
 
 You can also create custom tags — just type any name.

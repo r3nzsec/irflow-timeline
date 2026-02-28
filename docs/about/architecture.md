@@ -16,7 +16,7 @@ graph TB
 
     subgraph Main["Electron Main Process — main.js"]
         direction LR
-        IPC_H["30+ IPC Handlers"]
+        IPC_H["44 IPC Handlers"]
         Dialogs["File Dialogs & Native Menus"]
         Session["Session Management"]
         Export["Export Orchestration"]
@@ -53,7 +53,7 @@ graph TB
 
 ### Renderer Process (React)
 
-**File:** `src/App.jsx` (~5,753 lines)
+**File:** `src/App.jsx` (~7,755 lines)
 
 The renderer runs in a sandboxed browser context with no direct Node.js access. All system operations go through the IPC bridge.
 
@@ -66,17 +66,17 @@ Responsibilities:
 
 ### Preload Bridge
 
-**File:** `preload.js` (~194 lines)
+**File:** `preload.js` (~95 lines)
 
 The preload script creates a secure bridge between the renderer and main process using Electron's `contextBridge` API. It exposes a controlled set of IPC methods as `window.electronAPI`.
 
 ### Main Process (Electron)
 
-**File:** `main.js` (~893 lines)
+**File:** `main.js` (~959 lines)
 
 The main process runs with full Node.js access and manages:
 - Window lifecycle and native menus
-- IPC handler registration (30+ handlers)
+- IPC handler registration (44 handlers)
 - File dialog management
 - Export orchestration (CSV, XLSX, HTML)
 - Session save/load coordination
@@ -84,7 +84,7 @@ The main process runs with full Node.js access and manages:
 
 ### Data Engine (SQLite)
 
-**File:** `db.js` (~2,706 lines)
+**File:** `db.js` (~3,659 lines)
 
 The `TimelineDB` class wraps `better-sqlite3` with forensic-analysis-specific operations:
 
@@ -112,7 +112,7 @@ CREATE TABLE color_rules (id, col_name, condition, value, bg_color, fg_color);
 
 ### Parser Layer
 
-**File:** `parser.js` (~916 lines)
+**File:** `parser.js` (~1,054 lines)
 
 Streaming parsers convert source files into SQLite batch inserts:
 

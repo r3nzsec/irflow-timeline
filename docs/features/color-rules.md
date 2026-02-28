@@ -21,7 +21,6 @@ Color rules apply conditional formatting to grid cells, making patterns and anom
 | **Contains** | Substring match (case-insensitive) | `powershell` |
 | **Equals** | Exact match | `4624` |
 | **Starts with** | Prefix match | `C:\Windows\Temp` |
-| **Ends with** | Suffix match | `.exe` |
 | **Regex** | Regular expression | `(?i)invoke-\w+` |
 
 ## Rule Ordering

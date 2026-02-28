@@ -1,13 +1,14 @@
 # Process Tree
 
-The Process Tree visualizes parent-child process relationships from Sysmon Event ID 1 (Process Create) logs, providing a hierarchical view of execution chains with automatic suspicious pattern detection.
+The Process Tree visualizes parent-child process relationships from Sysmon Event ID 1 and Windows Security Event ID 4688 (Process Create) logs, providing a hierarchical view of execution chains with automatic suspicious pattern detection.
 
 ![Process Tree showing GUID-linked parent-child process hierarchy with cmd.exe and powershell.exe execution chains](/dfir-tips/Process-Tree.png)
 
 ## Opening the Process Tree
 
 - **Menu:** Tools > Process Tree
-- Requires Sysmon Event ID 1 data (from EVTX or CSV export)
+- Supports Sysmon Event ID 1 and Windows Security Event ID 4688 (from EVTX or CSV export)
+- Default filter: `1,4688` — both event IDs are queried automatically
 
 ## How It Works
 
