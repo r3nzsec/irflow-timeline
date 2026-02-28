@@ -2,13 +2,62 @@
 
 ## v1.0.2-beta
 
+### New Features
+
+- **Detection Rules Library** — 344 parent-child chain rules extracted to `src/detection-rules.js`
+  - Covers 12 MITRE ATT&CK tactic categories: Execution, Defense Evasion, C2/RATs, Persistence, Discovery, Credential Access, Lateral Movement, Impact/Ransomware, Collection, Exfiltration, Initial Access, Browser Exploits
+  - O(1) chain lookup via pre-built `CHAIN_RULE_MAP` keyed by `parent:child`
+  - 13 standalone regex patterns for suspicious paths, encoded PowerShell, credential dumping, NTDS extraction, defense evasion, account manipulation, network scanners, AD recon tools, RMM tools, exfiltration tools, and archive operations
+  - Safe process exclusion list prevents false positives on legitimate temp-path executables
+
+- **Import Queue System** — Serialized multi-file import pipeline
+  - Imports run one at a time with GC pauses between files
+  - Index and FTS builds deferred until entire queue drains
+  - Queue status broadcast to renderer via `import-queue` IPC channel
+  - UI shows numbered list of queued files with file sizes
+
+- **IOC Matching Enhancements** — Expanded from 9 to 17+ IOC categories
+  - New categories: Registry Key, Named Pipe, Mutex, Crypto Wallet (Bitcoin/Ethereum/Monero), User Agent, IPv4:Port, IPv6:Port, JARM Hash, JA3/JA3S Hash
+  - Automatic IOC defanging (`hxxps[://]`, `[.]`, `[dot]`, `(.)`, `[@]`)
+  - Per-IOC tagging (each matched IOC gets its own tag, e.g., `IOC: cmd.exe`)
+  - Inline grid highlighting (orange for IOC matches, amber for search)
+  - Multi-format file loading: XLSX, XLS, TSV with structured column auto-detection
+  - 3-phase scan progress bar (Scanning → Tagging → Refreshing)
+  - File Name vs Domain Name disambiguation using curated extension lists
+
+- **Process Tree Overhaul** — Redesigned with detection-first analysis
+  - 10-column table: Timestamp, Detection, Provider, Event ID, Parent Process, Process, PID, PPID, User, Command Line, Integrity
+  - Chain-based detection using 344 MITRE ATT&CK-mapped rules with reason strings
+  - Process type icons (Explorer, Office, Shell, System, Browser)
+  - Integrity level decoding (System/High/Medium/Low/Untrusted with color coding)
+  - Security Event 4688 support with reversed PID semantics
+  - PID-based tree re-linking for non-GUID data
+  - Resizable detail panel with clickable parent navigation
+  - Checkbox selection with "Copy Selected" and "Suspicious Only" filter
+  - Loading screen with 6-phase progress indicator
+  - EvtxECmd Sysmon-aware provider filtering
+
+- **Lateral Movement Expansion** — 16 event IDs with RDP session correlation
+  - TerminalServices parsing (LocalSessionManager EIDs 21-25, 39, 40; RemoteConnectionManager EID 1149)
+  - 13 built-in detection rules with custom rule support
+  - RDP session correlation engine with lifecycle tracking (connecting → active → disconnected → ended)
+  - New RDP Sessions tab with expandable event timelines
+  - Event breakdown per edge (pill-shaped EID × count chips)
+  - CLEARTEXT badge for logon type 8
+  - Expanded logon types: Cleartext (8), RunAs (9), Cached Credentials (11), Cached RDP (12), Cached Unlock (13)
+  - Draggable SVG legend
+
+- **Tags as First-Class Column** — Full grid column behavior for the Tags column
+  - Sortable, filterable (text + checkbox), stackable, column stats
+  - `__tags__` filter support across all 10 query methods
+
+- **Export Formats** — TSV and XLS export added alongside CSV and XLSX
+
 ### Performance
 
 - **Histogram drag optimization** — Zero-rerender brush selection on large files
   - DOM-based overlay positioning replaces React state updates during drag
   - Eliminates re-rendering of 8,000+ SVG rect elements on every mouse move
-  - Skip same-bar moves for reduced DOM writes
-  - Smooth brush selection even on 1GB+ files at hourly granularity
 
 - **Multi-file EVTX import stability** — Fixed crashes when importing 15+ EVTX files
   - Global EVTX message provider cache (created once, reused across all imports)
@@ -19,24 +68,29 @@
 - **SQLite query optimization** — Faster column stats, empty column detection, and sorting
   - `getColumnStats` combined 3-6 full table scans into 1 query
   - `getEmptyColumns` combined per-column queries into single combined query
-  - COLLATE NOCASE indexes for proper sort alignment (eliminates full-table sort on text columns)
-  - `extract_date` / `extract_datetime_minute` charCodeAt fast path (~2x faster than regex on ISO timestamps)
+  - COLLATE NOCASE indexes for proper sort alignment
+  - `extract_date` / `extract_datetime_minute` charCodeAt fast path (~2x faster than regex)
+  - REGEXP function caching (avoids recompilation for same pattern)
+  - BFS queue optimization (index-based O(1) replaces shift-based O(n))
 
 - **Render optimization** — Faster cell rendering and column lookups
   - Set-based visible column lookups replacing O(n) Array.includes()
   - Memoized combined highlight regex (IOC + search) avoids per-cell regex creation
-  - Silent histogram query errors now logged for debugging
+  - Process tree detection map cached per data reference
 
 ### UI Improvements
 
 - **Welcome screen** — Larger, more prominent welcome card
-  - Increased card padding, logo size, title font, and button size
-  - Added minimum width for consistent layout
+- **Context menu** — macOS-style glass/blur aesthetic with inline SVG icons
+- **Process tree row hover** — Subtle highlight via CSS (added to index.html)
 
 ### Robustness
 
+- **Buffered debug logging** — Log writes batched (50 entries / 2s flush) across main.js, db.js, parser.js
 - **Memory logging** — Heap and RSS usage logged after each EVTX parse for diagnostics
 - **Import queue safety** — Index and FTS builds deferred until all queued imports complete
+- **Safer filename decoding** — try/catch on decodeURIComponent prevents crash on malformed URIs
+- **React Error Boundary** — Graceful UI crash recovery with "Try to Recover" button
 
 ## v1.0.0-beta
 

@@ -50,10 +50,12 @@ When working with EvtxECmd CSV output, the Process Tree extracts real PID and GU
 
 ## Table Columns
 
-The process tree table displays 10 columns:
+The process tree table displays 11 columns:
 
 | Column | Description |
 |--------|-------------|
+| **Timestamp** | Event timestamp |
+| **Detection** | Chain-based detection reason with MITRE ATT&CK ID (color-coded by severity) |
 | **Provider** | Abbreviated log source (e.g., "Sysmon", "Security") |
 | **Event ID** | Source event identifier |
 | **Parent Process** | Parent executable name |
@@ -61,7 +63,6 @@ The process tree table displays 10 columns:
 | **PID** | Process identifier |
 | **PPID** | Parent process identifier |
 | **User** | Account context |
-| **Timestamp** | Event timestamp |
 | **Command Line** | Full command line arguments |
 | **Integrity** | Process integrity level |
 
@@ -96,7 +97,9 @@ Token elevation types are also decoded: `%%1936` = Full (elevated), `%%1937` = L
 
 ## Suspicious Pattern Detection
 
-The Process Tree uses detection patterns derived from 11 DFIR reports (Feb 2025–Feb 2026) to automatically flag suspicious execution chains. Each detection returns a human-readable reason string displayed as a badge on the process node.
+The Process Tree uses a library of 344 parent-child chain rules mapped to MITRE ATT&CK techniques (`src/detection-rules.js`), plus 13 standalone regex patterns for command-line and path analysis. Chain rules are pre-indexed in a Map for O(1) lookup by `parent:child` pair. Each detection returns a human-readable reason string with ATT&CK technique ID displayed as a badge on the process node.
+
+The detection rules cover 12 ATT&CK tactic categories: Execution, Defense Evasion/LOLBins, C2/RATs, Persistence, Discovery/Recon, Credential Access, Lateral Movement, Impact/Ransomware, Collection/Staging, Exfiltration, Initial Access (web shells), and Browser Exploits. A safe process exclusion list (`SAFE_PROCS`) prevents false positives on legitimate Windows processes that run from temp/AppData paths.
 
 ### Critical (Red)
 
