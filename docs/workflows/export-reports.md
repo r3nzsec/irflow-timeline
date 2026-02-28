@@ -11,6 +11,13 @@ IRFlow Timeline supports exporting filtered data and generating investigation re
 3. Choose a save location
 4. Exported data respects all active filters — only visible rows are exported
 
+### Export to TSV
+
+1. **Menu:** File > Export (`Cmd+E`)
+2. Select **TSV** format
+3. Choose a save location
+4. Tab-separated output with the same filtering as CSV
+
 ### Export to XLSX
 
 1. **Menu:** File > Export (`Cmd+E`)
@@ -20,6 +27,13 @@ IRFlow Timeline supports exporting filtered data and generating investigation re
    - Auto-fit column widths
    - Styled header row (bold, colored)
    - All filtered data
+
+### Export to XLS
+
+1. **Menu:** File > Export (`Cmd+E`)
+2. Select **XLS** format (legacy binary Excel)
+3. Choose a save location
+4. Compatible with older Excel versions and third-party tools
 
 ### What Gets Exported
 
@@ -31,7 +45,7 @@ Exports include:
 - Data in the current sort order
 
 ::: tip Export Bookmarked Only
-Enable the bookmark filter (`Cmd+B`) before exporting to create a CSV/XLSX containing only your flagged rows.
+Enable the bookmark filter (`Cmd+B`) before exporting to create a file containing only your flagged rows.
 :::
 
 ## HTML Reports

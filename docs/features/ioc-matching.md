@@ -92,6 +92,7 @@ IOC values are automatically un-obfuscated before scanning. The defanging engine
 | `evil[dot]com` | `evil.com` |
 | `evil(.)com` | `evil.com` |
 | `user[@]evil.com` | `user@evil.com` |
+| `192.168.1[:]8080` | `192.168.1:8080` |
 | `hxxp://evil.com/payload.exe` | `evil.com` |
 | `evil.com.` (FQDN trailing dot) | `evil.com` |
 

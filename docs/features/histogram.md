@@ -38,6 +38,8 @@ Click and drag on the histogram to select a time range:
 3. On release, the data grid immediately filters to show only events within that range via date range filters
 4. Click outside the brush or clear filters to restore the full view
 
+The brush uses direct DOM positioning during drag — overlay and label elements update without triggering React re-renders, so selection stays smooth even on histograms with thousands of bars.
+
 This is the fastest way to zoom into a specific activity window.
 
 ## Timestamp Format Support

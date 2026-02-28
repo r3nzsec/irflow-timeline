@@ -97,7 +97,7 @@ Token elevation types are also decoded: `%%1936` = Full (elevated), `%%1937` = L
 
 ## Suspicious Pattern Detection
 
-The Process Tree uses a library of 344 parent-child chain rules mapped to MITRE ATT&CK techniques (`src/detection-rules.js`), plus 13 standalone regex patterns for command-line and path analysis. Chain rules are pre-indexed in a Map for O(1) lookup by `parent:child` pair. Each detection returns a human-readable reason string with ATT&CK technique ID displayed as a badge on the process node.
+The Process Tree uses a library of 342 parent-child chain rules mapped to MITRE ATT&CK techniques (`src/detection-rules.js`), plus 13 standalone regex patterns for command-line and path analysis. Chain rules are pre-indexed in a Map for O(1) lookup by `parent:child` pair. Each detection returns a human-readable reason string with ATT&CK technique ID displayed as a badge on the process node.
 
 The detection rules cover 12 ATT&CK tactic categories: Execution, Defense Evasion/LOLBins, C2/RATs, Persistence, Discovery/Recon, Credential Access, Lateral Movement, Impact/Ransomware, Collection/Staging, Exfiltration, Initial Access (web shells), and Browser Exploits. A safe process exclusion list (`SAFE_PROCS`) prevents false positives on legitimate Windows processes that run from temp/AppData paths.
 
@@ -171,7 +171,7 @@ A cancel button is available to abort long-running queries.
 - Click the arrow next to any process to expand or collapse its children
 - Use the depth limit control to set maximum visible tree depth
 - Expand All / Collapse All buttons in the toolbar
-- "Suspicious only" filter to show only flagged processes
+- **Suspicious only** filter — shows only flagged processes in a flat (non-hierarchical) list sorted by timestamp, making it easy to review all detections without navigating the tree
 
 ### Ancestor Chain Highlighting
 
@@ -181,9 +181,18 @@ Click any process node to highlight its full ancestor chain from root to the sel
 
 Click the filter icon on a process node to filter the main data grid to rows matching that process's PID. This lets you see all events associated with a specific process.
 
-### Copy as CSV
+### Checkbox Selection
 
-The toolbar includes a copy button that exports all visible processes as tab-separated data with columns: Hostname, ParentProcessName, Provider, EventID, and all original process fields.
+Each process row has a checkbox for multi-selection. Selected processes can be:
+
+- **Copy Selected** — copies only the checked rows as tab-separated data to the clipboard
+- **Copy Tree** — copies all visible processes (ignoring selection) as tab-separated data
+
+Both copy operations include columns: Hostname, ParentProcessName, Provider, EventID, and all original process fields.
+
+### EvtxECmd Provider Filtering
+
+When EvtxECmd data is detected, the Process Tree automatically filters by Sysmon and Security providers using the `Provider` column. This ensures only process creation events are included, excluding noise from other event sources that share the same Event IDs.
 
 ## Footer
 

@@ -4,7 +4,7 @@
 
 ### New Features
 
-- **Detection Rules Library** — 344 parent-child chain rules extracted to `src/detection-rules.js`
+- **Detection Rules Library** — 342 parent-child chain rules extracted to `src/detection-rules.js`
   - Covers 12 MITRE ATT&CK tactic categories: Execution, Defense Evasion, C2/RATs, Persistence, Discovery, Credential Access, Lateral Movement, Impact/Ransomware, Collection, Exfiltration, Initial Access, Browser Exploits
   - O(1) chain lookup via pre-built `CHAIN_RULE_MAP` keyed by `parent:child`
   - 13 standalone regex patterns for suspicious paths, encoded PowerShell, credential dumping, NTDS extraction, defense evasion, account manipulation, network scanners, AD recon tools, RMM tools, exfiltration tools, and archive operations

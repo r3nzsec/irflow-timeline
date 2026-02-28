@@ -6,11 +6,12 @@ Technical overview of IRFlow Timeline's architecture for developers and contribu
 
 ```mermaid
 graph TB
-    subgraph Renderer["React UI Layer — src/App.jsx"]
+    subgraph Renderer["React UI Layer — src/App.jsx + detection-rules.js"]
         direction LR
         Grid["Virtual Scrolling Grid"]
         Search["Search & Filtering"]
         Analytics["Analytics Visualizations"]
+        Rules["Detection Rules\n342 MITRE ATT&CK chains"]
         State["State: 40+ useState hooks"]
     end
 
@@ -68,7 +69,7 @@ Responsibilities:
 
 **File:** `preload.js` (~95 lines)
 
-The preload script creates a secure bridge between the renderer and main process using Electron's `contextBridge` API. It exposes a controlled set of IPC methods as `window.electronAPI`.
+The preload script creates a secure bridge between the renderer and main process using Electron's `contextBridge` API. It exposes a controlled set of IPC methods as `window.tle`.
 
 ### Main Process (Electron)
 
@@ -78,7 +79,7 @@ The main process runs with full Node.js access and manages:
 - Window lifecycle and native menus
 - IPC handler registration (44 handlers)
 - File dialog management
-- Export orchestration (CSV, XLSX, HTML)
+- Export orchestration (CSV, TSV, XLSX, XLS, HTML)
 - Session save/load coordination
 - macOS integration (vibrancy, dark mode, traffic lights)
 

@@ -32,6 +32,9 @@ features:
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#E85D2A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="10" width="3" height="8" rx="0.5" fill="rgba(232,93,42,0.3)"/><rect x="12" y="6" width="3" height="12" rx="0.5" fill="rgba(232,93,42,0.3)"/><rect x="17" y="13" width="3" height="5" rx="0.5" fill="rgba(232,93,42,0.3)"/></svg>'
     title: Rich Analytics
     details: Heatmap histogram with brush-to-filter, session and gap detection with auto-tagging, median-baseline burst anomaly detection with sparkline charts, Gantt-style log source coverage maps, and value frequency stacking.
+  - icon: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#E85D2A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'
+    title: IOC Matching
+    details: Scan timelines against threat intel IOC lists with 17+ indicator types (hashes, IPs, domains, registry keys, named pipes, mutexes). Auto-defanging, per-IOC tagging, and inline grid highlighting.
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#E85D2A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="rgba(232,93,42,0.3)"/></svg>'
     title: Investigation Workflow
     details: Bookmarks, color-coded tags, conditional formatting with KAPE-aware presets, and full session save/restore.
