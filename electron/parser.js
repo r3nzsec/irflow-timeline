@@ -17,14 +17,46 @@ const os = require("os");
 const BATCH_SIZE_DEFAULT = 100000;
 const BATCH_SIZE_MAX_BYTES = 100 * 1024 * 1024; // ~100MB target max per batch
 
+// ── Cached EVTX message provider (created once, reused across all EVTX imports) ──
+let _cachedMsgProvider = null;
+let _msgProviderPromise = null;
+
+async function getEvtxMessageProvider() {
+  if (_cachedMsgProvider) return _cachedMsgProvider;
+  if (_msgProviderPromise) return _msgProviderPromise;
+  _msgProviderPromise = (async () => {
+    try {
+      const { SmartManagedMessageProvider } = await import("@ts-evtx/messages");
+      const managed = new SmartManagedMessageProvider({ preload: true });
+      await managed.ensure();
+      _cachedMsgProvider = managed.provider; // SqliteMessageProvider with sync lookup
+      dbg("EVTX", "Message provider cached globally");
+      return _cachedMsgProvider;
+    } catch {
+      dbg("EVTX", "Message provider not available, skipping");
+      return null;
+    }
+  })();
+  return _msgProviderPromise;
+}
+
 // ── Debug trace logger (shared with main.js) ────────────────────
 const debugLogPath = path.join(os.homedir(), "tle-debug.log");
+let _logBuf = [];
 function dbg(tag, msg, data) {
   const ts = new Date().toISOString();
   const line = `[${ts}] [${tag}] ${msg}${data !== undefined ? " " + JSON.stringify(data, null, 0) : ""}`;
   console.error(line);
-  try { fs.appendFileSync(debugLogPath, line + "\n"); } catch {}
+  _logBuf.push(line);
+  if (_logBuf.length >= 50) _flushLog();
 }
+function _flushLog() {
+  if (!_logBuf.length) return;
+  try { fs.appendFileSync(debugLogPath, _logBuf.join("\n") + "\n"); } catch {}
+  _logBuf = [];
+}
+setInterval(_flushLog, 2000);
+process.on("exit", _flushLog);
 
 // ── CSV line parser (RFC 4180 compliant) ───────────────────────────
 function parseCSVLine(line, delimiter = ",") {
@@ -829,14 +861,8 @@ async function parseEvtxFile(filePath, tabId, db, onProgress) {
   try { totalBytes = fs.statSync(filePath).size; } catch { /* proceed with 0 */ }
   const SAMPLE_LIMIT = 500;
 
-  // Initialize message provider for human-readable event descriptions
-  let msgProvider = null;
-  try {
-    const { SmartManagedMessageProvider } = await import("@ts-evtx/messages");
-    const provider = new SmartManagedMessageProvider({ preload: true });
-    await provider.ensure();
-    msgProvider = provider.provider; // SqliteMessageProvider with sync lookup
-  } catch { /* @ts-evtx/messages not available, skip */ }
+  // Use cached global message provider (created once, reused across all EVTX imports)
+  const msgProvider = await getEvtxMessageProvider();
 
   const parseXmlRecord = (xml, record) => {
     // Timestamp from the Record object (always reliable)
@@ -939,6 +965,8 @@ async function parseEvtxFile(filePath, tabId, db, onProgress) {
   };
 
   const evtxFile = await EvtxFile.open(filePath);
+  // Yield to event loop before starting to allow pending IPC to process
+  await new Promise((r) => setImmediate(r));
 
   for (const record of evtxFile.records()) {
     let xml;
@@ -981,9 +1009,14 @@ async function parseEvtxFile(filePath, tabId, db, onProgress) {
         let estBytes = 0;
         try { estBytes = record.offset ? Number(record.offset) : 0; } catch {}
         if (onProgress) onProgress(rowCount, estBytes, totalBytes);
+        // Yield to event loop periodically so IPC remains responsive
+        await new Promise((r) => setImmediate(r));
       }
     }
   }
+
+  // Close the EVTX file handle to release memory
+  try { if (evtxFile?.close) evtxFile.close(); } catch {}
 
   // Handle files with fewer than SAMPLE_LIMIT events
   if (!schemaFinalized) {
@@ -1005,9 +1038,16 @@ async function parseEvtxFile(filePath, tabId, db, onProgress) {
   if (batch.length > 0) {
     db.insertBatchArrays(tabId, batch);
   }
+  // Null out large arrays to help GC before next import
+  batch = null;
+  earlyBuffer = null;
 
   if (onProgress) onProgress(rowCount, totalBytes, totalBytes);
   const result = db.finalizeImport(tabId);
+
+  // Log memory usage after parsing
+  const mem = process.memoryUsage();
+  dbg("EVTX", `parseEvtxFile done`, { rowCount, heapUsedMB: Math.round(mem.heapUsed / 1048576), rssMB: Math.round(mem.rss / 1048576) });
 
   return {
     headers,

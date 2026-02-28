@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from "react";
+import { CHAIN_RULE_MAP, SUS_PATHS, SAFE_PROCS, ENCODED_PS, CRED_DUMP_CMD, NTDS_EXTRACT, LSASS_TOOLS, ACCOUNT_MANIP, DEFENSE_EVASION, NETWORK_SCANNERS, AD_RECON_TOOLS, RMM_TOOLS, EXFIL_TOOLS, ARCHIVE_SUSPECT } from "./detection-rules.js";
 
 const ROW_HEIGHT = 26;
 const HEADER_HEIGHT = 34;
@@ -324,17 +325,57 @@ function detectKapeProfile(headers) {
 }
 
 // ── IOC Parsing ───────────────────────────────────────────────────
-const IOC_CATEGORY_PATTERNS = {
-  "IPv4": /^(\d{1,3}\.){3}\d{1,3}(\/\d+)?$/,
-  "IPv6": /^[0-9a-fA-F:]+:[0-9a-fA-F:]*$/,
-  "Domain": /^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z]{2,})+$/,
-  "MD5": /^[0-9a-fA-F]{32}$/,
-  "SHA1": /^[0-9a-fA-F]{40}$/,
-  "SHA256": /^[0-9a-fA-F]{64}$/,
-  "URL": /^https?:\/\//i,
-  "Email": /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-  "File Path": /^([A-Za-z]:\\|\/)[^\n]+/,
-};
+// Order matters — first match wins. More specific patterns must come before broader ones.
+const IOC_CATEGORY_PATTERNS = [
+  // Hashes — exact-length hex strings
+  ["SHA256_Hash",  /^[0-9a-f]{64}$/i],
+  ["SHA1_Hash",    /^[0-9a-f]{40}$/i],
+  ["MD5_Hash",     /^[0-9a-f]{32}$/i],
+  // Network — IP with port
+  ["IPv4_Address:Port", /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5}$/],
+  ["IPv6_Address:Port", /^\[?[0-9a-f:]{3,39}\]?:\d{1,5}$/i],
+  // Network — plain IPs
+  ["IPv4_Address", /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(\/\d{1,2})?$/],
+  ["IPv6_Address", /^([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}$/i],
+  // Network — Email
+  ["Email_Address", /^[^\s@]+@[^\s@]+\.[^\s@]+$/],
+  // Host — Registry keys (HKEY_LOCAL_MACHINE\..., HKLM\..., etc.)
+  ["Registry_Key", /^(HKEY_[A-Z_]+|HKLM|HKCU|HKCR|HKU|HKCC)(\\|$)/i],
+  // Host — Named pipes (\\.\pipe\...)
+  ["Named_Pipe",   /^\\\\\.\\pipe\\/i],
+  // Host — Mutex (Global\..., Local\...)
+  ["Mutex",        /^(Global\\|Local\\)/],
+  // Host — File paths (C:\..., \\server\..., /usr/... — must have separator after root)
+  ["File_Path",    /^([A-Za-z]:\\[^\s]|\\\\[^\\]+\\|\/[^\s]+\/)/],
+  // Network — Crypto wallets (Bitcoin, Ethereum, Monero)
+  ["Crypto_Wallet", /^(1[1-9A-HJ-NP-Za-km-z]{25,34}|3[1-9A-HJ-NP-Za-km-z]{25,34}|bc1[a-z0-9]{25,90}|0x[0-9a-fA-F]{40}|4[0-9AB][1-9A-HJ-NP-Za-km-z]{93})$/],
+  // Network — User agent strings
+  ["User_Agent_String", /^Mozilla\//i],
+  // NOTE: File_Name vs Domain_Name is handled by custom logic in parseIocText (not simple regex order)
+  // Fallback — "Other" is assigned if nothing matches (handled in parseIocText)
+];
+
+// Auto-defang IOC values: undo common obfuscation used in threat intel feeds
+function defangIoc(text) {
+  let s = text.trim();
+  // Strip protocol first (handles all obfuscated variants):
+  // hxxps[://], https[://], hxxps://, https://, hxxp[://], http[://], hxxp://, http://
+  s = s.replace(/^h[tx]{2}ps?\s*\[?:\/?\/?\]?\s*/i, "");
+  // Also catch plain https?:// and ftp://
+  s = s.replace(/^(?:https?|ftp):\/\//i, "");
+  // Bracket-dot defanging: [.] [dot] (.) → .
+  s = s.replace(/\[\.\]/g, ".").replace(/\[dot\]/gi, ".").replace(/\(\.\)/g, ".");
+  // Bracket-colon/at defanging
+  s = s.replace(/\[:\]/g, ":").replace(/\[@\]/g, "@");
+  // Strip URL path/query/fragment — keep domain (+ optional port)
+  // Only if it looks like a domain (contains a dot and slash after it)
+  if (/^[a-z0-9.-]+\.[a-z]{2,}(:\d+)?[/?#]/i.test(s)) {
+    s = s.split(/[/?#]/)[0];
+  }
+  // Strip trailing dot (FQDN notation)
+  s = s.replace(/\.$/, "");
+  return s;
+}
 
 function parseIocText(rawText) {
   const lines = rawText.split(/\r?\n/);
@@ -342,13 +383,44 @@ function parseIocText(rawText) {
   const iocs = [];
   for (const line of lines) {
     const trimmed = line.replace(/#.*$/, "").trim();
-    if (!trimmed || seen.has(trimmed.toLowerCase())) continue;
-    seen.add(trimmed.toLowerCase());
+    if (!trimmed) continue;
+    // Defang before dedup and categorization
+    const clean = defangIoc(trimmed);
+    if (!clean || seen.has(clean.toLowerCase())) continue;
+    seen.add(clean.toLowerCase());
     let category = "Other";
-    for (const [cat, re] of Object.entries(IOC_CATEGORY_PATTERNS)) {
-      if (re.test(trimmed)) { category = cat; break; }
+    for (const [cat, re] of IOC_CATEGORY_PATTERNS) {
+      if (re.test(clean)) { category = cat; break; }
     }
-    iocs.push({ raw: trimmed, category });
+    // File_Name vs Domain_Name disambiguation (regex order can't solve this alone)
+    if (category === "Other") {
+      // Extensions that are NEVER TLDs — always a file name
+      const fileOnlyRe = /^[^\\/:*?"<>|\s]+\.(exe|dll|bat|cmd|ps1|psm1|psd1|vbs|vbe|jse|wsf|wsh|hta|msi|msp|mst|scr|sys|cpl|ocx|drv|jar|war|pyc|bash|dat|tmp|sqlite|doc[xm]|xls[xm]|ppt[xm]|rtf|tsv|rar|7z|bz2|xz|vhd|vhdx|vmdk|ova|lnk|cfg|conf|yaml|yml|reg|inf|mui|pf|evtx?|dmp|pcap|cap)$/i;
+      // Extensions that COULD be TLDs/domains — need to check if it's a multi-segment domain
+      const ambiguousRe = /^[^\\/:*?"<>|\s]+\.(com|net|org|io|sh|py|rs|js|rb|cc|im|ai|app|dev|gg|me|tv|co|de|uk|ru|in|br|au|ph|sg|cat|bin|zip|mov|pdf|doc|csv|xml|json|iso|img|log|db|ax|ini|url|gz|tar)$/i;
+      const domainRe = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?){1,}$/i;
+      if (fileOnlyRe.test(clean)) {
+        category = "File_Name";
+      } else if (ambiguousRe.test(clean) && domainRe.test(clean)) {
+        // Has multiple dot-segments (e.g., update-service-cdn.com) → Domain
+        // Single segment + ambiguous ext with no subdomain-like parts → also Domain
+        // Only treat as File_Name if it looks like a filename (has underscore, starts with uppercase drive-like)
+        const dotCount = (clean.match(/\./g) || []).length;
+        if (dotCount === 1 && /^[a-z0-9_-]+\.[a-z]+$/i.test(clean)) {
+          // Single dot, looks like either file or domain — check for filename indicators
+          if (/[_]/.test(clean.split(".")[0])) {
+            category = "File_Name"; // underscores are filename-like (e.g., svchost_update.exe)
+          } else {
+            category = "Domain_Name"; // no underscores, looks like a domain (e.g., update-service-cdn.com)
+          }
+        } else {
+          category = "Domain_Name";
+        }
+      } else if (domainRe.test(clean)) {
+        category = "Domain_Name";
+      }
+    }
+    iocs.push({ raw: clean, category });
   }
   return iocs;
 }
@@ -367,6 +439,58 @@ function formatBytes(bytes) {
 function formatNumber(n) {
   return n.toLocaleString();
 }
+
+// ── Module-scope utilities (no component state dependency — avoids re-creation per render) ──
+
+const getSusInfo = (node, parentNode) => {
+  const n = (node.processName || "").toLowerCase();
+  const pn = (parentNode?.processName || "").toLowerCase();
+  const cmd = node.cmdLine || "";
+  const img = node.image || "";
+  const nBase = n.replace(/\.exe$/, "");
+  const pnBase = pn.replace(/\.exe$/, "");
+  if (pnBase) {
+    const chainHit = CHAIN_RULE_MAP.get(pnBase + ":" + nBase);
+    if (chainHit) return chainHit;
+  }
+  if (ENCODED_PS.test(cmd) && /^(powershell|pwsh)(\.exe)?$/i.test(n)) return { level: 3, reason: "Encoded PowerShell [T1059.001]" };
+  if (CRED_DUMP_CMD.test(cmd)) return { level: 3, reason: "Credential dumping [T1003]" };
+  if (NTDS_EXTRACT.test(cmd)) return { level: 3, reason: "NTDS extraction [T1003.003]" };
+  if (DEFENSE_EVASION.test(cmd)) return { level: 2, reason: "Defense evasion [T1070]" };
+  if (ACCOUNT_MANIP.test(cmd)) return { level: 2, reason: "Account manipulation [T1136]" };
+  if (/wmic.*\/node:/i.test(cmd) || /winrm/i.test(cmd)) return { level: 2, reason: "Lateral movement command [T1021]" };
+  if (ARCHIVE_SUSPECT.test(cmd)) return { level: 2, reason: "Suspicious archive operation [T1560.001]" };
+  if (LSASS_TOOLS.test(n)) return { level: 3, reason: "LSASS access tool [T1003.001]" };
+  if (AD_RECON_TOOLS.test(n)) return { level: 2, reason: "AD recon tool [T1087.002]" };
+  if (NETWORK_SCANNERS.test(n)) return { level: 2, reason: "Network scanner [T1046]" };
+  if (EXFIL_TOOLS.test(n)) return { level: 2, reason: "Exfiltration tool [T1567]" };
+  if (RMM_TOOLS.test(n) && pn && !/^explorer(\.exe)?$/i.test(pn)) return { level: 2, reason: "RMM tool \u2014 unusual parent [T1219]" };
+  if (/^(wscript|cscript)(\.exe)?$/i.test(n) && /(\\users\\[^\\]+\\|\\appdata\\)/i.test(img)) return { level: 2, reason: "Script from user profile [T1059.005]" };
+  if (SUS_PATHS.test(img) && !SAFE_PROCS.test(n)) return { level: 1, reason: "Suspicious path [T1204]" };
+  if (RMM_TOOLS.test(n)) return { level: 1, reason: "Remote management tool [T1219]" };
+  return { level: 0, reason: null };
+};
+
+const _integrityShort = (raw) => {
+  if (!raw) return "";
+  if (/16384|System/i.test(raw)) return "System";
+  if (/12288|High/i.test(raw)) return "High";
+  if (/8192|Medium/i.test(raw)) return "Medium";
+  if (/4096|Low/i.test(raw)) return "Low";
+  if (/\b0\b|Untrusted/i.test(raw)) return "Untrusted";
+  return raw.replace(/^S-1-16-\d+\s*/i, "").replace(/^.*\\/, "") || raw;
+};
+
+const _providerShort = (p) => {
+  if (!p) return "";
+  if (p.includes("Sysmon")) return "Sysmon";
+  if (p.includes("Security-Auditing")) return "Security";
+  return p.replace(/^Microsoft-Windows-/i, "");
+};
+
+const SUS_COLORS = { 3: "#f85149", 2: "#f0883e", 1: "#d29922", 0: null };
+const INT_COLOR = { System: "#f85149", High: "#f0883e", Medium: "#d29922", Low: "#8b949e", Untrusted: "#6e40c9" };
+const PT_ICON_STYLE = { width: 14, height: 14, verticalAlign: "middle", flexShrink: 0 };
 
 // ── Main App ───────────────────────────────────────────────────────
 export default function App() {
@@ -390,6 +514,7 @@ export default function App() {
   const [resizeW, setResizeW] = useState(0);
   const justResizedRef = useRef(false);
   const [importingTabs, setImportingTabs] = useState({});
+  const [importQueue, setImportQueue] = useState([]);
 
   // New UI state
   const [filterDropdown, setFilterDropdown] = useState(null);
@@ -409,9 +534,11 @@ export default function App() {
   const histResizeStartY = useRef(0);
   const histResizeStartH = useRef(0);
   const [histGranularity, setHistGranularity] = useState("day");
-  const [histBrush, setHistBrush] = useState({ startIdx: null, endIdx: null, active: false });
   const histBrushRef = useRef({ startIdx: null, endIdx: null, active: false });
   const histSvgRectRef = useRef(null);
+  const histBrushOverlayRef = useRef(null); // DOM ref for brush overlay rect
+  const histBrushLabelRef = useRef(null);   // DOM ref for brush label text
+  const histBarGeomRef = useRef({ barW: 1, yAxisW: 44, chartPadT: 4, chartH: 100, len: 0 }); // cached bar geometry for DOM updates
   const [histContainerWidth, setHistContainerWidth] = useState(0);
   const histContainerRef = useRef(null);
   const [crossFind, setCrossFind] = useState(null); // { term, results: [{tabId, name, count}] }
@@ -435,15 +562,17 @@ export default function App() {
   const [tagColWidth, setTagColWidth] = useState(TAG_COL_WIDTH_DEFAULT);
 
   const scrollRef = useRef(null);
+  const scrollTopRef = useRef(0);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(typeof window !== "undefined" ? window.innerHeight : 800);
   const rafScroll = useRef(null);
   const handleScroll = useCallback((e) => {
     if (rafScroll.current) return;
     const top = e.target.scrollTop;
+    scrollTopRef.current = top;
     rafScroll.current = requestAnimationFrame(() => {
       rafScroll.current = null;
-      setScrollTop(top);
+      setScrollTop(scrollTopRef.current);
     });
   }, []);
 
@@ -462,6 +591,12 @@ export default function App() {
   const rightClickFired = useRef(false);
   const [pendingRestores, setPendingRestores] = useState({});
   const pendingRestoresRef = useRef({});
+  const ptCacheRef = useRef({ flatNodes: [], byKeyMap: new Map(), deps: null });
+  const ptScrollRef = useRef(null);
+  const ptHeaderRef = useRef(null);
+  const ptRafRef = useRef(null);
+  const ptResizingRef = useRef(false);
+  const [ptScroll, setPtScroll] = useState({ top: 0, h: 600 });
 
   const ct = tabs.find((t) => t.id === activeTab);
   ctRef.current = ct;
@@ -529,7 +664,7 @@ export default function App() {
       searchTerm: effectiveSearch, searchMode: tab.searchMode, searchCondition: tab.searchCondition || "contains",
       columnFilters, checkboxFilters,
       bookmarkedOnly: tab.showBookmarkedOnly,
-      tagFilter: tab.tagFilter || null,
+      tagFilter: (tab.disabledFilters || new Set()).has("__tags__") ? null : (tab.tagFilter || null),
       dateRangeFilters: tab.dateRangeFilters || {}, advancedFilters: tab.advancedFilters || [],
     });
     if (fetchId.current !== myFetchId) return; // Stale — newer fetch in flight
@@ -818,6 +953,20 @@ export default function App() {
 
   // ── Column auto-fit ────────────────────────────────────────────
   const autoFitColumn = useCallback((colName) => {
+    if (colName === "__tags__") {
+      setTabs((prev) => prev.map((t) => {
+        if (t.id !== activeTab) return t;
+        const hLen = 4 * 8 + 36; // "Tags"
+        const sample = (t.rows || []).slice(0, 200).map((r) => {
+          const tags = (t.rowTags || {})[r.__idx] || [];
+          return tags.reduce((w, tag) => w + tag.length * 6.5 + 14, 8);
+        });
+        const best = Math.max(80, Math.min(Math.max(hLen, ...sample), 800));
+        setTagColWidth(best);
+        return t;
+      }));
+      return;
+    }
     setTabs((prev) => prev.map((t) => {
       if (t.id !== activeTab) return t;
       const hLen = colName.length * 8 + 36;
@@ -863,7 +1012,7 @@ export default function App() {
     if (!tle) return;
 
     const allChannels = [
-      "import-start", "import-progress", "import-complete", "import-error",
+      "import-start", "import-progress", "import-complete", "import-error", "import-queue",
       "export-progress", "sheet-selection", "fts-progress", "index-progress",
       "trigger-open", "trigger-export", "trigger-search",
       "trigger-bookmark-toggle", "trigger-column-manager",
@@ -964,6 +1113,9 @@ export default function App() {
           setPendingRestores((prev) => { const next = { ...prev }; delete next[tabId]; return next; });
         });
       }
+    });
+    tle.onImportQueue(({ pending }) => {
+      setImportQueue(pending || []);
     });
     tle.onImportError(({ tabId, error }) => {
       setImportingTabs((prev) => { const next = { ...prev }; delete next[tabId]; return next; });
@@ -1215,19 +1367,20 @@ export default function App() {
   // ── Computed headers ─────────────────────────────────────────────
   const allVisH = useMemo(() => {
     if (!ct) return [];
-    const visible = ct.headers.filter((h) => !ct.hiddenColumns.has(h));
+    const visSet = new Set(ct.headers.filter((h) => !ct.hiddenColumns.has(h)));
     if (ct.columnOrder?.length > 0) {
+      const ordered = ct.columnOrder.filter((h) => visSet.has(h));
       const orderSet = new Set(ct.columnOrder);
-      const ordered = ct.columnOrder.filter((h) => visible.includes(h));
-      const rest = visible.filter((h) => !orderSet.has(h));
+      const rest = [...visSet].filter((h) => !orderSet.has(h));
       return [...ordered, ...rest];
     }
-    return visible;
+    return [...visSet];
   }, [ct?.headers, ct?.hiddenColumns, ct?.columnOrder]);
 
   const pinnedH = useMemo(() => {
     if (!ct) return [];
-    return (ct.pinnedColumns || []).filter((h) => allVisH.includes(h));
+    const visSet = new Set(allVisH);
+    return (ct.pinnedColumns || []).filter((h) => visSet.has(h));
   }, [ct?.pinnedColumns, allVisH]);
 
   const scrollH = useMemo(() => {
@@ -1372,15 +1525,62 @@ export default function App() {
       return new RegExp(`(${words.join("|")})`, "gi");
     } catch { return null; }
   }, [hlTerm, ct?.searchMode]);
+  // IOC highlight regex — built from matched IOC values stored after IOC scan
+  const iocRegex = useMemo(() => {
+    const patterns = ct?.iocHighlights;
+    if (!patterns || patterns.length === 0) return null;
+    try {
+      // Sort longest first so longer IOCs match before shorter substrings
+      const sorted = [...patterns].sort((a, b) => b.length - a.length);
+      const escaped = sorted.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      return new RegExp(`(${escaped.join("|")})`, "gi");
+    } catch { return null; }
+  }, [ct?.iocHighlights]);
+  const iocTestRegex = useMemo(() => iocRegex ? new RegExp(iocRegex.source, "i") : null, [iocRegex]);
+  // Pre-built combined regex for when both highlight + IOC are active (avoids per-cell RegExp creation)
+  const combinedHlRegex = useMemo(() => {
+    if (!hlRegex || !iocRegex) return null;
+    try { return new RegExp(`${iocRegex.source}|${hlRegex.source}`, "gi"); } catch { return null; }
+  }, [hlRegex, iocRegex]);
   const renderCell = (h, val) => {
     const text = fmtCell(h, val);
-    if (!hlRegex || !text) return text;
-    const splits = text.split(hlRegex);
-    if (splits.length <= 1) return text;
-    return <>{splits.map((seg, i) => i % 2 === 1
-      ? <mark key={i} style={{ background: "rgba(210,153,34,0.5)", color: "inherit", borderRadius: 2, padding: "0 1px" }}>{seg}</mark>
-      : seg
-    )}</>;
+    if (!text || (!hlRegex && !iocRegex)) return text;
+    // Single highlight source — use fast split path
+    if (hlRegex && !iocRegex) {
+      const splits = text.split(hlRegex);
+      if (splits.length <= 1) return text;
+      return <>{splits.map((seg, i) => i % 2 === 1
+        ? <mark key={i} style={{ background: "rgba(210,153,34,0.5)", color: "inherit", borderRadius: 2, padding: "0 1px" }}>{seg}</mark>
+        : seg
+      )}</>;
+    }
+    if (iocRegex && !hlRegex) {
+      const splits = text.split(iocRegex);
+      if (splits.length <= 1) return text;
+      return <>{splits.map((seg, i) => i % 2 === 1
+        ? <mark key={i} style={{ background: "rgba(240,136,62,0.45)", color: "inherit", borderRadius: 2, padding: "0 1px", fontWeight: 600 }}>{seg}</mark>
+        : seg
+      )}</>;
+    }
+    // Both active — use pre-built combined regex, color by match type
+    if (!combinedHlRegex) return text;
+    const combined = new RegExp(combinedHlRegex.source, "gi"); // clone to reset lastIndex
+    const parts = [];
+    let lastIndex = 0;
+    let m;
+    while ((m = combined.exec(text)) !== null) {
+      if (m.index > lastIndex) parts.push(text.slice(lastIndex, m.index));
+      const isIoc = iocTestRegex.test(m[0]);
+      parts.push(<mark key={m.index} style={{
+        background: isIoc ? "rgba(240,136,62,0.45)" : "rgba(210,153,34,0.5)",
+        color: "inherit", borderRadius: 2, padding: "0 1px", ...(isIoc ? { fontWeight: 600 } : {}),
+      }}>{m[0]}</mark>);
+      lastIndex = combined.lastIndex;
+      if (m[0].length === 0) { combined.lastIndex++; }
+    }
+    if (lastIndex === 0) return text;
+    if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+    return <>{parts}</>;
   };
   const tw = useMemo(
     () => allVisH.reduce((s, h) => s + (ct?.columnWidths?.[h] || 150), 0) + BKMK_COL_WIDTH + tagColWidth,
@@ -1559,8 +1759,12 @@ export default function App() {
     if (filterDropdown.colName === "__tags__") {
       // Tags filter — load tags from DB
       const existing = ct?.tagFilter;
-      const hasExisting = Array.isArray(existing) && existing.length > 0;
-      setFdSelected(hasExisting ? new Set(existing) : new Set());
+      // Handle both array tagFilter (checkbox selection) and string tagFilter ("Show Only IOC Matches" button)
+      const hasExisting = existing && (Array.isArray(existing) ? existing.length > 0 : typeof existing === "string");
+      const existingSet = hasExisting
+        ? new Set(Array.isArray(existing) ? existing : [existing])
+        : new Set();
+      setFdSelected(existingSet);
       setFdSearch("");
       setFdRegex(false);
       (async () => {
@@ -1568,7 +1772,6 @@ export default function App() {
         const tags = await tle.getAllTags(ct.id);
         const vals = (tags || []).map((t) => ({ val: t.tag, cnt: t.cnt }));
         setFdValues(vals);
-        if (!hasExisting) setFdSelected(new Set(vals.map((v) => v.val)));
         setFdLoading(false);
       })().catch(() => { setFdLoading(false); });
       return;
@@ -1592,6 +1795,7 @@ export default function App() {
     if (!filterDropdown) return;
     const colName = filterDropdown.colName;
     // Tags filter — apply as tagFilter array
+    // Unlike regular columns, "all tags selected" still means "show only tagged rows" (not all rows)
     if (colName === "__tags__") {
       setTabs((prev) => prev.map((t) => {
         if (t.id !== activeTab) return t;
@@ -1808,7 +2012,9 @@ export default function App() {
     );
   };
 
-  const ImportProgress = ({ info }) => (
+  const ImportProgress = ({ info }) => {
+    const queueLen = importQueue.length;
+    return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", padding: 40 }}>
       {/* Logo + tagline */}
       <svg width="48" height="54" viewBox="0 0 64 72" fill="none" style={{ marginBottom: 12, opacity: 0.85 }}>
@@ -1842,9 +2048,24 @@ export default function App() {
             <strong>Large file detected ({(info.fileSize / (1024 * 1024 * 1024)).toFixed(1)} GB)</strong> — This may take several minutes. Do not close this window or import additional files until ingestion is complete.
           </div>
         )}
+        {queueLen > 0 && (
+          <div style={{ marginTop: 20, padding: "12px 14px", background: `${th.accent}08`, border: `1px solid ${th.border}44`, borderRadius: 8 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8, fontFamily: "-apple-system, sans-serif" }}>
+              Queued ({queueLen} file{queueLen > 1 ? "s" : ""} waiting)
+            </div>
+            {importQueue.map((q, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", fontSize: 11, fontFamily: "-apple-system, sans-serif" }}>
+                <span style={{ color: th.textMuted, fontSize: 10, fontFamily: "SF Mono, monospace", minWidth: 16 }}>{i + 1}.</span>
+                <span style={{ color: th.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{q.fileName}</span>
+                <span style={{ color: th.textDim, fontSize: 10, fontFamily: "SF Mono, monospace", flexShrink: 0 }}>{q.fileSize > 1048576 ? `${(q.fileSize / 1048576).toFixed(1)} MB` : q.fileSize > 1024 ? `${(q.fileSize / 1024).toFixed(0)} KB` : `${q.fileSize} B`}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
-  );
+    );
+  };
 
   // ── Helper: compute row background ───────────────────────────────
   const getRowBg = (ai, _row, sel, cm, bm) => {
@@ -1876,9 +2097,9 @@ export default function App() {
         onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onDrop={(e) => { e.preventDefault(); setDragOver(false); const files = [...e.dataTransfer.files]; if (files.length > 0 && tle) { const paths = files.map((f) => tle.getPathForFile(f)).filter(Boolean); if (paths.length > 0) tle.importFiles(paths); } }}>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: 60, border: `2px dashed ${dragOver ? th.borderAccent : th.border}`, borderRadius: 16, transition: "all 0.2s", background: dragOver ? th.selection : "transparent" }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "80px 120px", minWidth: 600, border: `2px dashed ${dragOver ? th.borderAccent : th.border}`, borderRadius: 20, transition: "all 0.2s", background: dragOver ? th.selection : "transparent" }}>
           {/* IRFlow Logo — shield with timeline pulse */}
-          <svg width="64" height="72" viewBox="0 0 64 72" fill="none" style={{ marginBottom: 18 }}>
+          <svg width="88" height="100" viewBox="0 0 64 72" fill="none" style={{ marginBottom: 24 }}>
             {/* Shield body */}
             <path d="M32 4L6 16v20c0 16.5 11.2 31.2 26 36 14.8-4.8 26-19.5 26-36V16L32 4z" fill={`${th.accent}18`} stroke={th.accent} strokeWidth="1.8" strokeLinejoin="round" />
             {/* Timeline pulse across shield */}
@@ -1893,12 +2114,12 @@ export default function App() {
             <line x1="32" y1="20" x2="32" y2="17.5" stroke={th.accent} strokeWidth="1.2" opacity="0.7" strokeLinecap="round" />
             <line x1="32" y1="20" x2="34.5" y2="20" stroke={th.accent} strokeWidth="1.2" opacity="0.7" strokeLinecap="round" />
           </svg>
-          <h1 style={{ fontSize: 26, fontWeight: 700, color: th.text, margin: 0, fontFamily: "-apple-system, 'SF Pro Display', sans-serif" }}>IRFlow <span style={{ color: th.accent }}>Timeline</span></h1>
-          <p style={{ color: th.textDim, fontSize: 13, letterSpacing: "0.12em", textTransform: "uppercase", margin: "6px 0 4px", fontWeight: 600 }}>DFIR Timeline Analysis for macOS</p>
-          <p style={{ color: th.textMuted, fontSize: 11, margin: "0 0 24px" }}>SQLite-backed · Handles large files for timeline analysis · CSV / TSV / XLSX / EVTX / Plaso</p>
-          <button onClick={() => tle?.openFileDialog()} style={{ padding: "10px 32px", background: th.primaryBtn, color: "#fff", border: "none", borderRadius: 6, fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "-apple-system, sans-serif", WebkitAppRegion: "no-drag" }}>Open File</button>
-          <p style={{ color: th.textMuted, fontSize: 11, marginTop: 20 }}>⌘O open · ⌘F search · ⌘B bookmarks · ⌘E export</p>
-          <p style={{ color: th.textMuted, fontSize: 10, marginTop: 24, fontFamily: "-apple-system, sans-serif" }}>Created by <span style={{ color: th.textDim }}>Renzon Cruz</span> | <span style={{ color: th.accent }}>@r3nzsec</span></p>
+          <h1 style={{ fontSize: 34, fontWeight: 700, color: th.text, margin: 0, fontFamily: "-apple-system, 'SF Pro Display', sans-serif" }}>IRFlow <span style={{ color: th.accent }}>Timeline</span></h1>
+          <p style={{ color: th.textDim, fontSize: 14, letterSpacing: "0.14em", textTransform: "uppercase", margin: "10px 0 6px", fontWeight: 600 }}>DFIR Timeline Analysis for macOS</p>
+          <p style={{ color: th.textMuted, fontSize: 12, margin: "0 0 32px" }}>SQLite-backed · Handles large files for timeline analysis · CSV / TSV / XLSX / EVTX / Plaso</p>
+          <button onClick={() => tle?.openFileDialog()} style={{ padding: "14px 48px", background: th.primaryBtn, color: "#fff", border: "none", borderRadius: 8, fontSize: 16, fontWeight: 600, cursor: "pointer", fontFamily: "-apple-system, sans-serif", WebkitAppRegion: "no-drag" }}>Open File</button>
+          <p style={{ color: th.textMuted, fontSize: 12, marginTop: 28 }}>⌘O open · ⌘F search · ⌘B bookmarks · ⌘E export</p>
+          <p style={{ color: th.textMuted, fontSize: 11, marginTop: 28, fontFamily: "-apple-system, sans-serif" }}>Created by <span style={{ color: th.textDim }}>Renzon Cruz</span> | <span style={{ color: th.accent }}>@r3nzsec</span></p>
         </div>
       </div>
     );
@@ -1970,6 +2191,19 @@ export default function App() {
                     { label: "Color Rules", icon: ic(<><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18" fill={th.accent} opacity="0.3"/></>), action: () => setModal({ type: "colors" }) },
                     { label: "Tags", icon: ic(<><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7" cy="7" r="1" fill={th.accent}/></>), action: () => setModal({ type: "tags" }) },
                     { label: "Filter Presets", icon: ic(<><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></>), action: () => setModal({ type: "presets" }) },
+                    { label: "Edit Filter", icon: ic(<><rect x="3" y="4" width="18" height="16" rx="2" fill="none"/><line x1="7" y1="9" x2="17" y2="9"/><line x1="7" y1="13" x2="14" y2="13"/><line x1="7" y1="17" x2="11" y2="17"/></>), action: () => {
+                      if (ct?.dataReady) setModal({ type: "editFilter" });
+                    }, disabled: !ct?.dataReady },
+                    { label: "Merge Tabs", icon: ic(<><rect x="4" y="4" width="16" height="6" rx="1"/><rect x="4" y="14" width="16" height="6" rx="1"/><line x1="12" y1="10" x2="12" y2="14" strokeDasharray="2,1"/></>), action: () => {
+                      const ready = tabs.filter((t) => t.dataReady && !t.importing);
+                      if (ready.length < 2) return;
+                      setModal({ type: "mergeTabs", tabOptions: ready.map((t) => ({
+                        tabId: t.id, tabName: t.name, rowCount: t.totalRows,
+                        tsColumns: [...(t.tsColumns || new Set())],
+                        selectedTsCol: [...(t.tsColumns || new Set())][0] || "",
+                        checked: true,
+                      }))});
+                    }, disabled: tabs.filter((t) => t.dataReady && !t.importing).length < 2 },
                     { section: "Analysis" },
                     { label: "Stack Values", icon: ic(<><line x1="4" y1="6" x2="16" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="12" y2="18"/></>), action: () => {
                       if (!ct?.headers?.length) return;
@@ -1998,10 +2232,12 @@ export default function App() {
                     { label: "Burst Detection", icon: ic(<><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill={th.accent+"33"}/></>, th.danger || "#f85149"), action: () => {
                       if (ct?.dataReady && ct?.tsColumns?.size) setModal({ type: "burstAnalysis", phase: "config", colName: [...ct.tsColumns][0], windowMinutes: 5, thresholdMultiplier: 5, data: null, loading: false });
                     }, disabled: !ct?.dataReady || !ct?.tsColumns?.size },
-                    { label: "Process Tree", icon: ic(<><rect x="3" y="10" width="5" height="5" rx="1" fill={th.success+"33"}/><rect x="14" y="3" width="5" height="5" rx="1" fill={th.success+"33"}/><rect x="14" y="16" width="5" height="5" rx="1" fill={th.success+"33"}/><path d="M8 12.5h3v-7h3M11 12.5v5.5h3" strokeLinecap="round"/></>, th.success || "#3fb950"), action: () => {
+                    { label: "Process Inspector", icon: ic(<><circle cx="10" cy="10" r="6" fill={(th.accent||"#E85D2A")+"14"} stroke={th.accent||"#E85D2A"} strokeWidth="1.5"/><line x1="14.5" y1="14.5" x2="20" y2="20" stroke={th.accent||"#E85D2A"} strokeWidth="2" strokeLinecap="round"/><path d="M8 8v4M8 10h4" stroke={th.accent||"#E85D2A"} strokeWidth="1.5" strokeLinecap="round"/></>, th.accent || "#E85D2A"), action: () => {
                       if (!ct?.dataReady) return;
                       const det = (pats) => { for (const p of pats) { const f = ct.headers.find((h) => p.test(h)); if (f) return f; } return null; };
                       const isEvtxECmdPT = ct.headers.some((h) => /^PayloadData1$/i.test(h)) && ct.headers.some((h) => /^ExecutableInfo$/i.test(h));
+                      // Security 4688: ProcessId = parent PID, NewProcessId = child PID (opposite of Sysmon)
+                      const isSec4688 = !isEvtxECmdPT && ct.headers.some((h) => /^NewProcess(Name|Id)$/i.test(h));
                       const cols = isEvtxECmdPT ? {
                         // EvtxECmd: CSV ProcessId is the logging service PID, NOT the created process PID
                         pid: det([/^PayloadData1$/i]),
@@ -2013,7 +2249,25 @@ export default function App() {
                         user: det([/^UserName$/i, /^User$/i]),
                         ts: det([/^TimeCreated$/i, /^datetime$/i]),
                         eventId: det([/^EventId$/i, /^EventID$/i]),
-                      } : {
+                        provider: det([/^Provider$/i, /^SourceName$/i, /^Channel$/i]),
+                      } : isSec4688 ? (() => {
+                        // Security 4688: ProcessId is the PARENT, NewProcessId is the CHILD
+                        const hasNewPid = ct.headers.some((h) => /^NewProcessId$/i.test(h));
+                        return {
+                        pid: hasNewPid ? det([/^NewProcessId$/i]) : det([/^ProcessId$/i]),
+                        ppid: hasNewPid ? det([/^ProcessId$/i, /^CreatorProcessId$/i]) : det([/^CreatorProcessId$/i]),
+                        guid: det([/^ProcessGuid$/i, /^process_guid$/i]),
+                        parentGuid: det([/^ParentProcessGuid$/i, /^parent_process_guid$/i]),
+                        image: det([/^NewProcessName$/i, /^Image$/i]),
+                        parentImage: det([/^ParentProcessName$/i, /^ParentImage$/i]),
+                        cmdLine: det([/^CommandLine$/i, /^command_line$/i, /^cmdline$/i, /^ProcessCommandLine$/i]),
+                        user: det([/^TargetUserName$/i, /^User$/i, /^UserName$/i]),
+                        ts: det([/^datetime$/i, /^TimeCreated$/i, /^UtcTime$/i]),
+                        eventId: det([/^EventID$/i, /^event_id$/i, /^EventId$/]),
+                        elevation: det([/^TokenElevationType$/i]),
+                        integrity: det([/^MandatoryLabel$/i, /^IntegrityLevel$/i]),
+                        provider: det([/^Provider$/i, /^SourceName$/i, /^Channel$/i]),
+                      }; })() : {
                         pid: det([/^ProcessId$/i, /^pid$/i, /^process_id$/i, /^NewProcessId$/i]),
                         ppid: det([/^ParentProcessId$/i, /^ppid$/i, /^parent_process_id$/i, /^CreatorProcessId$/i]),
                         guid: det([/^ProcessGuid$/i, /^process_guid$/i]),
@@ -2026,10 +2280,11 @@ export default function App() {
                         eventId: det([/^EventID$/i, /^event_id$/i, /^EventId$/]),
                         elevation: det([/^TokenElevationType$/i]),
                         integrity: det([/^MandatoryLabel$/i, /^IntegrityLevel$/i]),
+                        provider: det([/^Provider$/i, /^SourceName$/i, /^Channel$/i]),
                       };
                       setModal({ type: "processTree", phase: "config", columns: cols, eventIdValue: "1,4688", data: null, loading: false, expandedNodes: {}, searchText: "", error: null });
                     }, disabled: !ct?.dataReady },
-                    { label: "Lateral Movement", icon: ic(<><circle cx="5" cy="12" r="2.5" fill={(th.danger||"#f85149")+"33"}/><circle cx="19" cy="5" r="2.5" fill={(th.danger||"#f85149")+"33"}/><circle cx="19" cy="19" r="2.5" fill={(th.danger||"#f85149")+"33"}/><line x1="7.5" y1="11" x2="16.5" y2="6"/><line x1="7.5" y1="13" x2="16.5" y2="18"/><circle cx="12" cy="12" r="1.5" fill={(th.danger||"#f85149")+"55"}/></>, th.danger || "#f85149"), action: () => {
+                    { label: "Lateral Movement Tracker", icon: ic(<><circle cx="5" cy="12" r="2.5" fill={(th.danger||"#f85149")+"33"}/><circle cx="19" cy="5" r="2.5" fill={(th.danger||"#f85149")+"33"}/><circle cx="19" cy="19" r="2.5" fill={(th.danger||"#f85149")+"33"}/><line x1="7.5" y1="11" x2="16.5" y2="6"/><line x1="7.5" y1="13" x2="16.5" y2="18"/><circle cx="12" cy="12" r="1.5" fill={(th.danger||"#f85149")+"55"}/></>, th.danger || "#f85149"), action: () => {
                       if (!ct?.dataReady) return;
                       const det = (pats) => { for (const p of pats) { const f = ct.headers.find((h) => p.test(h)); if (f) return f; } return null; };
                       const isEvtxECmd = ct.headers.some((h) => /^RemoteHost$/i.test(h)) && ct.headers.some((h) => /^PayloadData1$/i.test(h));
@@ -2042,7 +2297,7 @@ export default function App() {
                         ts: det([/^datetime$/i, /^UtcTime$/i, /^TimeCreated$/i]),
                         domain: det([/^TargetDomainName$/i]),
                       };
-                      setModal({ type: "lateralMovement", phase: "config", columns: cols, eventIds: "4624,4625,4648,4778", excludeLocal: true, excludeService: true, data: null, loading: false, error: null, selectedNode: null, selectedEdge: null, viewTab: "graph", positions: null });
+                      setModal({ type: "lateralMovement", phase: "config", columns: cols, excludeLocal: true, excludeService: true, lmDisabledRules: new Set(), lmCustomRules: [], showLmRules: false, data: null, loading: false, error: null, selectedNode: null, selectedEdge: null, viewTab: "graph", positions: null });
                     }, disabled: !ct?.dataReady },
                     { label: "Persistence Analyzer", icon: ic(<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill={(th.danger||"#f85149")+"22"} stroke={th.danger||"#f85149"}/><path d="M12 8v4M12 16h.01" stroke={th.danger||"#f85149"}/></>, th.danger || "#f85149"), action: () => {
                       if (!ct?.dataReady) return;
@@ -2053,19 +2308,6 @@ export default function App() {
                       const autoMode = (hasKeyPath && hasValueName) ? "registry" : hasEventId ? "evtx" : "auto";
                       setModal({ type: "persistence", phase: "config", mode: autoMode, columns: {}, data: null, loading: false, error: null, viewTab: "grouped", searchText: "", severityFilter: "all", categoryFilter: "all", disabledRules: new Set(), customRules: [], showRules: false, addingRule: false, newRule: {}, modalW: 1100 });
                     }, disabled: !ct?.dataReady },
-                    { label: "Edit Filter", icon: ic(<><rect x="3" y="4" width="18" height="16" rx="2" fill="none"/><line x1="7" y1="9" x2="17" y2="9"/><line x1="7" y1="13" x2="14" y2="13"/><line x1="7" y1="17" x2="11" y2="17"/></>), action: () => {
-                      if (ct?.dataReady) setModal({ type: "editFilter" });
-                    }, disabled: !ct?.dataReady },
-                    { label: "Merge Tabs", icon: ic(<><rect x="4" y="4" width="16" height="6" rx="1"/><rect x="4" y="14" width="16" height="6" rx="1"/><line x1="12" y1="10" x2="12" y2="14" strokeDasharray="2,1"/></>), action: () => {
-                      const ready = tabs.filter((t) => t.dataReady && !t.importing);
-                      if (ready.length < 2) return;
-                      setModal({ type: "mergeTabs", tabOptions: ready.map((t) => ({
-                        tabId: t.id, tabName: t.name, rowCount: t.totalRows,
-                        tsColumns: [...(t.tsColumns || new Set())],
-                        selectedTsCol: [...(t.tsColumns || new Set())][0] || "",
-                        checked: true,
-                      }))});
-                    }, disabled: tabs.filter((t) => t.dataReady && !t.importing).length < 2 },
                     { section: "Export" },
                     { label: "Generate Report", icon: ic(<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></>, th.success || "#3fb950"), action: async () => { if (ct?.dataReady) await tle.generateReport(ct.id, ct.name, ct.tagColors || {}); }, disabled: !ct?.dataReady },
                     { section: "Help" },
@@ -2349,7 +2591,7 @@ export default function App() {
         const chartH = svgH - X_AXIS_H - CHART_PAD_T;
         const isHourly = histGranularity === "hour";
         const bucketLabel = isHourly ? "hour" : "day";
-        // Brush helpers
+        // Brush helpers — DOM-only during drag for zero-rerender performance
         const getBarIdx = (e) => {
           const r = histSvgRectRef.current || (e.currentTarget || e.target?.closest?.("svg"))?.getBoundingClientRect();
           if (!r) return 0;
@@ -2359,9 +2601,50 @@ export default function App() {
         };
         const brushFrom = (d) => isHourly ? d + ":00:00" : d + " 00:00:00";
         const brushTo = (d) => isHourly ? d + ":59:59" : d + " 23:59:59";
-        const setBrush = (v) => { histBrushRef.current = v; setHistBrush(v); };
-        const onSvgDown = (e) => { if (e.button !== 0 || !histogramData.length) return; if (e.currentTarget) histSvgRectRef.current = e.currentTarget.getBoundingClientRect(); const idx = getBarIdx(e); setBrush({ startIdx: idx, endIdx: idx, active: true }); };
-        const onSvgMove = (e) => { if (!histBrushRef.current.active) return; const idx = getBarIdx(e); setBrush({ ...histBrushRef.current, endIdx: idx }); };
+        // Update brush overlay position via direct DOM (no React re-render)
+        const updateBrushDOM = (lo, hi) => {
+          const g = histBarGeomRef.current;
+          const overlay = histBrushOverlayRef.current;
+          const label = histBrushLabelRef.current;
+          if (overlay) {
+            const bx = g.yAxisW + lo * g.barW;
+            const bw = (hi - lo + 1) * g.barW;
+            overlay.setAttribute("x", bx);
+            overlay.setAttribute("width", bw);
+            overlay.setAttribute("y", g.chartPadT);
+            overlay.setAttribute("height", g.chartH);
+            overlay.style.display = "";
+          }
+          if (label) {
+            const bx = g.yAxisW + lo * g.barW;
+            const bw = (hi - lo + 1) * g.barW;
+            label.setAttribute("x", bx + bw / 2);
+            label.setAttribute("y", g.chartPadT - 3);
+            label.textContent = (histogramData[lo]?.day || "") + (lo !== hi ? ` \u2014 ${histogramData[hi]?.day || ""}` : "");
+            label.style.display = "";
+          }
+        };
+        const hideBrushDOM = () => {
+          if (histBrushOverlayRef.current) histBrushOverlayRef.current.style.display = "none";
+          if (histBrushLabelRef.current) histBrushLabelRef.current.style.display = "none";
+        };
+        const onSvgDown = (e) => {
+          if (e.button !== 0 || !histogramData.length) return;
+          if (e.currentTarget) histSvgRectRef.current = e.currentTarget.getBoundingClientRect();
+          const idx = getBarIdx(e);
+          histBrushRef.current = { startIdx: idx, endIdx: idx, active: true };
+          updateBrushDOM(idx, idx);
+          e.currentTarget.style.cursor = "col-resize";
+        };
+        const onSvgMove = (e) => {
+          if (!histBrushRef.current.active) return;
+          const idx = getBarIdx(e);
+          if (idx === histBrushRef.current.endIdx) return; // skip if same bar
+          histBrushRef.current = { ...histBrushRef.current, endIdx: idx };
+          const lo = Math.min(histBrushRef.current.startIdx, idx);
+          const hi = Math.max(histBrushRef.current.startIdx, idx);
+          updateBrushDOM(lo, hi);
+        };
         const onSvgUp = (e) => {
           if (!histBrushRef.current.active || !histogramData.length) return;
           const end = getBarIdx(e);
@@ -2373,8 +2656,10 @@ export default function App() {
             const dLo = histogramData[lo], dHi = histogramData[hi];
             if (dLo && dHi) up("dateRangeFilters", { ...(ct.dateRangeFilters || {}), [effectiveHistCol]: { from: brushFrom(dLo.day), to: brushTo(dHi.day) } });
           }
-          setBrush({ startIdx: null, endIdx: null, active: false });
+          histBrushRef.current = { startIdx: null, endIdx: null, active: false };
+          hideBrushDOM();
           histSvgRectRef.current = null;
+          if (e.currentTarget) e.currentTarget.style.cursor = "crosshair";
         };
         return (
           <div id="hist-container" ref={histContainerRef} style={{ height: HIST_H, padding: "4px 12px 0", background: `linear-gradient(180deg, ${th.panelBg}ee, ${th.panelBg}cc)`, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", borderBottom: `1px solid ${th.border}44`, flexShrink: 0, position: "relative", overflow: "hidden" }}>
@@ -2383,14 +2668,14 @@ export default function App() {
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={th.accent} strokeWidth="2"><rect x="3" y="12" width="4" height="9" rx="1" /><rect x="10" y="6" width="4" height="15" rx="1" /><rect x="17" y="3" width="4" height="18" rx="1" /></svg>
                 <span style={{ color: th.textDim, fontSize: 10, fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>Timeline</span>
               </div>
-              <select value={effectiveHistCol || ""} onChange={(e) => { setHistogramCol(e.target.value); setHistBrush({ startIdx: null, endIdx: null, active: false }); }}
+              <select value={effectiveHistCol || ""} onChange={(e) => { setHistogramCol(e.target.value); histBrushRef.current = { startIdx: null, endIdx: null, active: false }; hideBrushDOM(); }}
                 style={{ background: th.bgInput, border: `1px solid ${th.btnBorder}`, color: th.textDim, fontSize: 10, padding: "2px 6px", borderRadius: 4, cursor: "pointer", outline: "none" }}>
                 {[...ct.tsColumns].map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
               {/* Granularity toggle */}
               <div style={{ display: "flex", background: th.btnBg, borderRadius: 5, border: `1px solid ${th.btnBorder}`, overflow: "hidden" }}>
                 {["day", "hour"].map((g) => (
-                  <button key={g} onClick={() => { setHistGranularity(g); setHistBrush({ startIdx: null, endIdx: null, active: false }); }}
+                  <button key={g} onClick={() => { setHistGranularity(g); histBrushRef.current = { startIdx: null, endIdx: null, active: false }; hideBrushDOM(); }}
                     style={{ padding: "2px 8px", fontSize: 9, fontWeight: histGranularity === g ? 600 : 400, background: histGranularity === g ? th.accent + "22" : "transparent", color: histGranularity === g ? th.accent : th.textMuted, border: "none", cursor: "pointer", fontFamily: "-apple-system,sans-serif", textTransform: "capitalize" }}>{g}</button>
                 ))}
               </div>
@@ -2411,8 +2696,8 @@ export default function App() {
               <button onClick={() => setHistogramVisible(false)} style={{ background: "none", border: "none", color: th.textMuted, cursor: "pointer", fontSize: 10, marginLeft: ct.dateRangeFilters?.[effectiveHistCol] ? 4 : "auto", padding: "0 4px" }}>{"\u2715"}</button>
             </div>
             {histogramData.length > 0 ? (
-              <svg width="100%" height={svgH} style={{ display: "block", overflow: "visible", cursor: histBrush.active ? "col-resize" : "crosshair", userSelect: "none" }}
-                onMouseDown={onSvgDown} onMouseMove={onSvgMove} onMouseUp={onSvgUp} onMouseLeave={() => { if (histBrushRef.current.active) setBrush({ startIdx: null, endIdx: null, active: false }); }}>
+              <svg width="100%" height={svgH} style={{ display: "block", overflow: "visible", cursor: "crosshair", userSelect: "none" }}
+                onMouseDown={onSvgDown} onMouseMove={onSvgMove} onMouseUp={onSvgUp} onMouseLeave={(e) => { if (histBrushRef.current.active) { histBrushRef.current = { startIdx: null, endIdx: null, active: false }; hideBrushDOM(); if (e.currentTarget) e.currentTarget.style.cursor = "crosshair"; } }}>
                 {(() => {
                   const maxCnt = Math.max(...histogramData.map((d) => d.cnt), 1);
                   const rawStep = maxCnt / 4;
@@ -2429,17 +2714,12 @@ export default function App() {
                   const labelStep = Math.max(1, Math.ceil(histogramData.length / maxLabels));
                   const gridColor = th.histGrid;
                   const textColor = th.textMuted;
+                  // Cache bar geometry for DOM-based brush updates (no re-renders during drag)
+                  histBarGeomRef.current = { barW, yAxisW: Y_AXIS_W, chartPadT: CHART_PAD_T, chartH, len: histogramData.length };
                   const heatColor = (ratio) => {
                     const t = Math.max(0, Math.min(1, ratio));
                     return `rgb(${Math.round(30 + t * 202)},${Math.round(40 + t * 53)},${Math.round(56 - t * 14)})`;
                   };
-                  const heatHover = (ratio) => {
-                    const t = Math.max(0, Math.min(1, ratio));
-                    return `rgb(${Math.min(255, Math.round(50 + t * 194))},${Math.min(255, Math.round(60 + t * 63))},${Math.min(255, Math.round(70 - t * 6))})`;
-                  };
-                  // Brush selection range
-                  const bLo = histBrush.active ? Math.min(histBrush.startIdx, histBrush.endIdx) : -1;
-                  const bHi = histBrush.active ? Math.max(histBrush.startIdx, histBrush.endIdx) : -1;
                   // Active date filter check
                   const activeFilter = ct.dateRangeFilters?.[effectiveHistCol];
                   const filterFrom = activeFilter?.from?.slice(0, isHourly ? 13 : 10);
@@ -2458,26 +2738,21 @@ export default function App() {
                       const x = Y_AXIS_W + i * barW + gap;
                       const y = CHART_PAD_T + chartH - h;
                       const isFiltered = filterFrom && filterTo && d.day >= filterFrom && d.day <= filterTo;
-                      const inBrush = i >= bLo && i <= bHi;
                       const ratio = d.cnt / maxCnt;
-                      const fill = isFiltered ? th.warning : inBrush ? heatHover(ratio) : heatColor(ratio);
+                      const fill = isFiltered ? th.warning : heatColor(ratio);
                       return <rect key={i} x={x} y={y} width={Math.max(1, barW - gap * 2)} height={h}
                         fill={fill} rx={barW > 6 ? 2 : 0}
-                        style={{ transition: histBrush.active ? "none" : "fill 0.1s", pointerEvents: "none" }}>
+                        style={{ transition: "fill 0.1s", pointerEvents: "none" }}>
                         <title>{d.day}: {d.cnt.toLocaleString()} events</title>
                       </rect>;
                     })}
-                    {/* Brush selection overlay */}
-                    {histBrush.active && bLo >= 0 && bHi >= 0 && (() => {
-                      const bx = Y_AXIS_W + bLo * barW;
-                      const bw = (bHi - bLo + 1) * barW;
-                      return (<>
-                        <rect x={bx} y={CHART_PAD_T} width={bw} height={chartH} fill={th.accent + "15"} stroke={th.accent} strokeWidth={1} strokeDasharray="3 2" rx={2} style={{ pointerEvents: "none" }} />
-                        <text x={bx + bw / 2} y={CHART_PAD_T - 3} textAnchor="middle" fill={th.accent} fontSize={8} fontWeight="600" fontFamily="-apple-system,sans-serif" style={{ pointerEvents: "none" }}>
-                          {histogramData[bLo]?.day}{bLo !== bHi ? ` — ${histogramData[bHi]?.day}` : ""}
-                        </text>
-                      </>);
-                    })()}
+                    {/* Brush selection overlay — positioned via DOM refs for zero-rerender drag */}
+                    <rect ref={histBrushOverlayRef} x={0} y={CHART_PAD_T} width={0} height={chartH}
+                      fill={th.accent + "15"} stroke={th.accent} strokeWidth={1} strokeDasharray="3 2" rx={2}
+                      style={{ pointerEvents: "none", display: "none" }} />
+                    <text ref={histBrushLabelRef} x={0} y={CHART_PAD_T - 3} textAnchor="middle"
+                      fill={th.accent} fontSize={8} fontWeight="600" fontFamily="-apple-system,sans-serif"
+                      style={{ pointerEvents: "none", display: "none" }} />
                     <line x1={Y_AXIS_W} y1={CHART_PAD_T + chartH} x2={Y_AXIS_W + chartW} y2={CHART_PAD_T + chartH} stroke={gridColor} strokeWidth={1} />
                     {histogramData.map((d, i) => {
                       if (i % labelStep !== 0 && i !== histogramData.length - 1) return null;
@@ -2570,17 +2845,24 @@ export default function App() {
               <div style={{ display: "flex", position: "sticky", top: 0, zIndex: 10, background: th.headerBg, borderBottom: `2px solid ${th.borderAccent}` }}>
                 {/* # column - always sticky */}
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: BKMK_COL_WIDTH, minWidth: BKMK_COL_WIDTH, height: HEADER_HEIGHT, color: th.textMuted, fontSize: 10, fontWeight: 600, position: "sticky", left: 0, zIndex: 13, background: th.headerBg }}>#</div>
-                {/* Tags column header — sticky, resizable */}
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: tagColWidth, minWidth: tagColWidth, height: HEADER_HEIGHT, color: th.textMuted, fontSize: 10, fontWeight: 600, borderRight: `1px solid ${th.border}`, background: th.headerBg, position: "sticky", left: BKMK_COL_WIDTH, zIndex: 12, userSelect: "none" }}>
-                  Tags
+                {/* Tags column header — sticky, resizable, standard style */}
+                <div
+                  onClick={(e) => { if (e.metaKey || e.ctrlKey) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, colName: "__tags__" }); return; } handleSort("__tags__"); }}
+                  onDoubleClick={() => { clearTimeout(sortTimerRef.current); }}
+                  onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, colName: "__tags__" }); }}
+                  style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: tagColWidth, minWidth: tagColWidth, boxSizing: "border-box", padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: `1px solid ${th.border}`, position: "sticky", left: BKMK_COL_WIDTH, zIndex: 12, background: th.headerBg, overflow: "hidden" }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>Tags</span>
+                  {ct.sortCol === "__tags__" && <span style={{ fontSize: 9, color: th.accent, marginLeft: 3 }}>{ct.sortDir === "asc" ? "▲" : "▼"}</span>}
                   <div onMouseDown={(e) => {
-                    e.preventDefault();
+                    e.preventDefault(); e.stopPropagation();
                     const startX = e.clientX, startW = tagColWidth;
                     const onMove = (ev) => setTagColWidth(Math.max(TAG_COL_WIDTH_MIN, startW + ev.clientX - startX));
                     const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
                     document.addEventListener("mousemove", onMove);
                     document.addEventListener("mouseup", onUp);
-                  }} style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 4, cursor: "col-resize" }} />
+                  }}
+                    onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                    style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 5, cursor: "col-resize" }} />
                 </div>
                 {/* Pinned columns */}
                 {pinnedH.map((h) => (
@@ -2588,7 +2870,7 @@ export default function App() {
                     onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setHeaderDragOver(h); }}
                     onDragLeave={() => setHeaderDragOver((prev) => prev === h ? null : prev)}
                     onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setHeaderDragOver(null); const src = e.dataTransfer.getData("text/column-name"); if (src && src !== h) reorderColumn(src, h); }}
-                    onClick={() => handleSort(h)}
+                    onClick={(e) => { if (e.metaKey || e.ctrlKey) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, colName: h }); return; } handleSort(h); }}
                     onDoubleClick={() => handleHeaderDblClick(h)}
                     onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, colName: h }); }}
                     style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: h === pinnedH[pinnedH.length - 1] ? `2px solid ${th.borderAccent}` : `1px solid ${th.border}`, position: "sticky", left: pinnedOffsets.offsets[h], zIndex: 12, background: headerDragOver === h ? th.selection : th.headerBg, overflow: "hidden" }}>
@@ -2607,7 +2889,7 @@ export default function App() {
                     onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setHeaderDragOver(h); }}
                     onDragLeave={() => setHeaderDragOver((prev) => prev === h ? null : prev)}
                     onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setHeaderDragOver(null); const src = e.dataTransfer.getData("text/column-name"); if (src && src !== h) reorderColumn(src, h); }}
-                    onClick={() => handleSort(h)}
+                    onClick={(e) => { if (e.metaKey || e.ctrlKey) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, colName: h }); return; } handleSort(h); }}
                     onDoubleClick={() => handleHeaderDblClick(h)}
                     onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, colName: h }); }}
                     style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: `1px solid ${th.border}`, position: "relative", overflow: "hidden", background: headerDragOver === h ? th.selection : undefined }}>
@@ -2627,20 +2909,23 @@ export default function App() {
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: BKMK_COL_WIDTH, minWidth: BKMK_COL_WIDTH, height: FILTER_HEIGHT, position: "sticky", left: 0, zIndex: 11, background: th.bg }}>
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={th.textMuted} strokeWidth="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" /></svg>
                 </div>
-                {/* Tags filter cell — uses same checkbox filter dropdown as columns */}
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: tagColWidth, minWidth: tagColWidth, height: FILTER_HEIGHT, borderRight: `1px solid ${th.border}`, background: th.bg, position: "sticky", left: BKMK_COL_WIDTH, zIndex: 11 }}>
-                  {ct.tagFilter ? (
-                    <button onClick={() => up("tagFilter", null)} style={{ padding: "1px 5px", background: "rgba(248,81,73,0.15)", border: "1px solid rgba(248,81,73,0.3)", borderRadius: 3, color: th.danger, fontSize: 8, cursor: "pointer", fontFamily: "-apple-system,sans-serif", maxWidth: tagColWidth - 8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                      title={`Tag filter active — click to clear`}>
-                      {Array.isArray(ct.tagFilter) ? `${ct.tagFilter.length} tags` : ct.tagFilter} ✕
-                    </button>
-                  ) : (
-                    <button onClick={(e) => { e.stopPropagation(); const rect = e.currentTarget.getBoundingClientRect(); setFilterDropdown(filterDropdown?.colName === "__tags__" ? null : { colName: "__tags__", x: rect.left, y: rect.bottom + 2 }); }}
-                      style={{ background: "none", border: "none", color: th.textMuted, fontSize: 9, cursor: "pointer", padding: "2px 4px" }} title="Filter by tag">
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" /></svg>
-                    </button>
-                  )}
-                </div>
+                {/* Tags filter cell — standard layout with text input + dropdown */}
+                {(() => {
+                  const hasCbf = ct.tagFilter && (Array.isArray(ct.tagFilter) ? ct.tagFilter.length > 0 : true);
+                  const hasTextFilter = !!(ct.columnFilters["__tags__"]);
+                  const hasFilter = !!(hasTextFilter || hasCbf);
+                  const isDis = ct.disabledFilters?.has("__tags__");
+                  return (
+                    <div style={{ width: tagColWidth, minWidth: tagColWidth, boxSizing: "border-box", padding: "0 2px", display: "flex", alignItems: "center", height: FILTER_HEIGHT, borderRight: `1px solid ${th.border}`, position: "sticky", left: BKMK_COL_WIDTH, zIndex: 11, background: th.bg }}>
+                      {hasFilter && <button onClick={() => { const s = new Set(ct.disabledFilters || []); if (s.has("__tags__")) s.delete("__tags__"); else s.add("__tags__"); up("disabledFilters", s); }}
+                        style={{ background: "none", border: "none", cursor: "pointer", padding: "1px 2px", color: isDis ? th.danger : th.success, fontSize: 9, flexShrink: 0, lineHeight: 1, opacity: 0.8 }} title={isDis ? "Enable filter" : "Disable filter"}>{isDis ? "⊘" : "⊙"}</button>}
+                      <input value={ct.columnFilters["__tags__"] || ""} onChange={(e) => up("columnFilters", { ...ct.columnFilters, "__tags__": e.target.value })} placeholder="Filter..."
+                        style={{ flex: 1, background: th.bgInput, border: `1px solid ${hasCbf ? th.borderAccent : th.border}`, borderRadius: 3, color: th.text, fontSize: 10, padding: "2px 4px", outline: "none", fontFamily: "inherit", minWidth: 0, opacity: isDis ? 0.4 : 1, textDecoration: isDis ? "line-through" : "none" }} />
+                      <button onClick={(e) => { e.stopPropagation(); const rect = e.currentTarget.getBoundingClientRect(); setFilterDropdown(filterDropdown?.colName === "__tags__" ? null : { colName: "__tags__", x: rect.left, y: rect.bottom + 2 }); }}
+                        style={{ background: "none", border: "none", cursor: "pointer", padding: "2px 3px", color: hasCbf ? th.borderAccent : th.textDim, fontSize: 12, flexShrink: 0, lineHeight: 1 }} title="Filter by tags">▼</button>
+                    </div>
+                  );
+                })()}
                 {/* Pinned filter cells */}
                 {pinnedH.map((h) => {
                   const hasCbf = ct.checkboxFilters?.[h]?.length > 0;
@@ -2835,7 +3120,7 @@ export default function App() {
             {!isGrouped && <><Sdiv /><span>Showing: <b>{formatNumber(ct.totalFiltered)}</b></span></>}
             {isGrouped && <><Sdiv /><span>Groups: <b style={{ color: th.accent }}>{ct.groupData?.length || 0}</b></span></>}
             {ct.bookmarkedSet?.size > 0 && <><Sdiv /><span>Flagged: <b style={{ color: th.warning }}>{ct.bookmarkedSet.size}</b></span></>}
-            {ct.sortCol && <><Sdiv /><span>Sort: {ct.sortCol} {ct.sortDir === "asc" ? "↑" : "↓"}</span></>}
+            {ct.sortCol && ct.sortCol !== "__tags__" && <><Sdiv /><span>Sort: {ct.sortCol} {ct.sortDir === "asc" ? "↑" : "↓"}</span></>}
             {selectedRows.size > 0 && !isGrouped && <><Sdiv /><span>{selectedRows.size === 1 ? `Row: ${(lastClickedRow ?? 0) + 1}` : `${selectedRows.size} rows selected`}</span></>}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -2844,10 +3129,11 @@ export default function App() {
             <span>{allVisH.length}/{ct.headers.length} cols</span>
             {ct.colorRules.length > 0 && <span>{ct.colorRules.length} color rule{ct.colorRules.length > 1 ? "s" : ""}</span>}
             {activeCheckboxCount > 0 && <span style={{ color: th.borderAccent }}>{activeCheckboxCount} value filter{activeCheckboxCount > 1 ? "s" : ""}</span>}
-            {ct.tagFilter && <span style={{ color: th.danger }}>Tag: {Array.isArray(ct.tagFilter) ? ct.tagFilter.join(", ") : ct.tagFilter}</span>}
+            {ct.tagFilter && <span style={{ color: th.danger }}>Tag filter ({Array.isArray(ct.tagFilter) ? ct.tagFilter.length : 1})</span>}
             {Object.keys(ct.dateRangeFilters || {}).length > 0 && <span style={{ color: th.warning }}>{Object.keys(ct.dateRangeFilters).length} date filter{Object.keys(ct.dateRangeFilters).length > 1 ? "s" : ""}</span>}
             {(ct.advancedFilters?.length > 0) && <span style={{ color: th.accent }}>{ct.advancedFilters.length} advanced filter{ct.advancedFilters.length > 1 ? "s" : ""}</span>}
             {ct.searchHighlight && ct.searchTerm && <span style={{ color: th.warning }}>Highlight mode</span>}
+            {ct.iocHighlights?.length > 0 && <span onClick={() => up("iocHighlights", null)} style={{ color: "#f0883e", cursor: "pointer" }} title="IOC matches are highlighted — click to clear">IOC Highlights ({ct.iocHighlights.length}) ✕</span>}
             {ct._detectedProfile && <span style={{ color: th.success }}>{ct._detectedProfile}</span>}
             {totalActiveFilters > 0 && <span onClick={clearAllFilters} style={{ cursor: "pointer", color: th.danger || "#f85149", fontWeight: 600, textDecoration: "underline", textDecorationStyle: "dotted" }} title={`Clear all ${totalActiveFilters} active filter${totalActiveFilters > 1 ? "s" : ""}`}>Clear All ({totalActiveFilters})</span>}
             <span onClick={() => { if (ct?.dataReady) setModal({ type: "editFilter" }); }} style={{ cursor: ct?.dataReady ? "pointer" : "default", color: ct?.advancedFilters?.length > 0 ? th.accent : th.textMuted, textDecoration: ct?.dataReady ? "underline" : "none" }}>Edit Filter</span>
@@ -3428,9 +3714,10 @@ export default function App() {
         const loading = modal.loading || false;
         const results = modal.results || null;
         const error = modal.error || null;
+        const scanProgress = modal.scanProgress || null; // { stage, current, total, label }
 
         const categories = parsedIocs.reduce((acc, ioc) => { acc[ioc.category] = (acc[ioc.category] || 0) + 1; return acc; }, {});
-        const defaultName = fileName ? fileName.replace(/\.(txt|csv|ioc)$/i, "") : "IOC Match";
+        const defaultName = fileName ? fileName.replace(/\.(txt|csv|ioc|tsv|xlsx|xls)$/i, "") : "IOC Match";
         const effectiveName = (iocName || defaultName || "IOC Match").trim();
         const tagName = `IOC: ${effectiveName}`;
 
@@ -3438,8 +3725,10 @@ export default function App() {
           const result = await tle.loadIocFile();
           if (!result || result.error) return;
           const parsed = parseIocText(result.content);
-          setModal((p) => ({ ...p, iocText: result.content, fileName: result.fileName,
-            iocName: p.iocName || result.fileName.replace(/\.(txt|csv|ioc)$/i, ""), parsedIocs: parsed }));
+          // Show defanged IOCs in textarea so analyst can verify
+          const defangedText = parsed.map((i) => i.raw).join("\n");
+          setModal((p) => ({ ...p, iocText: defangedText, fileName: result.fileName,
+            iocName: p.iocName || result.fileName.replace(/\.(txt|csv|ioc|tsv|xlsx|xls)$/i, ""), parsedIocs: parsed }));
         };
 
         const handlePasteChange = (text) => {
@@ -3449,28 +3738,82 @@ export default function App() {
 
         const handleScan = async () => {
           if (parsedIocs.length === 0 || !ct) return;
-          setModal((p) => ({ ...p, loading: true, error: null }));
+          setModal((p) => ({ ...p, loading: true, error: null, scanProgress: { stage: "scan", current: 0, total: parsedIocs.length, label: "Scanning database..." } }));
           try {
             const escapedPatterns = parsedIocs.map((ioc) => escapeIocForRegex(ioc.raw));
-            const { matchedRowIds, perIocCounts } = await tle.matchIocs(ct.id, escapedPatterns, 200);
 
-            if (matchedRowIds.length > 0) {
+            // Batch IOC scanning for progress — process in chunks of 20 for smoother updates
+            const BATCH = 20;
+            const mergedRowIds = new Set();
+            const mergedPerIocCounts = {};
+            const mergedPerRowIocs = {};
+            const totalBatches = Math.ceil(escapedPatterns.length / BATCH);
+
+            for (let b = 0; b < totalBatches; b++) {
+              const start = b * BATCH;
+              const batchPatterns = escapedPatterns.slice(start, start + BATCH);
+              const batchParsed = parsedIocs.slice(start, start + BATCH);
+
+              setModal((p) => p?.type === "ioc" ? ({ ...p, scanProgress: { stage: "scan", current: Math.min(start + BATCH, escapedPatterns.length), total: escapedPatterns.length, label: `Scanning IOCs ${start + 1}–${Math.min(start + BATCH, escapedPatterns.length)} of ${escapedPatterns.length}...` } }) : p);
+
+              // Yield to UI so progress bar re-renders
+              await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+              const { matchedRowIds, perIocCounts, perRowIocs } = await tle.matchIocs(ct.id, batchPatterns, 200);
+              for (const id of matchedRowIds) mergedRowIds.add(id);
+              for (let i = 0; i < batchPatterns.length; i++) {
+                mergedPerIocCounts[escapedPatterns[start + i]] = perIocCounts[batchPatterns[i]] || 0;
+              }
+              for (const [rowId, indices] of Object.entries(perRowIocs || {})) {
+                if (!mergedPerRowIocs[rowId]) mergedPerRowIocs[rowId] = [];
+                // Remap batch-local indices to global indices
+                for (const li of indices) mergedPerRowIocs[rowId].push(start + li);
+              }
+            }
+
+            const allMatchedRowIds = [...mergedRowIds];
+
+            // Phase 2: Tagging
+            setModal((p) => p?.type === "ioc" ? ({ ...p, scanProgress: { stage: "tag", current: 0, total: 1, label: `Tagging ${allMatchedRowIds.length} matched rows...` } }) : p);
+            await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+            const allIocTags = new Set();
+            if (allMatchedRowIds.length > 0) {
               const tagMap = {};
-              for (const rowId of matchedRowIds) tagMap[rowId] = [tagName];
+              const newTagColors = { ...ct.tagColors };
+              for (const [rowIdStr, iocIndices] of Object.entries(mergedPerRowIocs || {})) {
+                const rowId = Number(rowIdStr);
+                tagMap[rowId] = iocIndices.map((i) => {
+                  const iocTag = `IOC: ${parsedIocs[i].raw}`;
+                  allIocTags.add(iocTag);
+                  if (!newTagColors[iocTag]) newTagColors[iocTag] = "#f0883e";
+                  return iocTag;
+                });
+              }
               await tle.bulkAddTags(ct.id, tagMap);
-              if (!ct.tagColors[tagName]) up("tagColors", { ...ct.tagColors, [tagName]: "#f0883e" });
+              up("tagColors", newTagColors);
+            }
+
+            // Phase 3: Highlights + refresh
+            setModal((p) => p?.type === "ioc" ? ({ ...p, scanProgress: { stage: "refresh", current: 0, total: 1, label: "Refreshing data..." } }) : p);
+            await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+            const hitIocs = parsedIocs.filter((ioc, i) => (mergedPerIocCounts[escapedPatterns[i]] || 0) > 0).map((ioc) => ioc.raw);
+            if (hitIocs.length > 0) {
+              const prev = ct.iocHighlights || [];
+              up("iocHighlights", [...new Set([...prev, ...hitIocs])]);
             }
 
             await fetchData(ct);
 
             const perIocResults = parsedIocs.map((ioc, i) => ({
-              raw: ioc.raw, category: ioc.category, hits: perIocCounts[escapedPatterns[i]] || 0,
+              raw: ioc.raw, category: ioc.category, hits: mergedPerIocCounts[escapedPatterns[i]] || 0,
             })).sort((a, b) => b.hits - a.hits);
 
-            setModal((p) => p?.type === "ioc" ? ({ ...p, phase: "results", loading: false,
-              results: { matchedRowIds, matchedCount: matchedRowIds.length, tagName, perIocResults } }) : p);
+            setModal((p) => p?.type === "ioc" ? ({ ...p, phase: "results", loading: false, scanProgress: null,
+              results: { matchedRowIds: allMatchedRowIds, matchedCount: allMatchedRowIds.length, tagName, allIocTags: [...allIocTags], perIocResults } }) : p);
           } catch (e) {
-            setModal((p) => p?.type === "ioc" ? ({ ...p, loading: false, error: e.message }) : p);
+            setModal((p) => p?.type === "ioc" ? ({ ...p, loading: false, scanProgress: null, error: e.message }) : p);
           }
         };
 
@@ -3493,12 +3836,12 @@ export default function App() {
               <div style={{ flex: 1, overflow: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
                 {phase === "load" && (<>
                   <div style={ms.fg}>
-                    <label style={ms.lb}>IOC Set Name (becomes tag label)</label>
+                    <label style={ms.lb}>IOC Set Name</label>
                     <input value={iocName} onChange={(e) => setModal((p) => ({ ...p, iocName: e.target.value }))} placeholder={defaultName} style={ms.ip} />
-                    {(iocName || defaultName) && <span style={{ color: th.textMuted, fontSize: 10, marginTop: 3, display: "block" }}>Tag: <code style={{ color: th.accent }}>{tagName}</code></span>}
+                    <span style={{ color: th.textMuted, fontSize: 10, marginTop: 3, display: "block" }}>Each matched IOC gets its own tag, e.g. <code style={{ color: th.accent }}>IOC: cmd.exe</code></span>
                   </div>
                   <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <button onClick={handleLoadFile} style={ms.bp}>Load File (.txt / .csv)</button>
+                    <button onClick={handleLoadFile} style={ms.bp}>Load File (.txt / .csv / .xlsx / .tsv)</button>
                     <span style={{ color: th.textMuted, fontSize: 11 }}>or paste below</span>
                   </div>
                   <div style={ms.fg}>
@@ -3511,13 +3854,52 @@ export default function App() {
                     <div style={{ background: th.bgAlt, borderRadius: 6, padding: "10px 12px" }}>
                       <div style={{ ...ms.lb, marginBottom: 6 }}>Category Breakdown ({parsedIocs.length} unique)</div>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                        {Object.entries(categories).map(([cat, count]) => (
-                          <span key={cat} style={{ padding: "2px 8px", background: `${th.accent}22`, border: `1px solid ${th.accent}44`, borderRadius: 4, fontSize: 11, color: th.accent, fontFamily: "-apple-system, sans-serif" }}>{cat}: {count}</span>
-                        ))}
+                        {Object.entries(categories).map(([cat, count]) => {
+                          const clr = /^(IPv[46]|Domain|Email|URL|Crypto|User_Agent|Phone|Payment)/.test(cat) ? th.accent : /^(SHA|MD5)/.test(cat) ? th.warning : cat === "Other" ? th.textMuted : "#a78bfa";
+                          return <span key={cat} style={{ padding: "2px 8px", background: `${clr}22`, border: `1px solid ${clr}44`, borderRadius: 4, fontSize: 11, color: clr, fontFamily: "-apple-system, sans-serif" }}>{cat.replace(/_/g, " ")}: {count}</span>;
+                        })}
                       </div>
                     </div>
                   )}
                   {error && <div style={{ padding: "8px 12px", background: `${th.danger}22`, border: `1px solid ${th.danger}44`, borderRadius: 6, color: th.danger, fontSize: 12 }}>Error: {error}</div>}
+                  {loading && scanProgress && (() => {
+                    const pct = scanProgress.stage === "scan" ? Math.round((scanProgress.current / scanProgress.total) * 80)
+                      : scanProgress.stage === "tag" ? 90 : 95;
+                    return (
+                    <div style={{ padding: "16px 0 8px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                        <span style={{ fontSize: 12, color: th.text, fontWeight: 500 }}>{scanProgress.label}</span>
+                        <span style={{ fontSize: 11, color: th.textMuted, fontFamily: "'SF Mono', Menlo, monospace" }}>
+                          {scanProgress.stage === "scan" ? `${scanProgress.current}/${scanProgress.total}` : `${pct}%`}
+                        </span>
+                      </div>
+                      <div style={{ width: "100%", height: 8, background: th.bgAlt, borderRadius: 4, overflow: "hidden", position: "relative" }}>
+                        <div style={{
+                          height: "100%", borderRadius: 4, transition: "width 0.3s ease-out",
+                          width: `${pct}%`, position: "relative", overflow: "hidden",
+                          background: `linear-gradient(90deg, ${th.accent}, ${th.warning})`,
+                        }}>
+                          {/* Animated shimmer overlay */}
+                          <div style={{
+                            position: "absolute", inset: 0,
+                            background: "linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.25) 50%, transparent 100%)",
+                            backgroundSize: "200% 100%",
+                            animation: "iocShimmer 1.2s ease-in-out infinite",
+                          }} />
+                        </div>
+                      </div>
+                      <style>{`@keyframes iocShimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }`}</style>
+                      <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 10 }}>
+                        {["Scanning", "Tagging", "Refreshing"].map((step, i) => {
+                          const stages = ["scan", "tag", "refresh"];
+                          const si = stages.indexOf(scanProgress.stage);
+                          const done = i < si;
+                          const active = i === si;
+                          return <span key={step} style={{ fontSize: 10, color: done ? th.success : active ? th.accent : th.textDim, fontWeight: active ? 600 : 400, transition: "color 0.3s" }}>{done ? "\u2713 " : active ? "\u25CF " : "\u25CB "}{step}</span>;
+                        })}
+                      </div>
+                    </div>);
+                  })()}
                 </>)}
 
                 {phase === "results" && results && (<>
@@ -3537,7 +3919,7 @@ export default function App() {
                   </div>
                   {results.matchedCount > 0 && (
                     <div style={{ padding: "8px 12px", background: `${th.success}15`, border: `1px solid ${th.success}33`, borderRadius: 6, fontSize: 12, color: th.success }}>
-                      Tagged {formatNumber(results.matchedCount)} rows with <code style={{ background: `${th.success}22`, padding: "0 5px", borderRadius: 3 }}>{results.tagName}</code>
+                      Tagged {formatNumber(results.matchedCount)} rows with {results.allIocTags?.length || 0} per-IOC tags (e.g. <code style={{ background: `${th.success}22`, padding: "0 5px", borderRadius: 3 }}>IOC: {results.perIocResults?.find(r => r.hits > 0)?.raw || "..."}</code>)
                     </div>
                   )}
                   <div>
@@ -3547,7 +3929,10 @@ export default function App() {
                         <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 10px", borderBottom: `1px solid ${th.border}22`, background: i % 2 === 0 ? "transparent" : `${th.bgAlt}44` }}>
                           <span style={{ width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: ioc.hits > 0 ? th.danger : th.textMuted, opacity: ioc.hits > 0 ? 1 : 0.4 }} />
                           <span style={{ flex: 1, fontFamily: "'SF Mono', Menlo, monospace", fontSize: 11, color: ioc.hits > 0 ? th.text : th.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={ioc.raw}>{ioc.raw}</span>
-                          <span style={{ fontSize: 10, color: th.textMuted, flexShrink: 0, fontFamily: "-apple-system, sans-serif" }}>{ioc.category}</span>
+                          <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, flexShrink: 0, fontFamily: "-apple-system, sans-serif",
+                            background: /^(IPv[46]|Domain|Email|URL|Crypto|User_Agent|Phone|Payment)/.test(ioc.category) ? `${th.accent}20` : /^(SHA|MD5)/.test(ioc.category) ? `${th.warning}20` : ioc.category === "Other" ? `${th.textMuted}20` : `#8b5cf620`,
+                            color: /^(IPv[46]|Domain|Email|URL|Crypto|User_Agent|Phone|Payment)/.test(ioc.category) ? th.accent : /^(SHA|MD5)/.test(ioc.category) ? th.warning : ioc.category === "Other" ? th.textMuted : "#a78bfa",
+                          }}>{ioc.category.replace(/_/g, " ")}</span>
                           <span style={{ fontWeight: 600, fontSize: 12, color: ioc.hits > 0 ? th.danger : th.textMuted, flexShrink: 0, minWidth: 40, textAlign: "right", fontFamily: "'SF Mono', Menlo, monospace" }}>{ioc.hits > 0 ? `+${formatNumber(ioc.hits)}` : "—"}</span>
                         </div>
                       ))}
@@ -3562,14 +3947,14 @@ export default function App() {
                   <button onClick={() => setModal(null)} style={ms.bs}>Cancel</button>
                   <button disabled={parsedIocs.length === 0 || loading} onClick={handleScan}
                     style={{ ...ms.bp, opacity: parsedIocs.length === 0 || loading ? 0.5 : 1, cursor: parsedIocs.length === 0 || loading ? "not-allowed" : "pointer" }}>
-                    {loading ? `Scanning ${parsedIocs.length} IOCs...` : `Scan ${parsedIocs.length > 0 ? parsedIocs.length + " IOCs" : ""}`}
+                    {loading && scanProgress ? `${scanProgress.stage === "scan" ? Math.round((scanProgress.current / scanProgress.total) * 100) : scanProgress.stage === "tag" ? 90 : 95}% — ${scanProgress.label}` : loading ? `Scanning...` : `Scan ${parsedIocs.length > 0 ? parsedIocs.length + " IOCs" : ""}`}
                   </button>
                 </>)}
                 {phase === "results" && results && (<>
                   <button onClick={() => setModal((p) => ({ ...p, phase: "load" }))} style={ms.bs}>Back / Re-scan</button>
                   <div style={{ display: "flex", gap: 6 }}>
                     {results.matchedCount > 0 && (
-                      <button onClick={() => { up("tagFilter", results.tagName); setModal(null); }} style={{ ...ms.bs, color: th.accent, borderColor: th.accent + "66" }}>Show Only IOC Matches</button>
+                      <button onClick={() => { up("tagFilter", results.allIocTags || []); setModal(null); }} style={{ ...ms.bs, color: th.accent, borderColor: th.accent + "66" }}>Show Only IOC Matches</button>
                     )}
                     <button onClick={() => setModal(null)} style={ms.bp}>Done</button>
                   </div>
@@ -4701,93 +5086,71 @@ export default function App() {
         const { phase, columns: cols, eventIdValue, data, expandedNodes, searchText } = modal;
         const hasCols = (cols.pid && cols.ppid) || (cols.guid && cols.parentGuid);
 
-        const SUSPICIOUS_PARENTS = /^(winword|excel|powerpnt|outlook|onenote|msaccess|acrobat|acrord32)(\.exe)?$/i;
-        const SCRIPT_KIDS = /^(powershell|pwsh|cmd|wscript|cscript|mshta|bash|sh)(\.exe)?$/i;
-        const LOLBINS = /^(certutil|bitsadmin|msiexec|regsvr32|rundll32|msbuild|installutil|cmstp|wmic|forfiles|pcalua|msdt|mavinject|dnscmd|ftp|mshta)(\.exe)?$/i;
-        const SUS_PATHS = /(\\temp\\|\\tmp\\|\\appdata\\|\\downloads\\|\\public\\|\\programdata\\|\\recycle|\\perflogs\\)/i;
-        const NORMAL_LOLBIN_PARENTS = /^(explorer|svchost|services|cmd|powershell|mmc|wmiprvse|taskeng|taskhostw)(\.exe)?$/i;
-        const ENCODED_PS = /\s+(-e\s|-enc\s|-encodedcommand\s|-en\s|-ec\s)/i;
-        const DISCOVERY_CMDS = /^(whoami|ipconfig|systeminfo|net|net1|nltest|tasklist|qprocess|arp|nbtstat|route|netstat|quser|qwinsta|cmdkey|dsquery)(\.exe)?$/i;
-        const REMOTE_EXEC = /^(psexe[cs]svc|wsmprovhost|winrshost)(\.exe)?$/i;
-        const SVCHOST_NORMAL_PARENTS = /^(services)(\.exe)?$/i;
-        // DFIR report-derived patterns (11 reports, Feb 2025–Feb 2026)
-        const WEB_SERVERS = /^(java|tomcat\d*|w3wp|httpd|nginx|node|php-cgi|confluence)(\.exe)?$/i;
-        const CRED_DUMP_CMD = /(comsvcs\.dll|sekurlsa|lsadump|procdump.*lsass|mimikatz|pypykatz|nanodump)/i;
-        const NTDS_EXTRACT = /(ntdsutil.*ifm|wbadmin.*ntds|secretsdump|ntds\.dit)/i;
-        const LSASS_TOOLS = /^(processhacker|procdump|sqldumper|avdump|handlekatz)(\.exe)?$/i;
-        const ACCOUNT_MANIP = /net\s+(user|group|localgroup)\s+.*(\/add|\/domain\s+\/add)/i;
-        const DEFENSE_EVASION = /(vssadmin.*delete|wevtutil\s+cl|bcdedit.*safeboot|bcdedit.*recoveryenabled)/i;
-        const RMM_TOOLS = /^(anydesk|splashtop|rustdesk|atera|screenconnect|teamviewer|supremo)(\.exe)?$/i;
-        const EXFIL_TOOLS = /^(rclone|filezilla|winscp|megasync|megacmd)(\.exe)?$/i;
-        const NETWORK_SCANNERS = /^(netscan|netscan64|advanced_ip_scanner|rustscan|masscan|angry_ip_scanner|nbtscan)(\.exe)?$/i;
-        const AD_RECON_TOOLS = /^(adfind|sharphound|bloodhound|sharpview|seatbelt|rubeus|certify|certipy)(\.exe)?$/i;
-        const ARCHIVE_SUSPECT = /\b(7z|7za|winrar|rar)\b.*(-p| a .*\.(7z|zip|rar))/i;
-
-        const getSusLevel = (node, parentNode) => {
-          const n = (node.processName || "").toLowerCase();
-          const pn = (parentNode?.processName || "").toLowerCase();
-          const cmd = node.cmdLine || "";
-          const img = node.image || "";
-          // Level 3 — critical
-          if (SCRIPT_KIDS.test(n) && SUSPICIOUS_PARENTS.test(pn)) return 3;
-          if (SCRIPT_KIDS.test(n) && WEB_SERVERS.test(pn)) return 3;
-          if (/^lsass(\.exe)?$/i.test(pn) && !/^(svchost|werfault)(\.exe)?$/i.test(n)) return 3;
-          if (ENCODED_PS.test(cmd) && /^(powershell|pwsh)(\.exe)?$/i.test(n)) return 3;
-          if (REMOTE_EXEC.test(n)) return 3;
-          if (CRED_DUMP_CMD.test(cmd)) return 3;
-          if (NTDS_EXTRACT.test(cmd)) return 3;
-          if (LSASS_TOOLS.test(n)) return 3;
-          // Level 2 — high
-          if (LOLBINS.test(n) && pn && !NORMAL_LOLBIN_PARENTS.test(pn)) return 2;
-          if (/^svchost(\.exe)?$/i.test(n) && pn && !SVCHOST_NORMAL_PARENTS.test(pn)) return 2;
-          if (/^(wscript|cscript)(\.exe)?$/i.test(n) && /(\\users\\[^\\]+\\|\\appdata\\)/i.test(img)) return 2;
-          if (DISCOVERY_CMDS.test(n) && SCRIPT_KIDS.test(pn)) return 2;
-          if (/wmic.*\/node:/i.test(cmd) || /winrm/i.test(cmd)) return 2;
-          if (ACCOUNT_MANIP.test(cmd)) return 2;
-          if (DEFENSE_EVASION.test(cmd)) return 2;
-          if (RMM_TOOLS.test(n) && pn && !/^explorer(\.exe)?$/i.test(pn)) return 2;
-          if (EXFIL_TOOLS.test(n)) return 2;
-          if (ARCHIVE_SUSPECT.test(cmd)) return 2;
-          if (/^psexesvc(\.exe)?$/i.test(n) && SCRIPT_KIDS.test(pn)) return 2;
-          if (/^wmiprvse(\.exe)?$/i.test(pn) && SCRIPT_KIDS.test(n) && /ADMIN\$/i.test(cmd)) return 2;
-          // Level 1 — medium
-          if (SUS_PATHS.test(img)) return 1;
-          if (DISCOVERY_CMDS.test(n)) return 1;
-          if (NETWORK_SCANNERS.test(n)) return 1;
-          if (AD_RECON_TOOLS.test(n)) return 1;
-          if (RMM_TOOLS.test(n)) return 1;
-          return 0;
+        // Process type icons — inline 14x14 SVGs (uses hoisted PT_ICON_STYLE)
+        const ptIcon = (name) => {
+          const n = (name || "").toLowerCase();
+          if (/^explorer/i.test(n)) return <svg style={PT_ICON_STYLE} viewBox="0 0 16 16" fill="none"><path d="M2 3h12v2H2zm0 3h12v7H2z" fill={th.accent + "66"} stroke={th.accent} strokeWidth="1"/></svg>;
+          if (/^(winword|excel|powerpnt|outlook|onenote|msaccess|acrobat|acrord32)/i.test(n)) return <svg style={PT_ICON_STYLE} viewBox="0 0 16 16" fill="none"><path d="M4 1h5l4 4v10H4z" fill="#4493f8" fillOpacity=".2" stroke="#4493f8" strokeWidth="1"/><path d="M9 1v4h4" stroke="#4493f8" strokeWidth="1"/></svg>;
+          if (/^(cmd|powershell|pwsh|bash|sh|conhost)(\.exe)?$/i.test(n)) return <svg style={PT_ICON_STYLE} viewBox="0 0 16 16" fill="none"><rect x="1" y="2" width="14" height="12" rx="2" fill={th.text + "11"} stroke={th.textDim} strokeWidth="1"/><path d="M4 6l3 2.5L4 11" stroke={th.accent} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><line x1="9" y1="11" x2="12" y2="11" stroke={th.textDim} strokeWidth="1.5" strokeLinecap="round"/></svg>;
+          if (/^(svchost|services|lsass|csrss|smss|wininit|winlogon|spoolsv|lsm)(\.exe)?$/i.test(n)) return <svg style={PT_ICON_STYLE} viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5" fill={th.textDim + "22"} stroke={th.textDim} strokeWidth="1"/><circle cx="8" cy="8" r="1.5" fill={th.textDim}/><path d="M8 2v2M8 12v2M2 8h2M12 8h2M3.8 3.8l1.4 1.4M10.8 10.8l1.4 1.4M3.8 12.2l1.4-1.4M10.8 5.2l1.4-1.4" stroke={th.textDim} strokeWidth="1"/></svg>;
+          if (/^(chrome|firefox|msedge|iexplore|opera|brave|safari)(\.exe)?$/i.test(n)) return <svg style={PT_ICON_STYLE} viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" fill="#58a6ff22" stroke="#58a6ff" strokeWidth="1"/><ellipse cx="8" cy="8" rx="2.5" ry="6" stroke="#58a6ff" strokeWidth=".7"/><line x1="2" y1="6" x2="14" y2="6" stroke="#58a6ff" strokeWidth=".7"/><line x1="2" y1="10" x2="14" y2="10" stroke="#58a6ff" strokeWidth=".7"/></svg>;
+          return <svg style={PT_ICON_STYLE} viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="3" fill={th.textDim + "33"} stroke={th.textDim} strokeWidth="1"/></svg>;
         };
-        const susLabels = { 3: "Critical: exploitation / credential dump / NTDS extract / remote exec", 2: "High: account manipulation / defense evasion / LOLBin / exfiltration", 1: "Medium: suspicious path / discovery / scanning / recon tools" };
-        const susColors = { 3: th.danger || "#f85149", 2: "#f0883e", 1: "#d29922", 0: null };
 
         // Process tree column configuration
-        const ptHeaders = ["Process", "PID", "User", "Timestamp", "Command Line"];
-        const ptDefWidths = { Process: 280, PID: 75, User: 150, Timestamp: 135, "Command Line": 300 };
+        const ptHeaders = ["Timestamp", "Detection", "Provider", "Event ID", "Parent Process", "Process", "PID", "PPID", "User", "Command Line", "Integrity"];
+        const ptDefWidths = { Timestamp: 195, Provider: 100, "Event ID": 65, "Parent Process": 170, Process: 280, Detection: 240, PID: 75, PPID: 75, User: 150, "Command Line": 300, Integrity: 80 };
         const ptColWidths = modal.ptColWidths || ptDefWidths;
         const ptSortCol = modal.ptSortCol || "Timestamp";
         const ptSortDir = modal.ptSortDir || "asc";
         const ptColFilters = modal.ptColFilters || {};
+        // Pre-compute detection results for all processes (cached — only rebuilt when data changes)
+        const _ptDetMap = (() => {
+          const c = ptCacheRef.current;
+          if (c.detMapData === data) return c.detMap;
+          if (!data?.processes?.length) { c.detMap = new Map(); c.detMapData = data; return c.detMap; }
+          const byK = new Map(data.processes.map((p) => [p.key, p]));
+          const m = new Map();
+          for (const p of data.processes) {
+            const parent = byK.get(p.parentKey);
+            m.set(p.key, getSusInfo(p, parent));
+          }
+          c.detMap = m;
+          c.detMapData = data;
+          return m;
+        })();
         const ptCellVal = (node, col) => {
+          if (col === "Parent Process") return node.parentProcessName || "";
           if (col === "Process") return node.processName || "";
           if (col === "PID") return node.pid || "";
+          if (col === "PPID") return node.ppid || "";
           if (col === "User") return node.user || "";
           if (col === "Timestamp") return node.ts || "";
           if (col === "Command Line") return node.cmdLine || "";
+          if (col === "Provider") return node.provider || "";
+          if (col === "Event ID") return node.eventId || "";
+          if (col === "Integrity") return _integrityShort(node.integrity);
+          if (col === "Detection") return (_ptDetMap.get(node.key) || {}).reason || "";
           return "";
         };
         const ptSortKey = (node, col) => {
           if (col === "PID") return parseInt(node.pid) || 0;
+          if (col === "PPID") return parseInt(node.ppid) || 0;
+          if (col === "Event ID") return parseInt(node.eventId) || 0;
+          if (col === "Detection") return (_ptDetMap.get(node.key) || {}).level || 0;
           return ptCellVal(node, col);
         };
         const togglePtSort = (col) => {
+          if (ptResizingRef.current) return;  // skip sort if column was just resized
           setModal((p) => {
             if ((p.ptSortCol || "Timestamp") === col) return { ...p, ptSortDir: (p.ptSortDir || "asc") === "asc" ? "desc" : "asc" };
-            return { ...p, ptSortCol: col, ptSortDir: "asc" };
+            // Detection defaults to descending (critical first)
+            return { ...p, ptSortCol: col, ptSortDir: col === "Detection" ? "desc" : "asc" };
           });
         };
         const onPtResizeStart = (colName, e) => {
           e.preventDefault(); e.stopPropagation();
+          ptResizingRef.current = true;
           const startX = e.clientX;
           const startW = ptColWidths[colName] || ptDefWidths[colName];
           document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none";
@@ -4795,7 +5158,7 @@ export default function App() {
             const newW = Math.max(40, startW + ev.clientX - startX);
             setModal((p) => ({ ...p, ptColWidths: { ...(p.ptColWidths || ptDefWidths), [colName]: newW } }));
           };
-          const up = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+          const up = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); setTimeout(() => { ptResizingRef.current = false; }, 0); };
           document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
         };
         const openPtFilter = (colName, e) => {
@@ -4816,51 +5179,91 @@ export default function App() {
         const ptFilterSearch = modal.ptFilterSearch || "";
         const ptFilterDisplay = ptFilterSearch ? ptFilterVals.filter((v) => v.toLowerCase().includes(ptFilterSearch.toLowerCase())) : ptFilterVals;
         const ptActiveFilterCount = Object.values(ptColFilters).filter((v) => v && v.length > 0).length;
-        const totalPtW = ptHeaders.reduce((s, h) => s + (ptColWidths[h] || ptDefWidths[h]), 0) + 50;
+        const PT_CHK_W = 32;
+        const totalPtW = PT_CHK_W + ptHeaders.reduce((s, h) => s + (ptColWidths[h] || ptDefWidths[h]), 0) + 50;
+        const ptChecked = modal.ptChecked || new Set();
+        const ptCheckedCount = ptChecked.size;
 
         const handleBuild = async () => {
-          setModal((p) => ({ ...p, phase: "loading", loading: true, error: null }));
+          const t0 = Date.now();
+          const ptPhases = ["Querying database...", "Parsing process events...", "Building parent-child relationships...", "Computing tree depth...", "Finalizing...", "Complete"];
+          const progInt = setInterval(() => {
+            setModal((p) => {
+              if (!p || p.type !== "processTree" || p.phase !== "loading") { clearInterval(progInt); return p; }
+              const el = (Date.now() - t0) / 1000;
+              const prog = Math.min(92, 90 * (1 - Math.exp(-el / 6)));
+              const pi = prog < 10 ? 0 : prog < 30 ? 1 : prog < 55 ? 2 : prog < 75 ? 3 : 4;
+              return { ...p, ptProgress: prog, ptPhaseIdx: pi };
+            });
+          }, 120);
+          setModal((p) => ({ ...p, phase: "loading", loading: true, error: null, ptProgress: 0, ptPhaseIdx: 0, _cancelled: false }));
           try {
             const af = activeFilters(ct);
             const result = await tle.getProcessTree(ct.id, {
               pidCol: cols.pid, ppidCol: cols.ppid, guidCol: cols.guid, parentGuidCol: cols.parentGuid,
-              imageCol: cols.image, cmdLineCol: cols.cmdLine, userCol: cols.user, tsCol: cols.ts, eventIdCol: cols.eventId,
+              imageCol: cols.image, cmdLineCol: cols.cmdLine, userCol: cols.user, tsCol: cols.ts, eventIdCol: cols.eventId, providerCol: cols.provider,
               eventIdValue: eventIdValue || null,
               searchTerm: ct.searchHighlight ? "" : ct.searchTerm,
               searchMode: ct.searchMode, searchCondition: ct.searchCondition || "contains",
               columnFilters: af.columnFilters, checkboxFilters: af.checkboxFilters,
               bookmarkedOnly: ct.showBookmarkedOnly, dateRangeFilters: ct.dateRangeFilters || {}, advancedFilters: ct.advancedFilters || [],
+              maxRows: modal.maxRows || 200000,
             });
+            clearInterval(progInt);
             if (result.error) {
-              setModal((p) => p?.type === "processTree" ? { ...p, phase: "config", loading: false, error: result.error } : p);
+              setModal((p) => p?.type === "processTree" && !p._cancelled ? { ...p, phase: "config", loading: false, error: result.error, ptProgress: 0 } : p);
             } else {
-              setModal((p) => p?.type === "processTree" ? { ...p, phase: "results", loading: false, data: result, expandedNodes: {}, searchText: "" } : p);
+              setModal((p) => p?.type === "processTree" && !p._cancelled ? { ...p, ptProgress: 100, ptPhaseIdx: 5 } : p);
+              await new Promise((r) => setTimeout(r, 250));
+              setModal((p) => p?.type === "processTree" && !p._cancelled ? { ...p, phase: "results", loading: false, data: result, expandedNodes: {}, searchText: "" } : p);
             }
           } catch (e) {
-            setModal((p) => p?.type === "processTree" ? { ...p, phase: "config", loading: false, error: e.message } : p);
+            clearInterval(progInt);
+            setModal((p) => p?.type === "processTree" && !p._cancelled ? { ...p, phase: "config", loading: false, error: e.message, ptProgress: 0 } : p);
           }
         };
+
+        // Cached childMap + byKey — shared across buildFlat, expand helpers, detail panel
+        const _cachedChildMap = (() => {
+          const c = ptCacheRef.current;
+          if (c.childMapData === data) return c.childMap;
+          if (!data?.processes?.length) { c.childMap = new Map(); c.childMapData = data; return c.childMap; }
+          const m = new Map();
+          for (const p of data.processes) {
+            if (!m.has(p.parentKey)) m.set(p.parentKey, []);
+            m.get(p.parentKey).push(p.key);
+          }
+          c.childMap = m;
+          c.childMapData = data;
+          return m;
+        })();
+        const _cachedByKey = (() => {
+          const c = ptCacheRef.current;
+          if (c.byKeyData === data) return c.byKeyMap;
+          if (!data?.processes?.length) { c.byKeyMap = new Map(); c.byKeyData = data; return c.byKeyMap; }
+          const m = new Map(data.processes.map((p) => [p.key, p]));
+          c.byKeyMap = m;
+          c.byKeyData = data;
+          return m;
+        })();
 
         // Build flat visible list from tree data, with connector metadata
         const buildFlat = () => {
           if (!data?.processes?.length) return [];
           const procs = data.processes;
-          const byKey = new Map();
-          const childMap = new Map();
-          for (const p of procs) {
-            byKey.set(p.key, p);
-            if (!childMap.has(p.parentKey)) childMap.set(p.parentKey, []);
-            childMap.get(p.parentKey).push(p.key);
-          }
+          const byKey = _cachedByKey;
+          const childMap = _cachedChildMap;
           const st = (searchText || "").toLowerCase();
+          const susOnly = !!modal.susOnlyFilter;
           const hasColFilters = Object.values(ptColFilters).some((v) => v && v.length > 0);
           const siblingSort = (a, b) => {
             const av = ptSortKey(a, ptSortCol), bv = ptSortKey(b, ptSortCol);
             const cmp = typeof av === "number" ? av - bv : String(av).localeCompare(String(bv));
             return ptSortDir === "asc" ? cmp : -cmp;
           };
-          // Flat mode when search or column filters active
-          if (st || hasColFilters) {
+          // Flat mode when search, column filters, suspicious-only, or sorting by Detection
+          const flatSort = ptSortCol === "Detection";
+          if (st || hasColFilters || susOnly || flatSort) {
             let filtered = [...procs];
             if (hasColFilters) {
               filtered = filtered.filter((p) => {
@@ -4879,17 +5282,25 @@ export default function App() {
                 (p.user || "").toLowerCase().includes(st)
               );
             }
+            if (susOnly) {
+              filtered = filtered.filter((p) => (_ptDetMap.get(p.key) || { level: 0 }).level > 0);
+            }
             filtered.sort(siblingSort);
             return filtered.map((p) => ({ ...p, depth: 0, connectors: [], isLast: false }));
           }
           const roots = procs.filter((p) => !byKey.has(p.parentKey));
           const flat = [];
           const activeLines = {};
+          const visited = new Set();
+          const MAX_DEPTH = 100;
           const dfs = (keys, depth) => {
+            if (depth > MAX_DEPTH) return;
             const sorted = keys.map((k) => byKey.get(k)).filter(Boolean);
             sorted.sort(siblingSort);
             for (let si = 0; si < sorted.length; si++) {
               const node = sorted[si];
+              if (visited.has(node.key)) continue;
+              visited.add(node.key);
               const isLast = si === sorted.length - 1;
               const connectors = [];
               for (let d = 0; d < depth; d++) connectors.push(!!activeLines[d]);
@@ -4905,32 +5316,34 @@ export default function App() {
           return flat;
         };
 
-        const flatNodes = phase === "results" ? buildFlat() : [];
-        const byKeyMap = phase === "results" && data ? new Map(data.processes.map((p) => [p.key, p])) : new Map();
+        // Cached flat list + byKeyMap — only recompute when deps actually change (not on selectedKey click)
+        const flatNodes = (() => {
+          if (phase !== "results") return [];
+          const c = ptCacheRef.current;
+          const susOnly = !!modal.susOnlyFilter;
+          if (c.data === data && c.expandedNodes === expandedNodes && c.searchText === searchText &&
+              c.ptColFilters === ptColFilters && c.ptSortCol === ptSortCol && c.ptSortDir === ptSortDir && c.susOnly === susOnly) {
+            return c.flatNodes;
+          }
+          const result = buildFlat();
+          Object.assign(c, { flatNodes: result, data, expandedNodes, searchText, ptColFilters, ptSortCol, ptSortDir, susOnly });
+          return result;
+        })();
+        const byKeyMap = _cachedByKey;
+        const childMap = _cachedChildMap;
 
-        // Chain highlight: walk from selected node to root
+        // Chain highlight: walk from selected node to root (cycle-safe)
         const selectedKey = modal.selectedKey || null;
         const chainKeys = new Set();
         if (selectedKey && byKeyMap.size > 0) {
           let cur = selectedKey;
-          while (cur) {
+          while (cur && !chainKeys.has(cur)) {
             chainKeys.add(cur);
             const node = byKeyMap.get(cur);
             if (!node || !byKeyMap.has(node.parentKey)) break;
             cur = node.parentKey;
           }
         }
-
-        // Expand helpers
-        const childMap = (() => {
-          if (!data?.processes?.length) return new Map();
-          const m = new Map();
-          for (const p of data.processes) {
-            if (!m.has(p.parentKey)) m.set(p.parentKey, []);
-            m.get(p.parentKey).push(p.key);
-          }
-          return m;
-        })();
         const expandAll = () => {
           const en = {};
           for (const p of (data?.processes || [])) { if (p.childCount > 0) en[p.key] = true; }
@@ -4946,7 +5359,7 @@ export default function App() {
         const selStyle = { background: th.bgInput, color: th.text, border: `1px solid ${th.border}`, borderRadius: 5, padding: "4px 8px", fontSize: 12, fontFamily: "monospace" };
 
         // Draggable + resizable panel state
-        const pw = modal.ptW || 900, ph_ = modal.ptH || 550;
+        const pw = modal.ptW || Math.round(window.innerWidth * 0.92), ph_ = modal.ptH || Math.round(window.innerHeight * 0.88);
         const px = modal.ptX ?? Math.round((window.innerWidth - pw) / 2);
         const py = modal.ptY ?? Math.round((window.innerHeight - ph_) / 2);
 
@@ -4980,8 +5393,8 @@ export default function App() {
         const edgeStyle = (cursor, pos) => ({ position: "absolute", ...pos, zIndex: 2, cursor });
 
         return (
-          <div style={{ position: "fixed", inset: 0, background: th.overlay, zIndex: 100, backdropFilter: "blur(4px)", WebkitAppRegion: "drag" }}>
-            <div onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", position: "absolute", left: px, top: py, width: pw, height: ph_, background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 12, padding: 0, display: "flex", flexDirection: "column", boxShadow: "0 24px 48px rgba(0,0,0,0.5)", overflow: "hidden" }}>
+          <div style={{ position: "fixed", inset: 0, background: th.overlay, zIndex: 100, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", WebkitAppRegion: "drag" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", position: "absolute", left: px, top: py, width: pw, height: ph_, background: th.modalBg + "f2", border: `1px solid ${th.modalBorder}88`, borderRadius: 14, padding: 0, display: "flex", flexDirection: "column", boxShadow: "0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04) inset", overflow: "hidden", backdropFilter: "blur(40px) saturate(1.6)", WebkitBackdropFilter: "blur(40px) saturate(1.6)" }}>
               {/* Resize handles — edges */}
               <div onMouseDown={(e) => startResize(e, "t")} style={edgeStyle("ns-resize", { top: 0, left: 8, right: 8, height: 5 })} />
               <div onMouseDown={(e) => startResize(e, "b")} style={edgeStyle("ns-resize", { bottom: 0, left: 8, right: 8, height: 5 })} />
@@ -4993,21 +5406,37 @@ export default function App() {
               <div onMouseDown={(e) => startResize(e, "bl")} style={edgeStyle("nesw-resize", { bottom: 0, left: 0, width: 10, height: 10 })} />
               <div onMouseDown={(e) => startResize(e, "br")} style={edgeStyle("nwse-resize", { bottom: 0, right: 0, width: 10, height: 10 })} />
 
-              {/* Header — draggable */}
-              <div onMouseDown={startDrag} style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${th.border}`, cursor: "move", flexShrink: 0, userSelect: "none" }}>
+              {/* Header — draggable, gradient glass */}
+              <div onMouseDown={startDrag} style={{ padding: "14px 20px 10px", borderBottom: `1px solid ${th.border}66`, cursor: "move", flexShrink: 0, userSelect: "none", background: `linear-gradient(180deg, ${th.headerBg}ee 0%, ${th.modalBg}cc 100%)`, backdropFilter: "blur(20px) saturate(1.4)", WebkitBackdropFilter: "blur(20px) saturate(1.4)" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif" }}>Process Tree</h3>
-                  <button onClick={() => setModal(null)} style={{ background: "none", border: "none", color: th.textDim, fontSize: 18, cursor: "pointer", padding: "0 4px" }}>x</button>
-                </div>
-                {phase === "results" && data?.stats && (
-                  <div style={{ display: "flex", gap: 16, marginTop: 8, fontSize: 12, color: th.textDim, fontFamily: "-apple-system, sans-serif" }}>
-                    <span>{data.stats.totalProcesses.toLocaleString()} processes</span>
-                    <span>{data.stats.rootCount} roots</span>
-                    <span>Max depth: {data.stats.maxDepth}</span>
-                    {data.useGuid && <span style={{ color: th.success || "#3fb950" }}>GUID-linked</span>}
-                    {data.stats.truncated && <span style={{ color: th.danger || "#f85149" }}>Truncated (limit reached)</span>}
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ width: 32, height: 32, borderRadius: 8, background: `linear-gradient(135deg, ${th.accent} 0%, ${th.accentHover || th.accent} 100%)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: "#fff", boxShadow: `0 2px 8px ${th.accent}44`, flexShrink: 0 }}>{"\u25B3"}</div>
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: th.text, fontFamily: "-apple-system, sans-serif", letterSpacing: "-0.01em" }}>
+                        <span style={{ color: th.accent }}>IRFlow</span> {"\u2014"} Process Inspector
+                      </h3>
+                      {phase === "results" && data?.stats && (() => {
+                        const hostname = (() => { const p0 = data?.processes?.[0]; if (!p0) return ""; if (p0.hostname) return p0.hostname; const u = p0.user || ""; const d = u.split("\\")[0]; return d && d !== "-" && d !== u ? d : ""; })();
+                        const providers = [...new Set((data?.processes || []).map(p => _providerShort(p.provider)).filter(Boolean))].join(", ");
+                        const eids = [...new Set((data?.processes || []).map(p => p.eventId).filter(Boolean))].sort().join(", ");
+                        const dateRange = (() => { const ts = (data?.processes || []).filter(p => p.ts).map(p => p.ts).sort(); if (!ts.length) return ""; const first = (ts[0] || "").split(" ")[0]; const last = (ts[ts.length - 1] || "").split(" ")[0]; return first === last ? first : `${first} \u2192 ${last}`; })();
+                        return (
+                          <div style={{ fontSize: 10, color: th.textMuted, fontFamily: "'SF Mono', Menlo, monospace", marginTop: 2, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                            {hostname && <span style={{ color: th.text, fontWeight: 500 }}>{hostname}</span>}
+                            {hostname && providers && <span>{"\u00B7"}</span>}
+                            {providers && <span>{providers}</span>}
+                            {eids && <span>{"\u00B7"} EID {eids}</span>}
+                            <span>{"\u00B7"} {data.stats.totalProcesses.toLocaleString()} events</span>
+                            {dateRange && <span>{"\u00B7"} {dateRange}</span>}
+                            {data.useGuid && <span style={{ color: th.success || "#3fb950" }}>{"\u00B7"} GUID-linked</span>}
+                            {data.stats.truncated && <span style={{ color: th.danger || "#f85149" }}>{"\u00B7"} Truncated at {(data.stats.totalProcesses || 0).toLocaleString()} {"\u2014"} increase limit</span>}
+                          </div>
+                        );
+                      })()}
+                    </div>
                   </div>
-                )}
+                  <button onClick={() => setModal(null)} style={{ background: "none", border: "none", color: th.textDim, fontSize: 18, cursor: "pointer", padding: "0 4px", lineHeight: 1 }}>{"\u00D7"}</button>
+                </div>
               </div>
 
               {/* Config phase */}
@@ -5017,7 +5446,8 @@ export default function App() {
                   <div style={{ display: "grid", gridTemplateColumns: "130px 1fr 130px 1fr", gap: "8px 12px", alignItems: "center", fontSize: 12, fontFamily: "-apple-system, sans-serif" }}>
                     {[["Process ID", "pid"], ["Parent Process ID", "ppid"], ["Process GUID", "guid"], ["Parent GUID", "parentGuid"],
                       ["Image / Exe", "image"], ["Parent Image", "parentImage"], ["Command Line", "cmdLine"], ["User", "user"],
-                      ["Timestamp", "ts"], ["Event ID", "eventId"], ["Token Elevation", "elevation"], ["Integrity Level", "integrity"]].map(([label, key]) => (
+                      ["Timestamp", "ts"], ["Event ID", "eventId"], ["Token Elevation", "elevation"], ["Integrity Level", "integrity"],
+                      ["Provider", "provider"]].map(([label, key]) => (
                       <div key={key} style={{ display: "contents" }}>
                         <label style={{ color: th.textDim, textAlign: "right" }}>{label}:</label>
                         <select value={cols[key] || ""} onChange={(e) => setModal((p) => ({ ...p, columns: { ...p.columns, [key]: e.target.value || null } }))} style={selStyle}>
@@ -5028,7 +5458,242 @@ export default function App() {
                     ))}
                     <label style={{ color: th.textDim, textAlign: "right" }}>EventID values:</label>
                     <input value={eventIdValue || ""} onChange={(e) => setModal((p) => ({ ...p, eventIdValue: e.target.value }))} placeholder="1,4688 (comma-separated, blank = all)" style={{ ...selStyle, width: 180 }} />
+                    <label style={{ color: th.textDim, textAlign: "right" }}>Max processes:</label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <input type="number" value={modal.maxRows ?? 200000} onChange={(e) => setModal((p) => ({ ...p, maxRows: Math.max(1000, parseInt(e.target.value) || 200000) }))} style={{ ...selStyle, width: 100 }} min="1000" step="50000" />
+                      <span style={{ fontSize: 10, color: th.textMuted }}>default: 200,000</span>
+                    </div>
                   </div>
+
+                  {/* Info box */}
+                  <div style={{ padding: "12px 14px", background: `${th.accent}08`, borderRadius: 10, border: `1px solid ${th.accent}15`, marginTop: 16, marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, color: th.textMuted, fontFamily: "-apple-system, sans-serif", lineHeight: 1.5 }}>
+                      <b style={{ color: th.text }}>Process Inspector</b> reconstructs parent-child process trees from Sysmon (EID 1) and Security (EID 4688) logs using PID/PPID or ProcessGUID linking. Runs 344 chain-based detection rules (e.g. Word{"\u2192"}cmd, svchost{"\u2192"}PS) plus standalone detections for encoded PowerShell, credential dumping, LSASS tools, defense evasion, lateral movement commands, AD recon tools, RMM tools, exfiltration utilities, and suspicious execution paths. All detections are mapped to MITRE ATT&CK techniques.
+                    </div>
+                  </div>
+
+                  {/* Customize Rules Section */}
+                  {(() => {
+                    const PI_RULES = [
+                      { cat: "Execution", name: "Office \u2192 Shell (Word/Excel/PPT/Outlook/OneNote/Access/Publisher)", sev: "critical", count: 28, technique: "T1204.002, T1059",
+                        logic: [
+                          { label: "Type", value: "Parent \u2192 Child chain (28 rules)" },
+                          { label: "Parents", value: "winword, excel, powerpnt, outlook, onenote, msaccess, mspub" },
+                          { label: "Children", value: "cmd, powershell, wscript, cscript, msdt, bash, mshta, regsvr32, rundll32, certutil" },
+                          { label: "Condition", value: "Parent process spawns child process directly" },
+                          { label: "Example", value: "winword.exe \u2192 powershell.exe = macro execution" },
+                        ] },
+                      { cat: "Execution", name: "Script Engine Chains (WScript/CScript/PS/cmd)", sev: "high", count: 14, technique: "T1059.001, T1059.005",
+                        logic: [
+                          { label: "Type", value: "Parent \u2192 Child chain (14 rules)" },
+                          { label: "Chains", value: "wscript\u2192cmd, wscript\u2192powershell, cscript\u2192cmd, ps\u2192ps (double-hop), cmd\u2192ps, ps\u2192wscript, ps\u2192bash" },
+                          { label: "Condition", value: "Script interpreter spawns another interpreter \u2014 multi-stage execution" },
+                        ] },
+                      { cat: "Execution", name: "Service-Based Execution (svchost/WMI/Task Scheduler)", sev: "high", count: 18, technique: "T1047, T1569.002",
+                        logic: [
+                          { label: "Type", value: "Parent \u2192 Child chain (18 rules)" },
+                          { label: "Parents", value: "svchost, wmiprvse, taskeng, taskhostw, wsmprovhost, dllhost, mmc" },
+                          { label: "Children", value: "cmd, powershell, wscript, cscript, mshta, rundll32, regsvr32" },
+                          { label: "Condition", value: "Windows service host or WMI provider spawns shell/script" },
+                        ] },
+                      { cat: "Execution", name: "Encoded PowerShell (-enc / -e flags)", sev: "critical", standalone: true, technique: "T1059.001",
+                        logic: [
+                          { label: "Process", value: "powershell.exe OR pwsh.exe" },
+                          { label: "CommandLine", value: "regex: \\s+(-e\\s|-enc\\s|-encodedcommand\\s|-en\\s|-ec\\s)" },
+                          { label: "Condition", value: "Both process name AND command line must match" },
+                        ] },
+                      { cat: "Credential Access", name: "Credential Dumping Commands (comsvcs/sekurlsa/mimikatz)", sev: "critical", standalone: true, technique: "T1003",
+                        logic: [
+                          { label: "CommandLine", value: "regex: comsvcs\\.dll | sekurlsa | lsadump | procdump.*lsass | mimikatz | pypykatz | nanodump" },
+                          { label: "Condition", value: "Any process with matching command line argument" },
+                        ] },
+                      { cat: "Credential Access", name: "NTDS Extraction (ntdsutil/secretsdump)", sev: "critical", standalone: true, technique: "T1003.003",
+                        logic: [
+                          { label: "CommandLine", value: "regex: ntdsutil.*ifm | wbadmin.*ntds | secretsdump | ntds\\.dit" },
+                          { label: "Condition", value: "Any process attempting Active Directory database extraction" },
+                        ] },
+                      { cat: "Credential Access", name: "LSASS Access Tools (procdump/processhacker)", sev: "critical", standalone: true, technique: "T1003.001",
+                        logic: [
+                          { label: "Process", value: "regex: ^(processhacker|procdump|sqldumper|avdump|handlekatz)(\\.exe)?$" },
+                          { label: "Condition", value: "Process name matches known LSASS dumping tools" },
+                        ] },
+                      { cat: "Defense Evasion", name: "Shadow Copy Deletion / Log Clearing / SafeBoot", sev: "high", standalone: true, technique: "T1070",
+                        logic: [
+                          { label: "CommandLine", value: "regex: vssadmin.*delete | wevtutil\\s+cl | bcdedit.*safeboot | bcdedit.*recoveryenabled" },
+                          { label: "Condition", value: "Any process with anti-forensic or recovery-disabling commands" },
+                        ] },
+                      { cat: "Persistence", name: "Account Manipulation (net user/group /add)", sev: "high", standalone: true, technique: "T1136",
+                        logic: [
+                          { label: "CommandLine", value: "regex: net\\s+(user|group|localgroup)\\s+.*/add" },
+                          { label: "Condition", value: "Account or group creation via net.exe commands" },
+                        ] },
+                      { cat: "Lateral Movement", name: "WMI/WinRM Remote Commands", sev: "high", standalone: true, technique: "T1021",
+                        logic: [
+                          { label: "CommandLine", value: "regex: wmic.*/node: | winrm" },
+                          { label: "Condition", value: "Remote execution via WMI or WinRM protocols" },
+                        ] },
+                      { cat: "Discovery", name: "AD Recon Tools (BloodHound/SharpHound/ADFind/Rubeus)", sev: "high", standalone: true, technique: "T1087.002",
+                        logic: [
+                          { label: "Process", value: "regex: ^(adfind|sharphound|bloodhound|sharpview|seatbelt|rubeus|certify|certipy)(\\.exe)?$" },
+                          { label: "Condition", value: "Process name matches known Active Directory enumeration tools" },
+                        ] },
+                      { cat: "Discovery", name: "Network Scanners (netscan/masscan/rustscan)", sev: "high", standalone: true, technique: "T1046",
+                        logic: [
+                          { label: "Process", value: "regex: ^(netscan|netscan64|advanced_ip_scanner|rustscan|masscan|angry_ip_scanner|nbtscan)(\\.exe)?$" },
+                          { label: "Condition", value: "Process name matches known network scanning tools" },
+                        ] },
+                      { cat: "Command & Control", name: "RMM Tools \u2014 Unusual Parent (AnyDesk/TeamViewer/RustDesk)", sev: "high", standalone: true, technique: "T1219",
+                        logic: [
+                          { label: "Process", value: "regex: ^(anydesk|splashtop|rustdesk|atera|screenconnect|teamviewer|supremo)(\\.exe)?$" },
+                          { label: "Parent", value: "NOT explorer.exe (unusual parent = potentially injected or staged)" },
+                          { label: "Condition", value: "RMM tool launched from non-standard parent process" },
+                        ] },
+                      { cat: "Exfiltration", name: "Exfiltration Tools (rclone/WinSCP/MegaSync)", sev: "high", standalone: true, technique: "T1567",
+                        logic: [
+                          { label: "Process", value: "regex: ^(rclone|filezilla|winscp|megasync|megacmd)(\\.exe)?$" },
+                          { label: "Condition", value: "Process name matches known data transfer/sync tools" },
+                        ] },
+                      { cat: "Collection", name: "Suspicious Archive Operations (7z/rar with password)", sev: "high", standalone: true, technique: "T1560.001",
+                        logic: [
+                          { label: "CommandLine", value: "regex: \\b(7z|7za|winrar|rar)\\b.*(-p| a .*\\.(7z|zip|rar))" },
+                          { label: "Condition", value: "Archive tool used with password flag or creating archive \u2014 potential data staging" },
+                        ] },
+                      { cat: "Execution", name: "Script from User Profile Path", sev: "high", standalone: true, technique: "T1059.005",
+                        logic: [
+                          { label: "Process", value: "wscript.exe OR cscript.exe" },
+                          { label: "Image Path", value: "regex: \\\\users\\\\[^\\\\]+\\\\ OR \\\\appdata\\\\" },
+                          { label: "Condition", value: "Script engine executing from user-writable profile directory" },
+                        ] },
+                      { cat: "Execution", name: "Suspicious Execution Path (temp/appdata/downloads)", sev: "medium", standalone: true, technique: "T1204",
+                        logic: [
+                          { label: "Image Path", value: "regex: \\\\temp\\\\ | \\\\tmp\\\\ | \\\\appdata\\\\ | \\\\downloads\\\\ | \\\\public\\\\ | \\\\recycle | \\\\perflogs\\\\" },
+                          { label: "Exclusions", value: "Safe processes: mpcmdrun, msmpeng, tiworker, trustedinstaller, msiexec, etc." },
+                          { label: "Condition", value: "Non-whitelisted process executing from user-writable or staging directory" },
+                        ] },
+                      { cat: "Command & Control", name: "RMM Tools \u2014 Normal Parent", sev: "low", standalone: true, technique: "T1219",
+                        logic: [
+                          { label: "Process", value: "regex: ^(anydesk|splashtop|rustdesk|atera|screenconnect|teamviewer|supremo)(\\.exe)?$" },
+                          { label: "Parent", value: "explorer.exe (normal user-launched)" },
+                          { label: "Condition", value: "RMM tool present on system \u2014 informational, may be legitimate" },
+                        ] },
+                      { cat: "Execution", name: "Parent-Child Chain Rules (344 rules)", sev: "high", count: 344, technique: "Multiple",
+                        logic: [
+                          { label: "Type", value: "344 parent\u2192child process chain rules across 12 ATT&CK tactics" },
+                          { label: "Tactics", value: "Execution, Defense Evasion, Persistence, Privilege Escalation, Credential Access, Lateral Movement, Discovery, Collection, C2, Exfiltration, Impact, Initial Access" },
+                          { label: "Parents", value: "Office apps, script engines, service hosts, shells, browsers, system processes, management tools, remote access" },
+                          { label: "Severity", value: "Level 3 (critical): direct malware indicators. Level 2 (high): likely malicious. Level 1 (medium): suspicious, needs context. Level 0 (low): informational" },
+                          { label: "Condition", value: "Exact parent\u2192child process name match (case-insensitive, .exe stripped). Highest severity wins if multiple rules match." },
+                        ] },
+                    ];
+                    const PI_SEV_COLORS = { critical: "#f85149", high: "#f0883e", medium: "#d29922", low: "#8b949e" };
+                    const piDisabledSet = modal.ptDisabledRules || new Set();
+                    const piActiveCount = PI_RULES.length - [...piDisabledSet].filter((k) => k.startsWith("pi-")).length;
+                    const piCustomCount = (modal.ptCustomRules || []).length;
+                    const togglePiRule = (key) => setModal((p) => { const s = new Set(p.ptDisabledRules || []); s.has(key) ? s.delete(key) : s.add(key); return { ...p, ptDisabledRules: s }; });
+                    const togglePiExpand = (key) => setModal((p) => ({ ...p, ptExpandedRule: p.ptExpandedRule === key ? null : key }));
+                    const addPiCustomRule = () => {
+                      const nr = modal.ptNewRule || {};
+                      if (!nr.name) return;
+                      setModal((p) => ({ ...p, ptCustomRules: [...(p.ptCustomRules || []), { ...nr }], ptAddingRule: false, ptNewRule: {} }));
+                    };
+                    const deletePiCustomRule = (idx) => setModal((p) => { const arr = [...(p.ptCustomRules || [])]; arr.splice(idx, 1); return { ...p, ptCustomRules: arr }; });
+
+                    return (
+                      <div style={{ marginTop: 4 }}>
+                        <button onClick={() => setModal((p) => ({ ...p, showPtRules: !p.showPtRules }))}
+                          style={{ width: "100%", padding: "10px 14px", background: `${th.accent}08`, border: `1px solid ${th.border}33`, borderRadius: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", transition: "all 0.15s" }}>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif", display: "flex", alignItems: "center", gap: 6 }}>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={th.textMuted} strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                            Customize Rules
+                          </span>
+                          <span style={{ fontSize: 10, color: th.textMuted, fontFamily: "-apple-system, sans-serif", display: "flex", alignItems: "center", gap: 6 }}>
+                            <span>{piActiveCount}/{PI_RULES.length} rules{piCustomCount > 0 ? `, ${piCustomCount} custom` : ""}</span>
+                            <span style={{ transform: modal.showPtRules ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s", fontSize: 12 }}>{"\u25BE"}</span>
+                          </span>
+                        </button>
+
+                        {modal.showPtRules && (
+                          <div style={{ padding: "10px 14px", borderLeft: `1px solid ${th.border}33`, borderRight: `1px solid ${th.border}33`, borderBottom: `1px solid ${th.border}33`, borderRadius: "0 0 10px 10px", background: `${th.panelBg}55` }}>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, fontFamily: "-apple-system, sans-serif" }}>
+                              Detection Rules ({piActiveCount}/{PI_RULES.length})
+                            </div>
+                            {PI_RULES.map((r, i) => {
+                              const key = `pi-${i}`;
+                              const off = piDisabledSet.has(key);
+                              const expanded = modal.ptExpandedRule === key;
+                              return (
+                                <div key={key}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", cursor: "pointer", opacity: off ? 0.45 : 1, transition: "opacity 0.15s" }}>
+                                    <input type="checkbox" checked={!off} onChange={() => togglePiRule(key)} style={{ accentColor: th.accent, margin: 0, flexShrink: 0 }} />
+                                    <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: PI_SEV_COLORS[r.sev] + "22", color: PI_SEV_COLORS[r.sev], fontWeight: 600, fontFamily: "-apple-system, sans-serif", minWidth: 52, textAlign: "center", textTransform: "uppercase" }}>{r.sev}</span>
+                                    <span onClick={() => togglePiExpand(key)} style={{ fontSize: 11, color: th.text, fontFamily: "-apple-system, sans-serif", flex: 1, cursor: "pointer" }}>{r.cat} {"\u2014"} {r.name}</span>
+                                    <span style={{ fontSize: 10, color: th.textDim, fontFamily: "SF Mono, monospace" }}>{r.technique}</span>
+                                    <span onClick={() => togglePiExpand(key)} style={{ fontSize: 9, color: expanded ? th.accent : th.textMuted, cursor: "pointer", padding: "0 2px", transform: expanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s", flexShrink: 0 }}>{"\u25BE"}</span>
+                                  </div>
+                                  {expanded && r.logic && (
+                                    <div style={{ margin: "2px 0 6px 28px", padding: "8px 12px", background: `${th.accent}06`, border: `1px solid ${th.accent}18`, borderRadius: 6 }}>
+                                      <div style={{ display: "grid", gridTemplateColumns: "90px 1fr", gap: "3px 10px", fontSize: 10, fontFamily: "'SF Mono', Menlo, monospace" }}>
+                                        {r.logic.map((l, li) => (
+                                          <div key={li} style={{ display: "contents" }}>
+                                            <span style={{ color: th.textMuted, textTransform: "uppercase", fontSize: 9, fontWeight: 600, letterSpacing: "0.04em", paddingTop: 1 }}>{l.label}</span>
+                                            <span style={{ color: th.text, lineHeight: 1.5, wordBreak: "break-word" }}>{l.value}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+
+                            {/* Custom rules */}
+                            {(modal.ptCustomRules || []).length > 0 && (
+                              <div style={{ marginTop: 10 }}>
+                                <div style={{ fontSize: 10, fontWeight: 700, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, fontFamily: "-apple-system, sans-serif" }}>Custom Rules</div>
+                                {(modal.ptCustomRules || []).map((cr, i) => (
+                                  <div key={`custom-${i}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0" }}>
+                                    <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: PI_SEV_COLORS[cr.severity || "medium"] + "22", color: PI_SEV_COLORS[cr.severity || "medium"], fontWeight: 600, fontFamily: "-apple-system, sans-serif", minWidth: 52, textAlign: "center", textTransform: "uppercase" }}>{cr.severity || "med"}</span>
+                                    <span style={{ fontSize: 11, color: th.text, fontFamily: "-apple-system, sans-serif", flex: 1 }}>{cr.category || "Custom"} {"\u2014"} {cr.name || "Custom Rule"}</span>
+                                    <span style={{ fontSize: 10, color: th.textDim, fontFamily: "SF Mono, monospace" }}>{cr.technique || ""}</span>
+                                    <button onClick={() => deletePiCustomRule(i)} style={{ background: "none", border: "none", color: th.textMuted, cursor: "pointer", fontSize: 14, padding: "0 4px", lineHeight: 1 }} onMouseEnter={(e) => e.currentTarget.style.color = th.danger || "#f85149"} onMouseLeave={(e) => e.currentTarget.style.color = th.textMuted}>{"\u00D7"}</button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Add custom rule */}
+                            {!modal.ptAddingRule ? (
+                              <button onClick={() => setModal((p) => ({ ...p, ptAddingRule: true, ptNewRule: {} }))}
+                                style={{ ...ms.bsm, marginTop: 8, display: "flex", alignItems: "center", gap: 4 }}>
+                                <span style={{ fontSize: 13, lineHeight: 1 }}>+</span> Add Custom Rule
+                              </button>
+                            ) : (
+                              <div style={{ marginTop: 8, padding: "10px 12px", background: `${th.accent}08`, border: `1px solid ${th.accent}22`, borderRadius: 8 }}>
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                                  <input value={(modal.ptNewRule || {}).category || ""} onChange={(e) => setModal((p) => ({ ...p, ptNewRule: { ...p.ptNewRule, category: e.target.value } }))} placeholder="Category (e.g. Execution)" style={{ ...ms.ip, fontSize: 11, padding: "4px 8px" }} />
+                                  <input value={(modal.ptNewRule || {}).name || ""} onChange={(e) => setModal((p) => ({ ...p, ptNewRule: { ...p.ptNewRule, name: e.target.value } }))} placeholder="Rule Name" style={{ ...ms.ip, fontSize: 11, padding: "4px 8px" }} />
+                                  <input value={(modal.ptNewRule || {}).technique || ""} onChange={(e) => setModal((p) => ({ ...p, ptNewRule: { ...p.ptNewRule, technique: e.target.value } }))} placeholder="MITRE Technique (e.g. T1059)" style={{ ...ms.ip, fontSize: 11, padding: "4px 8px" }} />
+                                  <select value={(modal.ptNewRule || {}).severity || "medium"} onChange={(e) => setModal((p) => ({ ...p, ptNewRule: { ...p.ptNewRule, severity: e.target.value } }))}
+                                    style={{ ...ms.sl, fontSize: 11, padding: "4px 8px" }}>
+                                    <option value="critical">Critical</option>
+                                    <option value="high">High</option>
+                                    <option value="medium">Medium</option>
+                                    <option value="low">Low</option>
+                                  </select>
+                                  <input value={(modal.ptNewRule || {}).pattern || ""} onChange={(e) => setModal((p) => ({ ...p, ptNewRule: { ...p.ptNewRule, pattern: e.target.value } }))} placeholder="Regex pattern for process/cmdline (optional)" style={{ ...ms.ip, fontSize: 11, padding: "4px 8px", gridColumn: "1 / -1" }} />
+                                </div>
+                                <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 8 }}>
+                                  <button onClick={() => setModal((p) => ({ ...p, ptAddingRule: false, ptNewRule: {} }))} style={ms.bsm}>Cancel</button>
+                                  <button onClick={addPiCustomRule} style={{ ...ms.bsm, background: th.primaryBtn || th.accent, color: "#fff", border: "none" }}>Add Rule</button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
                   {modal.error && <div style={{ marginTop: 12, padding: "8px 12px", background: (th.danger || "#f85149") + "22", borderRadius: 6, fontSize: 12, color: th.danger || "#f85149" }}>{modal.error}</div>}
                   <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
                     <button onClick={() => setModal(null)} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif" }}>Cancel</button>
@@ -5038,15 +5703,40 @@ export default function App() {
               )}
 
               {/* Loading phase */}
-              {phase === "loading" && (
-                <div style={{ padding: 40, textAlign: "center", color: th.textDim, fontSize: 13, fontFamily: "-apple-system, sans-serif", flex: 1 }}>Building process tree...</div>
-              )}
+              {phase === "loading" && (() => {
+                const prog = modal.ptProgress || 0;
+                const pi = modal.ptPhaseIdx || 0;
+                const ptPhases = ["Querying database...", "Parsing process events...", "Building parent-child relationships...", "Computing tree depth...", "Finalizing...", "Complete"];
+                return (
+                  <div style={{ padding: "50px 40px 40px", textAlign: "center", flex: 1 }}>
+                    <style>{`@keyframes ptPulse{0%,100%{opacity:.35}50%{opacity:1}}`}</style>
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke={th.accent} strokeWidth="1.5" strokeLinecap="round" style={{ marginBottom: 16, animation: "ptPulse 1.5s ease-in-out infinite" }}>
+                      <rect x="3" y="10" width="5" height="5" rx="1" fill={th.accent + "33"} />
+                      <rect x="14" y="3" width="5" height="5" rx="1" fill={th.accent + "33"} />
+                      <rect x="14" y="16" width="5" height="5" rx="1" fill={th.accent + "33"} />
+                      <path d="M8 12.5h3v-7h3M11 12.5v5.5h3" />
+                    </svg>
+                    <div style={{ marginBottom: 20 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif", marginBottom: 4 }}>Building Process Tree</div>
+                      <div style={{ fontSize: 11, color: th.accent, fontFamily: "-apple-system, sans-serif", height: 16 }}>{ptPhases[pi]}</div>
+                    </div>
+                    <div style={{ width: 280, margin: "0 auto", height: 6, background: th.border + "33", borderRadius: 3, overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${prog}%`, background: `linear-gradient(90deg, ${th.accent}, ${th.accent}cc)`, borderRadius: 3, transition: "width 0.3s ease-out" }} />
+                    </div>
+                    <div style={{ fontSize: 11, color: th.textMuted, marginTop: 8, fontFamily: "SF Mono, Menlo, monospace" }}>{Math.round(prog)}%</div>
+                    <div style={{ marginTop: 24 }}>
+                      <button onClick={() => setModal((p) => ({ ...p, phase: "config", loading: false, ptProgress: 0, _cancelled: true }))}
+                        style={{ padding: "4px 16px", fontSize: 11, background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, borderRadius: 6, cursor: "pointer", fontFamily: "-apple-system, sans-serif" }}>Cancel</button>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Results phase */}
               {phase === "results" && data && (
                 <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
                   {/* Toolbar: search + expand/collapse */}
-                  <div style={{ padding: "8px 20px", borderBottom: `1px solid ${th.border}`, flexShrink: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ padding: "8px 20px", borderBottom: `1px solid ${th.border}55`, flexShrink: 0, display: "flex", alignItems: "center", gap: 8, background: `${th.headerBg}88`, backdropFilter: "blur(12px) saturate(1.3)", WebkitBackdropFilter: "blur(12px) saturate(1.3)" }}>
                     <input value={searchText || ""} onChange={(e) => setModal((p) => ({ ...p, searchText: e.target.value }))} placeholder="Search by process name, PID, command line, or user..." style={{ flex: 1, background: th.bgInput, color: th.text, border: `1px solid ${th.border}`, borderRadius: 5, padding: "6px 10px", fontSize: 12, fontFamily: "monospace", outline: "none", boxSizing: "border-box" }} />
                     <button onClick={expandAll} style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0 }} title="Expand all nodes">Expand All</button>
                     <button onClick={collapseAll} style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0 }} title="Collapse all nodes">Collapse</button>
@@ -5054,6 +5744,8 @@ export default function App() {
                       <option value="">Depth...</option>
                       {[1, 2, 3, 4, 5].filter((d) => d <= (data.stats.maxDepth || 5)).map((d) => <option key={d} value={d}>Depth {d}</option>)}
                     </select>
+                    {/* Suspicious Only toggle */}
+                    <button onClick={() => setModal((p) => p ? { ...p, susOnlyFilter: !p.susOnlyFilter } : p)} style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: modal.susOnlyFilter ? (th.danger || "#f85149") + "22" : th.btnBg, color: modal.susOnlyFilter ? (th.danger || "#f85149") : th.textDim, border: `1px solid ${modal.susOnlyFilter ? (th.danger || "#f85149") + "55" : th.border}`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0, fontWeight: modal.susOnlyFilter ? 600 : 400 }} title="Show only suspicious processes">{modal.susOnlyFilter ? "\u26A0 Suspicious Only" : "Suspicious Only"}</button>
                     {selectedKey && <button onClick={() => setModal((p) => p ? { ...p, selectedKey: null } : p)} style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: (th.accent || "#58a6ff") + "22", color: th.accent || "#58a6ff", border: `1px solid ${(th.accent || "#58a6ff")}55`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0 }}>Clear Chain</button>}
                     {/* Separator */}
                     <div style={{ width: 1, height: 16, background: th.border, flexShrink: 0 }} />
@@ -5084,128 +5776,255 @@ export default function App() {
                     }} title="Copy visible tree as text" style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0 }}>Copy Tree</button>
                     {/* Copy CSV — tab-separated for spreadsheets */}
                     <button onClick={() => {
-                      const header = ["ProcessName", "PID", "PPID", "User", "Timestamp", "ImagePath", "CommandLine", "Elevation", "Integrity", "Depth"].join("\t");
+                      const header = ["Hostname", "ParentProcessName", "ProcessName", "PID", "PPID", "User", "Timestamp", "ImagePath", "CommandLine", "Provider", "EventID", "Elevation", "Integrity", "Depth"].join("\t");
                       const rows = flatNodes.map((n) => [
-                        n.processName, n.pid, n.ppid, n.user || "", n.ts || "", n.image || "", n.cmdLine || "",
-                        n.elevation || "", n.integrity || "", n.depth
+                        n.hostname || "", n.parentProcessName || "", n.processName, n.pid, n.ppid, n.user || "", n.ts || "", n.image || "", n.cmdLine || "",
+                        n.provider || "", n.eventId || "", n.elevation || "", n.integrity || "", n.depth
                       ].join("\t"));
                       navigator.clipboard.writeText([header, ...rows].join("\n"));
                     }} title="Copy as tab-separated CSV" style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0 }}>Copy CSV</button>
+                    {/* Copy Selected — only checked rows */}
+                    {ptCheckedCount > 0 && <button onClick={() => {
+                      const header = ["Timestamp", "Detection", "Provider", "EventID", "ParentProcess", "Process", "PID", "PPID", "User", "CommandLine", "ImagePath", "Integrity"].join("\t");
+                      const rows = flatNodes.filter((n) => ptChecked.has(n.key)).map((n) => {
+                        const det = (_ptDetMap.get(n.key) || {}).reason || "";
+                        return [n.ts || "", det, _providerShort(n.provider), n.eventId || "", n.parentProcessName || "", n.processName, n.pid, n.ppid, n.user || "", n.cmdLine || "", n.image || "", _integrityShort(n.integrity)].join("\t");
+                      });
+                      navigator.clipboard.writeText([header, ...rows].join("\n"));
+                    }} title="Copy selected rows as tab-separated" style={{ padding: "4px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: (th.accent) + "22", color: th.accent, border: `1px solid ${th.accent}55`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0, fontWeight: 600 }}>Copy Selected ({ptCheckedCount})</button>}
                   </div>
 
-                  {/* Column headers + Tree */}
-                  <div style={{ flex: 1, overflowY: "auto", overflowX: "auto", minHeight: 0 }}>
-                    {/* Sticky header block — filter bar + column headers as one unit */}
-                    <div style={{ position: "sticky", top: 0, zIndex: 2, background: th.modalBg }}>
-                      {/* Filter active indicator */}
-                      {ptActiveFilterCount > 0 && (
-                        <div style={{ padding: "4px 12px", display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${th.border}33`, borderLeft: `3px solid ${th.accent || "#58a6ff"}`, minWidth: totalPtW }}>
-                          <span style={{ fontSize: 10, fontWeight: 600, color: th.accent || "#58a6ff", fontFamily: "-apple-system, sans-serif" }}>Filter active ({ptActiveFilterCount} column{ptActiveFilterCount > 1 ? "s" : ""})</span>
-                          <span style={{ fontSize: 10, color: th.textDim }}>{"\u2014"} {flatNodes.length} of {data.stats.totalProcesses} processes</span>
-                          <button onClick={() => setModal((p) => ({ ...p, ptColFilters: {} }))} style={{ padding: "1px 8px", fontSize: 9, background: th.accent || "#58a6ff", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>Clear All</button>
+                  {/* Event Timeline — interactive dots */}
+                  {(() => {
+                    const times = flatNodes.filter(n => n.ts).map(n => ({ t: new Date(n.ts).getTime(), key: n.key })).filter(d => !isNaN(d.t));
+                    if (times.length < 2) return null;
+                    const tVals = times.map(d => d.t);
+                    const tMin = Math.min(...tVals.slice(0, 10000));
+                    const tMax = Math.max(...tVals.slice(0, 10000));
+                    if (tMin === tMax) return null;
+                    const range = tMax - tMin || 1;
+                    // Limit dots to first 500 for rendering performance
+                    const dotEvents = times.slice(0, 500);
+                    return (
+                      <div style={{ padding: "8px 20px 4px", borderBottom: `1px solid ${th.border}44`, background: `${th.modalBg}99`, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", flexShrink: 0 }}>
+                        <div style={{ fontSize: 9, color: th.textMuted, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "'SF Mono', Menlo, monospace" }}>Event Timeline</div>
+                        <div style={{ position: "relative", height: 40, background: `${th.bgInput}99`, borderRadius: 6, overflow: "hidden", border: `1px solid ${th.border}55` }}>
+                          {/* Time axis labels */}
+                          {[0, 0.25, 0.5, 0.75, 1].map((pct) => {
+                            const t = new Date(tMin + range * pct);
+                            return <span key={pct} style={{ position: "absolute", bottom: 2, left: `${pct * 100}%`, transform: "translateX(-50%)", fontSize: 8, color: th.textMuted + "88", fontFamily: "'SF Mono', Menlo, monospace", whiteSpace: "nowrap" }}>{t.toISOString().substr(11, 8)}</span>;
+                          })}
+                          {/* Event dots */}
+                          {dotEvents.map((d) => {
+                            const left = ((d.t - tMin) / range) * 100;
+                            const nd = byKeyMap.get(d.key);
+                            const pnd = nd ? byKeyMap.get(nd.parentKey) : null;
+                            const isSus = nd && pnd ? getSusInfo(nd, pnd).level > 0 : false;
+                            const isSel = d.key === selectedKey;
+                            return <div key={d.key} onClick={(e) => { e.stopPropagation(); setModal((p) => p ? { ...p, selectedKey: d.key } : p); }}
+                              title={nd ? `${nd.processName} (PID: ${nd.pid}) \u2014 ${nd.ts}` : ""}
+                              style={{ position: "absolute", left: `${left}%`, top: "38%", transform: "translate(-50%, -50%)", width: isSel ? 12 : 8, height: isSel ? 12 : 8, borderRadius: "50%", background: isSus ? (th.danger || "#f85149") : isSel ? (th.accent) : (th.success || "#3fb950"), border: isSel ? "2px solid #fff" : `1px solid rgba(255,255,255,0.2)`, cursor: "pointer", transition: "all 0.15s ease", boxShadow: isSus ? `0 0 8px ${th.danger || "#f85149"}66` : isSel ? `0 0 8px ${th.accent}55` : "none", zIndex: isSel ? 10 : isSus ? 5 : 1 }} />;
+                          })}
                         </div>
-                      )}
-                      {/* Column header row */}
-                      <div style={{ display: "flex", borderBottom: `1px solid ${th.border}`, minWidth: totalPtW }}>
-                        {ptHeaders.map((h) => (
-                          <div key={h} style={{ width: ptColWidths[h] || ptDefWidths[h], flexShrink: 0, padding: "6px 8px", fontSize: 9, fontFamily: "-apple-system, sans-serif", fontWeight: 600, color: (ptSortCol || "Timestamp") === h ? th.text : (th.accent || "#58a6ff"), whiteSpace: "nowrap", overflow: "hidden", userSelect: "none", position: "relative", boxSizing: "border-box" }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
-                              <span onClick={() => togglePtSort(h)} style={{ cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis" }}>{h}</span>
-                              {(ptSortCol || "Timestamp") === h && <span style={{ fontSize: 7, color: th.accent || "#58a6ff" }}>{(ptSortDir || "asc") === "asc" ? "\u25B2" : "\u25BC"}</span>}
-                              <span onClick={(e) => openPtFilter(h, e)} style={{ cursor: "pointer", fontSize: 7, color: ptColFilters[h] ? (th.accent || "#58a6ff") : (th.textDim) + "66", flexShrink: 0, marginLeft: "auto", paddingRight: 8 }}>{"\u25BC"}</span>
-                              <div onMouseDown={(e) => onPtResizeStart(h, e)} style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 6, cursor: "col-resize" }}>
-                                <div style={{ position: "absolute", right: 2, top: 2, bottom: 2, width: 1, background: th.border }} />
+                      </div>
+                    );
+                  })()}
+
+                  {/* Main content: tree + optional right detail panel */}
+                  <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+
+                  {/* Column headers + Tree — virtualized */}
+                  {(() => {
+                    const PT_ROW_H = 32, OVERSCAN = 8;
+                    const ptST = ptScroll.top;
+                    const ptCH = ptScroll.h;
+                    const totalRows = flatNodes.length;
+                    const totalH = totalRows * PT_ROW_H;
+                    const startIdx = Math.max(0, Math.floor(ptST / PT_ROW_H) - OVERSCAN);
+                    const endIdx = Math.min(totalRows, Math.ceil((ptST + ptCH) / PT_ROW_H) + OVERSCAN);
+                    const visibleSlice = flatNodes.slice(startIdx, endIdx);
+
+                    return (
+                      <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
+                        {/* Fixed column header — OUTSIDE scroll container to prevent overlap */}
+                        <div ref={ptHeaderRef} style={{ flexShrink: 0, overflowX: "hidden", backgroundColor: th.modalBg, backgroundImage: `linear-gradient(180deg, ${th.accent}22 0%, transparent 100%)`, borderBottom: `2px solid ${th.accent}55`, boxShadow: `0 2px 8px ${th.accent}18` }}>
+                          {/* Filter active indicator */}
+                          {ptActiveFilterCount > 0 && (
+                            <div style={{ padding: "4px 12px", display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${th.border}33`, borderLeft: `3px solid ${th.accent || "#58a6ff"}`, minWidth: totalPtW }}>
+                              <span style={{ fontSize: 10, fontWeight: 600, color: th.accent || "#58a6ff", fontFamily: "-apple-system, sans-serif" }}>Filter active ({ptActiveFilterCount} column{ptActiveFilterCount > 1 ? "s" : ""})</span>
+                              <span style={{ fontSize: 10, color: th.textDim }}>{"\u2014"} {flatNodes.length} of {data.stats.totalProcesses} processes</span>
+                              <button onClick={() => setModal((p) => ({ ...p, ptColFilters: {} }))} style={{ padding: "1px 8px", fontSize: 9, background: th.accent || "#58a6ff", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>Clear All</button>
+                            </div>
+                          )}
+                          {/* Column header row */}
+                          <div style={{ display: "flex", minWidth: totalPtW }}>
+                            {/* Select-all checkbox */}
+                            <div style={{ width: PT_CHK_W, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" }}>
+                              <input type="checkbox" checked={flatNodes.length > 0 && ptCheckedCount === flatNodes.length} ref={(el) => { if (el) el.indeterminate = ptCheckedCount > 0 && ptCheckedCount < flatNodes.length; }}
+                                onChange={() => { setModal((p) => { if (!p) return p; const cur = p.ptChecked || new Set(); if (cur.size === flatNodes.length) return { ...p, ptChecked: new Set() }; return { ...p, ptChecked: new Set(flatNodes.map((n) => n.key)) }; }); }}
+                                style={{ width: 13, height: 13, cursor: "pointer", accentColor: th.accent }} title="Select all" />
+                            </div>
+                            {ptHeaders.map((h) => (
+                              <div key={h} onClick={() => togglePtSort(h)} style={{ width: ptColWidths[h] || ptDefWidths[h], flexShrink: 0, padding: "9px 8px", fontSize: 11, fontFamily: "'SF Mono', Menlo, monospace", fontWeight: 700, color: (ptSortCol || "Timestamp") === h ? th.accent : `${th.accent}99`, textTransform: "uppercase", letterSpacing: "0.08em", whiteSpace: "nowrap", overflow: "hidden", userSelect: "none", position: "relative", boxSizing: "border-box", cursor: "pointer" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                                  <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{h}</span>
+                                  {(ptSortCol || "Timestamp") === h && <span style={{ fontSize: 7, color: th.accent || "#58a6ff" }}>{(ptSortDir || "asc") === "asc" ? "\u25B2" : "\u25BC"}</span>}
+                                  <span onClick={(e) => { e.stopPropagation(); openPtFilter(h, e); }} style={{ cursor: "pointer", fontSize: 7, color: ptColFilters[h] ? (th.accent || "#58a6ff") : (th.textDim) + "66", flexShrink: 0, marginLeft: "auto", paddingRight: 8 }}>{"\u25BC"}</span>
+                                  <div onMouseDown={(e) => { e.stopPropagation(); onPtResizeStart(h, e); }} style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 6, cursor: "col-resize" }}>
+                                    <div style={{ position: "absolute", right: 2, top: 4, bottom: 4, width: 1, background: `${th.accent}44` }} />
+                                  </div>
+                                </div>
                               </div>
+                            ))}
+                            <div style={{ width: 50, flexShrink: 0, padding: "6px 4px", fontSize: 9, fontFamily: "-apple-system, sans-serif", color: th.textDim, userSelect: "none" }} />
+                          </div>
+                        </div>
+                        {/* Scrollable rows — header stays fixed above */}
+                        <div ref={ptScrollRef} onScroll={(e) => {
+                          const el = e.currentTarget;
+                          const st = el.scrollTop;
+                          const ch = el.clientHeight;
+                          if (ptHeaderRef.current) ptHeaderRef.current.scrollLeft = el.scrollLeft;
+                          if (ptRafRef.current) cancelAnimationFrame(ptRafRef.current);
+                          ptRafRef.current = requestAnimationFrame(() => {
+                            setPtScroll((p) => {
+                              const oldStart = Math.floor(p.top / PT_ROW_H);
+                              const newStart = Math.floor(st / PT_ROW_H);
+                              if (newStart === oldStart && p.h === ch) return p;
+                              return { top: st, h: ch };
+                            });
+                          });
+                        }} style={{ flex: 1, overflowY: "auto", overflowX: "auto", minHeight: 0, contain: "strict", willChange: "transform" }}>
+                        {/* Virtualized tree rows */}
+                        {flatNodes.length === 0 && (
+                          <div style={{ padding: 20, textAlign: "center", color: th.textDim, fontSize: 12 }}>{searchText ? "No matching processes" : "No process creation events found"}</div>
+                        )}
+                        {flatNodes.length > 0 && (
+                          <div style={{ height: totalH, position: "relative", minWidth: totalPtW, contain: "layout size" }}>
+                            <div style={{ position: "absolute", top: startIdx * PT_ROW_H, left: 0, right: 0 }}>
+                              {visibleSlice.map((node, vi) => {
+                                const i = startIdx + vi;
+                                const susInfo = _ptDetMap.get(node.key) || { level: 0, reason: null };
+                                const sus = susInfo.level;
+                                const susColor = SUS_COLORS[sus];
+                                const hasChildren = node.childCount > 0;
+                                const isExpanded = !!expandedNodes[node.key];
+                                const tsDisplay = (node.ts || "").replace("T", " ").substring(0, 19);
+                                const inChain = chainKeys.has(node.key);
+                                const isSelected = node.key === selectedKey;
+                                const lineColor = th.textMuted || th.textDim || "#888";
+                                const chainColor = th.accent || "#58a6ff";
+                                const INDENT = 20, LEFT_PAD = 16;
+
+                                return (
+                                  <div key={node.key + ":" + i}
+                                    onClick={() => setModal((p) => p ? { ...p, selectedKey: p.selectedKey === node.key ? null : node.key } : p)}
+                                    className={isSelected ? "pt-row pt-sel" : "pt-row"}
+                                    style={{ display: "flex", height: PT_ROW_H, fontSize: 12.5, fontFamily: "'SF Mono', Menlo, monospace", cursor: "pointer", background: isSelected ? (th.accent) + "10" : susColor && !inChain ? susColor + "06" : "transparent", borderBottom: `1px solid ${th.border}18`, borderLeft: isSelected ? `2px solid ${chainColor}` : susColor ? `2px solid ${susColor}55` : "2px solid transparent", alignItems: "center", minHeight: 34, contain: "layout style" }}>
+
+                                    {/* Row checkbox */}
+                                    <div style={{ width: PT_CHK_W, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" }}>
+                                      <input type="checkbox" checked={ptChecked.has(node.key)}
+                                        onClick={(e) => e.stopPropagation()}
+                                        onChange={() => { setModal((p) => { if (!p) return p; const s = new Set(p.ptChecked || []); if (s.has(node.key)) s.delete(node.key); else s.add(node.key); return { ...p, ptChecked: s }; }); }}
+                                        style={{ width: 13, height: 13, cursor: "pointer", accentColor: th.accent }} />
+                                    </div>
+
+                                    {/* Timestamp column */}
+                                    <div style={{ width: ptColWidths.Timestamp || ptDefWidths.Timestamp, flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
+                                      <span style={{ fontFamily: "monospace", color: th.textDim, fontSize: 12.5, whiteSpace: "nowrap" }}>{tsDisplay}</span>
+                                    </div>
+
+                                    {/* Detection column */}
+                                    <div style={{ width: ptColWidths.Detection || ptDefWidths.Detection, flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
+                                      {susInfo.reason && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: susColor + "22", color: susColor, border: `1px solid ${susColor}44`, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={susInfo.reason}>{susInfo.reason}</span>}
+                                    </div>
+
+                                    {/* Provider column */}
+                                    <div style={{ width: ptColWidths.Provider || ptDefWidths.Provider, flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
+                                      <span style={{ fontSize: 12, color: th.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{_providerShort(node.provider)}</span>
+                                    </div>
+
+                                    {/* Event ID column */}
+                                    <div style={{ width: ptColWidths["Event ID"] || ptDefWidths["Event ID"], flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
+                                      <span style={{ fontFamily: "monospace", color: th.textDim, fontSize: 12, whiteSpace: "nowrap" }}>{node.eventId || ""}</span>
+                                    </div>
+
+                                    {/* Parent Process column */}
+                                    <div style={{ width: ptColWidths["Parent Process"] || ptDefWidths["Parent Process"], flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
+                                      <span style={{ color: th.textDim, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={node.parentImage}>{node.parentProcessName || ""}</span>
+                                    </div>
+
+                                    {/* Process column */}
+                                    <div style={{ width: ptColWidths.Process || ptDefWidths.Process, flexShrink: 0, position: "relative", display: "flex", alignItems: "center", gap: 4, overflow: "hidden", boxSizing: "border-box" }}>
+                                      {node.depth > 0 && (node.connectors || []).map((active, d) => (
+                                        active ? <div key={`vl${d}`} style={{ position: "absolute", left: LEFT_PAD + d * INDENT + INDENT / 2, top: 0, bottom: 0, width: 1, background: inChain && d >= 0 ? chainColor + "66" : lineColor + "44" }} /> : null
+                                      ))}
+                                      {node.depth > 0 && (
+                                        <>
+                                          <div style={{ position: "absolute", left: LEFT_PAD + (node.depth - 1) * INDENT + INDENT / 2, top: 0, height: node.isLast ? PT_ROW_H / 2 : PT_ROW_H, width: 1, background: inChain ? chainColor + "88" : lineColor + "44" }} />
+                                          <div style={{ position: "absolute", left: LEFT_PAD + (node.depth - 1) * INDENT + INDENT / 2, top: PT_ROW_H / 2, width: INDENT / 2 + 2, height: 1, background: inChain ? chainColor + "88" : lineColor + "44" }} />
+                                        </>
+                                      )}
+                                      <div style={{ width: LEFT_PAD + node.depth * INDENT, minWidth: LEFT_PAD + node.depth * INDENT, flexShrink: 0 }} />
+                                      <span onClick={(e) => { e.stopPropagation(); if (hasChildren) setModal((p) => { const en = { ...p.expandedNodes }; if (en[node.key]) delete en[node.key]; else en[node.key] = true; return { ...p, expandedNodes: en }; }); }}
+                                        style={{ width: 14, textAlign: "center", color: hasChildren ? (inChain ? chainColor : th.textDim) : "transparent", fontSize: 11, flexShrink: 0, userSelect: "none" }}>
+                                        {hasChildren ? (isExpanded ? "\u25BC" : "\u25B6") : "\u00B7"}
+                                      </span>
+                                      {inChain && <div style={{ width: 6, height: 6, borderRadius: "50%", background: chainColor, flexShrink: 0 }} />}
+                                      {ptIcon(node.processName)}
+                                      <span style={{ fontWeight: 600, color: isSelected ? chainColor : susColor || th.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }} title={node.image}>{node.processName}</span>
+                                      {node.childCount > 0 && <span style={{ fontSize: 11, color: th.accent, flexShrink: 0, paddingRight: 4 }}>({node.childCount})</span>}
+                                    </div>
+
+                                    {/* PID column */}
+                                    <div style={{ width: ptColWidths.PID || ptDefWidths.PID, flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
+                                      <span style={{ fontFamily: "monospace", color: inChain ? chainColor + "cc" : th.textDim, fontSize: 12.5, whiteSpace: "nowrap" }}>{node.pid}</span>
+                                    </div>
+
+                                    {/* PPID column */}
+                                    <div style={{ width: ptColWidths.PPID || ptDefWidths.PPID, flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
+                                      <span style={{ fontFamily: "monospace", color: th.textDim, fontSize: 12.5, whiteSpace: "nowrap" }}>{node.ppid || ""}</span>
+                                    </div>
+
+                                    {/* User column */}
+                                    <div style={{ width: ptColWidths.User || ptDefWidths.User, flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
+                                      <span style={{ color: th.textDim, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.user || ""}</span>
+                                    </div>
+
+                                    {/* Command Line column */}
+                                    <div style={{ width: ptColWidths["Command Line"] || ptDefWidths["Command Line"], flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
+                                      <span style={{ color: th.textDim, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={node.cmdLine}>{node.cmdLine}</span>
+                                    </div>
+
+                                    {/* Integrity column */}
+                                    <div style={{ width: ptColWidths.Integrity || ptDefWidths.Integrity, flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
+                                      {(() => { const il = _integrityShort(node.integrity); const ic = INT_COLOR[il]; return il ? <span style={{ fontSize: 11, padding: "2px 6px", borderRadius: 3, background: (ic || th.textDim) + "18", color: ic || th.textDim, fontWeight: 500, whiteSpace: "nowrap" }}>{il}</span> : null; })()}
+                                    </div>
+
+                                    {/* Filter grid button */}
+                                    <div style={{ width: 50, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                      <button onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (cols.pid && node.pid) {
+                                          const cbf = { ...(ct.checkboxFilters || {}) };
+                                          cbf[cols.pid] = [node.pid];
+                                          if (cols.eventId) delete cbf[cols.eventId];
+                                          up("checkboxFilters", cbf);
+                                        }
+                                        setModal(null);
+                                      }} title="Filter grid to this process" style={{ background: "none", border: `1px solid ${th.border}`, borderRadius: 4, color: th.textDim, fontSize: 10, padding: "2px 6px", cursor: "pointer" }}>Filter</button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
-                        ))}
-                        <div style={{ width: 50, flexShrink: 0, padding: "6px 4px", fontSize: 9, fontFamily: "-apple-system, sans-serif", color: th.textDim, userSelect: "none" }} />
+                        )}
                       </div>
-                    </div>
-                    {/* Tree rows */}
-                    {flatNodes.length === 0 && (
-                      <div style={{ padding: 20, textAlign: "center", color: th.textDim, fontSize: 12 }}>{searchText ? "No matching processes" : "No process creation events found"}</div>
-                    )}
-                    {flatNodes.map((node, i) => {
-                      const parentNode = byKeyMap.get(node.parentKey);
-                      const sus = getSusLevel(node, parentNode);
-                      const susColor = susColors[sus];
-                      const hasChildren = node.childCount > 0;
-                      const isExpanded = !!expandedNodes[node.key];
-                      const tsShort = (node.ts || "").replace(/^\d{4}-\d{2}-\d{2}\s*/, "").substring(0, 12);
-                      const inChain = chainKeys.has(node.key);
-                      const isSelected = node.key === selectedKey;
-                      const lineColor = th.textMuted || th.textDim || "#888";
-                      const chainColor = th.accent || "#58a6ff";
-                      const ROW_H = 28, INDENT = 20, LEFT_PAD = 16;
-
-                      return (
-                        <div key={node.key + ":" + i}
-                          onClick={() => setModal((p) => p ? { ...p, selectedKey: p.selectedKey === node.key ? null : node.key } : p)}
-                          style={{ display: "flex", height: ROW_H, fontSize: 12, fontFamily: "-apple-system, sans-serif", cursor: "pointer", background: isSelected ? (th.accent || "#58a6ff") + "18" : "transparent", borderBottom: `1px solid ${th.border}11`, minWidth: totalPtW }}
-                          onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = th.bgHover || th.border + "44"; }}
-                          onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}>
-
-                          {/* Process column */}
-                          <div style={{ width: ptColWidths.Process || ptDefWidths.Process, flexShrink: 0, position: "relative", display: "flex", alignItems: "center", gap: 4, overflow: "hidden", boxSizing: "border-box" }}>
-                            {/* Connector lines */}
-                            {node.depth > 0 && (node.connectors || []).map((active, d) => (
-                              active ? <div key={`vl${d}`} style={{ position: "absolute", left: LEFT_PAD + d * INDENT + INDENT / 2, top: 0, bottom: 0, width: 1, background: inChain && d >= 0 ? chainColor + "66" : lineColor + "44" }} /> : null
-                            ))}
-                            {node.depth > 0 && (
-                              <>
-                                <div style={{ position: "absolute", left: LEFT_PAD + (node.depth - 1) * INDENT + INDENT / 2, top: 0, height: node.isLast ? ROW_H / 2 : ROW_H, width: 1, background: inChain ? chainColor + "88" : lineColor + "44" }} />
-                                <div style={{ position: "absolute", left: LEFT_PAD + (node.depth - 1) * INDENT + INDENT / 2, top: ROW_H / 2, width: INDENT / 2 + 2, height: 1, background: inChain ? chainColor + "88" : lineColor + "44" }} />
-                              </>
-                            )}
-                            <div style={{ width: LEFT_PAD + node.depth * INDENT, minWidth: LEFT_PAD + node.depth * INDENT, flexShrink: 0 }} />
-                            <span onClick={(e) => { e.stopPropagation(); if (hasChildren) setModal((p) => { const en = { ...p.expandedNodes }; if (en[node.key]) delete en[node.key]; else en[node.key] = true; return { ...p, expandedNodes: en }; }); }}
-                              style={{ width: 14, textAlign: "center", color: hasChildren ? (inChain ? chainColor : th.textDim) : "transparent", fontSize: 10, flexShrink: 0, userSelect: "none" }}>
-                              {hasChildren ? (isExpanded ? "\u25BC" : "\u25B6") : "\u00B7"}
-                            </span>
-                            {inChain && <div style={{ width: 6, height: 6, borderRadius: "50%", background: chainColor, flexShrink: 0 }} />}
-                            {susColor && !inChain && <span style={{ width: 7, height: 7, borderRadius: "50%", background: susColor, flexShrink: 0 }} title={susLabels[sus] || ""} />}
-                            <span style={{ fontWeight: 600, color: isSelected ? chainColor : susColor || th.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }} title={node.image}>{node.processName}</span>
-                            {node.childCount > 0 && <span style={{ fontSize: 10, color: th.accent, flexShrink: 0, paddingRight: 4 }}>({node.childCount})</span>}
-                          </div>
-
-                          {/* PID column */}
-                          <div style={{ width: ptColWidths.PID || ptDefWidths.PID, flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
-                            <span style={{ fontFamily: "monospace", color: inChain ? chainColor + "cc" : th.textDim, fontSize: 11, whiteSpace: "nowrap" }}>{node.pid}</span>
-                          </div>
-
-                          {/* User column */}
-                          <div style={{ width: ptColWidths.User || ptDefWidths.User, flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
-                            <span style={{ color: th.textDim, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.user || ""}</span>
-                          </div>
-
-                          {/* Timestamp column */}
-                          <div style={{ width: ptColWidths.Timestamp || ptDefWidths.Timestamp, flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
-                            <span style={{ fontFamily: "monospace", color: th.textDim, fontSize: 11, whiteSpace: "nowrap" }}>{tsShort}</span>
-                          </div>
-
-                          {/* Command Line column */}
-                          <div style={{ width: ptColWidths["Command Line"] || ptDefWidths["Command Line"], flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px", overflow: "hidden", boxSizing: "border-box" }}>
-                            <span style={{ color: th.textDim, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={node.cmdLine}>{node.cmdLine}</span>
-                          </div>
-
-                          {/* Filter grid button */}
-                          <div style={{ width: 50, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <button onClick={(e) => {
-                              e.stopPropagation();
-                              if (cols.pid && node.pid) {
-                                const cbf = { ...(ct.checkboxFilters || {}) };
-                                cbf[cols.pid] = [node.pid];
-                                if (cols.eventId) delete cbf[cols.eventId];
-                                up("checkboxFilters", cbf);
-                              }
-                              setModal(null);
-                            }} title="Filter grid to this process" style={{ background: "none", border: `1px solid ${th.border}`, borderRadius: 4, color: th.textDim, fontSize: 10, padding: "2px 6px", cursor: "pointer" }}>Filter</button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Column filter dropdown popup */}
                   {ptFilterOpen && (
@@ -5290,100 +6109,140 @@ export default function App() {
                     </>
                   )}
 
-                  {/* Process Detail Panel */}
-                  {selectedKey && (() => {
-                    const selNode = byKeyMap.get(selectedKey);
-                    if (!selNode) return null;
+                  {/* Right-side Detail Panel — prototype grid layout, resizable */}
+                  {(() => {
+                    const detailW = modal.ptDetailW || 380;
+                    const detailResizeHandle = (
+                      <div onMouseDown={(e) => {
+                        e.preventDefault(); e.stopPropagation();
+                        const startX = e.clientX;
+                        const startW = modal.ptDetailW || 380;
+                        document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none";
+                        const onMove = (ev) => { const newW = Math.max(240, Math.min(700, startW - (ev.clientX - startX))); setModal((p) => p ? { ...p, ptDetailW: newW } : p); };
+                        const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                        window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+                      }} style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 5, cursor: "col-resize", zIndex: 3 }}>
+                        <div style={{ position: "absolute", left: 2, top: "50%", transform: "translateY(-50%)", width: 3, height: 40, borderRadius: 2, background: th.textMuted + "44", transition: "background 0.15s" }}
+                          onMouseEnter={(e) => e.currentTarget.style.background = th.accent}
+                          onMouseLeave={(e) => e.currentTarget.style.background = (th.textMuted || "#888") + "44"} />
+                      </div>
+                    );
+                    const selNode = selectedKey ? byKeyMap.get(selectedKey) : null;
+                    if (!selNode) return (
+                      <div style={{ width: detailW, position: "relative", borderLeft: `1px solid ${th.border}44`, background: `${th.modalBg}cc`, backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", flexShrink: 0, display: "flex", flexDirection: "column" }}>
+                        {detailResizeHandle}
+                        <div style={{ padding: "10px 16px 8px", borderBottom: `1px solid ${th.border}44`, background: `${th.headerBg}88`, fontSize: 9, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 600, fontFamily: "'SF Mono', Menlo, monospace" }}>Event Details</div>
+                        <div style={{ padding: 40, textAlign: "center", color: th.textMuted, fontFamily: "'SF Mono', Menlo, monospace", fontSize: 12 }}>Select a process node to view details</div>
+                      </div>
+                    );
                     const parentNode = byKeyMap.get(selNode.parentKey);
-                    const selSus = getSusLevel(selNode, parentNode);
-                    const selSusColor = susColors[selSus];
-                    const children = (data?.processes || []).filter((p) => p.parentKey === selectedKey);
+                    const selSusInfo = getSusInfo(selNode, parentNode);
+                    const selSus = selSusInfo.level;
+                    const selSusColor = SUS_COLORS[selSus];
+                    const children = (childMap.get(selectedKey) || []).map((k) => byKeyMap.get(k)).filter(Boolean);
                     const elevMap = { "%%1936": "Full (elevated)", "%%1937": "Limited (not elevated)", "%%1938": "Default" };
                     const elevLabel = elevMap[selNode.elevation] || selNode.elevation || "";
-                    const integrityLabel = (selNode.integrity || "").replace(/^S-1-16-\d+\s*/i, "").replace(/^.*\\/, "") || selNode.integrity || "";
+                    const integrityLabel = _integrityShort(selNode.integrity);
+                    const intCol = INT_COLOR[integrityLabel];
                     const copyDetails = () => {
                       const lines = [
-                        `Process: ${selNode.processName}`,
-                        `PID: ${selNode.pid}`,
-                        `PPID: ${selNode.ppid}`,
-                        selNode.user ? `User: ${selNode.user}` : null,
-                        selNode.ts ? `Timestamp: ${selNode.ts}` : null,
-                        selNode.image ? `Image: ${selNode.image}` : null,
-                        selNode.cmdLine ? `Command Line: ${selNode.cmdLine}` : null,
+                        `Process: ${selNode.processName}`, `PID: ${selNode.pid}`, `PPID: ${selNode.ppid}`,
+                        selNode.user ? `User: ${selNode.user}` : null, selNode.ts ? `Timestamp: ${selNode.ts.replace("T", " ").substring(0, 19)}` : null,
+                        selNode.image ? `Image: ${selNode.image}` : null, selNode.cmdLine ? `Command Line: ${selNode.cmdLine}` : null,
                         selNode.parentImage ? `Parent Image: ${selNode.parentImage}` : null,
-                        parentNode ? `Parent Process: ${parentNode.processName} (PID ${parentNode.pid})` : null,
-                        elevLabel ? `Elevation: ${elevLabel}` : null,
-                        integrityLabel ? `Integrity: ${integrityLabel}` : null,
-                        selSus > 0 ? `Suspicious: ${susLabels[selSus]}` : null,
+                        parentNode ? `Parent: ${parentNode.processName} (PID ${parentNode.pid})` : null,
+                        elevLabel ? `Elevation: ${elevLabel}` : null, integrityLabel ? `Integrity: ${integrityLabel}` : null,
+                        selSus > 0 ? `Suspicious: ${selSusInfo.reason}` : null,
                         children.length > 0 ? `Children (${children.length}): ${children.map((c) => `${c.processName} (${c.pid})`).join(", ")}` : null,
                       ].filter(Boolean);
                       navigator.clipboard.writeText(lines.join("\n"));
                     };
-                    const tintBg = selSusColor ? selSusColor + "08" : "transparent";
+                    const gLbl = { fontFamily: "'SF Mono', Menlo, monospace", fontSize: 10, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", paddingTop: 2 };
+                    const gVal = { fontFamily: "'SF Mono', Menlo, monospace", fontSize: 11.5, color: th.text, wordBreak: "break-all", lineHeight: 1.5 };
+                    const fields = [
+                      ["Timestamp", selNode.ts ? selNode.ts.replace("T", " ").substring(0, 19) : ""],
+                      ["Process", selNode.processName],
+                      ["Full Path", selNode.image],
+                      ["PID", selNode.pid],
+                      ["PPID", selNode.ppid],
+                      ["Parent", parentNode ? parentNode.processName : ""],
+                      ["Parent Path", selNode.parentImage],
+                      ["User", selNode.user],
+                      ["Integrity", integrityLabel],
+                      ["Elevation", elevLabel],
+                      ["Command Line", selNode.cmdLine],
+                      ["Provider", _providerShort(selNode.provider)],
+                      ["Event ID", selNode.eventId],
+                    ].filter(([, v]) => v);
                     return (
-                      <div style={{ borderTop: `1px solid ${selSusColor || th.border}`, background: tintBg, padding: "10px 20px", flexShrink: 0, maxHeight: 200, overflowY: "auto", fontSize: 12, fontFamily: "-apple-system, sans-serif" }}>
-                        {/* Header row */}
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                          <span style={{ fontWeight: 700, fontSize: 13, color: selSusColor || th.text }}>{selNode.processName}</span>
-                          {selSus > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: selSusColor + "22", color: selSusColor, fontWeight: 600 }}>{susLabels[selSus]}</span>}
-                          {elevLabel && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: (elevLabel.includes("Full") ? (th.danger || "#f85149") : (th.accent || "#58a6ff")) + "22", color: elevLabel.includes("Full") ? (th.danger || "#f85149") : th.textDim }}>{elevLabel}</span>}
-                          {integrityLabel && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: th.accent + "18", color: th.textDim }}>{integrityLabel}</span>}
-                          <div style={{ flex: 1 }} />
-                          <button onClick={copyDetails} style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}` }}>Copy Details</button>
-                        </div>
-                        {/* 4-column info grid */}
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "4px 16px", marginBottom: 8 }}>
-                          <div><span style={{ color: th.textDim }}>PID: </span><span style={{ fontFamily: "monospace", color: th.text }}>{selNode.pid}</span></div>
-                          <div><span style={{ color: th.textDim }}>PPID: </span><span style={{ fontFamily: "monospace", color: th.text }}>{selNode.ppid}</span></div>
-                          <div><span style={{ color: th.textDim }}>User: </span><span style={{ color: th.text }}>{selNode.user || "\u2014"}</span></div>
-                          <div><span style={{ color: th.textDim }}>Time: </span><span style={{ fontFamily: "monospace", color: th.text }}>{selNode.ts || "\u2014"}</span></div>
-                        </div>
-                        {/* Full-width fields */}
-                        {selNode.image && <div style={{ marginBottom: 4 }}><span style={{ color: th.textDim }}>Image: </span><span style={{ color: th.text, wordBreak: "break-all" }}>{selNode.image}</span></div>}
-                        {selNode.cmdLine && <div style={{ marginBottom: 4, maxHeight: 60, overflowY: "auto", background: th.bgInput, borderRadius: 4, padding: "4px 6px" }}><span style={{ color: th.textDim }}>Cmd: </span><span style={{ fontFamily: "monospace", fontSize: 11, color: th.text, wordBreak: "break-all" }}>{selNode.cmdLine}</span></div>}
-                        {selNode.parentImage && <div style={{ marginBottom: 4 }}><span style={{ color: th.textDim }}>Parent Image: </span><span style={{ color: th.text, wordBreak: "break-all" }}>{selNode.parentImage}</span></div>}
-                        {/* Parent link */}
-                        {parentNode && (
-                          <div style={{ marginBottom: 4 }}>
-                            <span style={{ color: th.textDim }}>Parent: </span>
-                            <span onClick={() => {
-                              const en = { ...(modal.expandedNodes || {}) };
-                              let cur = parentNode.parentKey;
-                              while (cur && byKeyMap.has(cur)) { en[cur] = true; cur = byKeyMap.get(cur).parentKey; }
-                              setModal((p) => p ? { ...p, selectedKey: parentNode.key, expandedNodes: en } : p);
-                            }} style={{ color: th.accent || "#58a6ff", cursor: "pointer", textDecoration: "underline" }}>{parentNode.processName} (PID {parentNode.pid})</span>
+                      <div style={{ width: detailW, position: "relative", borderLeft: `1px solid ${th.border}44`, background: `${th.modalBg}cc`, backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", flexShrink: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                        {detailResizeHandle}
+                        {/* EVENT DETAILS header bar */}
+                        <div style={{ padding: "10px 16px 8px", borderBottom: `1px solid ${th.border}44`, background: `${th.headerBg}aa`, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", fontSize: 9, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 600, fontFamily: "'SF Mono', Menlo, monospace", flexShrink: 0 }}>Event Details</div>
+                        {/* Process header + badges */}
+                        <div style={{ padding: "12px 16px 8px", borderBottom: `1px solid ${th.border}33`, flexShrink: 0 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                            {ptIcon(selNode.processName)}
+                            <span style={{ fontFamily: "'SF Mono', Menlo, monospace", fontWeight: 700, fontSize: 15, color: selSusColor || th.text }}>{selNode.processName}</span>
+                            <span style={{ fontFamily: "'SF Mono', Menlo, monospace", fontSize: 11, color: th.textMuted, marginLeft: 4 }}>PID {selNode.pid}</span>
                           </div>
-                        )}
-                        {/* Children chips */}
-                        {children.length > 0 && (
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
-                            <span style={{ color: th.textDim, marginRight: 4 }}>Children ({children.length}):</span>
-                            {children.slice(0, 20).map((c) => {
-                              const cSus = getSusLevel(c, selNode);
-                              const cColor = susColors[cSus];
-                              return (
-                                <span key={c.key} onClick={() => {
-                                  const en = { ...(modal.expandedNodes || {}), [selectedKey]: true };
-                                  setModal((p) => p ? { ...p, selectedKey: c.key, expandedNodes: en } : p);
-                                }} style={{ padding: "1px 6px", borderRadius: 8, background: (cColor || th.accent || "#58a6ff") + "18", color: cColor || th.textDim, fontSize: 10, cursor: "pointer", border: `1px solid ${(cColor || th.border)}44` }}>{c.processName} ({c.pid})</span>
-                              );
-                            })}
-                            {children.length > 20 && <span style={{ fontSize: 10, color: th.textDim }}>+{children.length - 20} more</span>}
+                          {selSusInfo.reason && <div style={{ marginBottom: 6 }}><span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: `${selSusColor}22`, color: selSusColor, padding: "2px 8px", borderRadius: 3, fontSize: 10, fontFamily: "'SF Mono', Menlo, monospace", fontWeight: 600, border: `1px solid ${selSusColor}44`, letterSpacing: "0.02em" }}>{"\u26A0"} {selSusInfo.reason}</span></div>}
+                          <button onClick={copyDetails} style={{ padding: "3px 10px", borderRadius: 4, fontSize: 9, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}66`, fontFamily: "'SF Mono', Menlo, monospace" }}>Copy Details</button>
+                        </div>
+                        {/* Grid fields — matching prototype */}
+                        <div style={{ overflow: "auto", flex: 1, padding: 16 }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                            {fields.map(([label, value]) => (
+                              <div key={label} style={{ display: "grid", gridTemplateColumns: "110px 1fr", padding: "6px 0", borderBottom: `1px solid ${th.border}22` }}>
+                                <span style={gLbl}>{label}</span>
+                                <span style={{ ...gVal, color: label === "Command Line" ? (th.danger || "#ff7b72") : label === "Parent" ? (th.accent) : label === "Integrity" ? (intCol || th.text) : th.text, background: label === "Command Line" ? `${th.accent}08` : "transparent", padding: label === "Command Line" ? "4px 6px" : "0", borderRadius: label === "Command Line" ? 3 : 0, cursor: label === "Parent" && parentNode ? "pointer" : "default" }}
+                                  onClick={label === "Parent" && parentNode ? () => {
+                                    const en = { ...(modal.expandedNodes || {}) };
+                                    let cur = parentNode.parentKey;
+                                    while (cur && byKeyMap.has(cur)) { en[cur] = true; cur = byKeyMap.get(cur).parentKey; }
+                                    setModal((p) => p ? { ...p, selectedKey: parentNode.key, expandedNodes: en } : p);
+                                  } : undefined}>{value || "\u2014"}</span>
+                              </div>
+                            ))}
                           </div>
-                        )}
+                          {/* Children chips */}
+                          {children.length > 0 && <div style={{ marginTop: 12 }}>
+                            <div style={{ ...gLbl, marginBottom: 6 }}>Children ({children.length})</div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                              {children.slice(0, 20).map((c) => {
+                                const cSusInfo = getSusInfo(c, selNode);
+                                const cColor = SUS_COLORS[cSusInfo.level];
+                                return <span key={c.key} onClick={() => { const en = { ...(modal.expandedNodes || {}), [selectedKey]: true }; setModal((p) => p ? { ...p, selectedKey: c.key, expandedNodes: en } : p); }}
+                                  style={{ padding: "2px 8px", borderRadius: 4, background: (cColor || th.accent) + "14", color: cColor || th.textDim, fontSize: 10, cursor: "pointer", border: `1px solid ${(cColor || th.border)}33`, fontFamily: "'SF Mono', Menlo, monospace" }}>{c.processName} ({c.pid})</span>;
+                              })}
+                              {children.length > 20 && <span style={{ fontSize: 9, color: th.textDim }}>+{children.length - 20} more</span>}
+                            </div>
+                          </div>}
+                        </div>
                       </div>
                     );
                   })()}
+                  </div>{/* End flex row: tree + detail panel */}
 
                   {/* Footer */}
-                  <div style={{ padding: "10px 20px", borderTop: `1px solid ${th.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
-                    <button onClick={() => setModal((p) => ({ ...p, phase: "config" }))} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif" }}>Back</button>
-                    <span style={{ fontSize: 11, color: th.textDim }}>
-                      {flatNodes.length.toLocaleString()} visible
-                      {selectedKey && ` \u00B7 Chain: ${chainKeys.size} nodes`}
+                  {(() => {
+                    const susCountFooter = flatNodes.filter(n => (_ptDetMap.get(n.key) || { level: 0 }).level > 0).length;
+                    let treeDepth = 0;
+                    for (const n of flatNodes) if ((n.depth || 0) > treeDepth) treeDepth = n.depth;
+                    const fProviders = [...new Set((data?.processes || []).map(p => _providerShort(p.provider)).filter(Boolean))].join(", ");
+                    const fEids = [...new Set((data?.processes || []).map(p => p.eventId).filter(Boolean))].sort().join(", ");
+                    return (
+                  <div style={{ padding: "8px 20px", borderTop: `1px solid ${th.border}44`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, fontSize: 10, color: th.textDim, background: `${th.headerBg}cc`, backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", fontFamily: "'SF Mono', Menlo, monospace" }}>
+                    <span>
+                      {flatNodes.length.toLocaleString()} visible · {susCountFooter} suspicious · Tree depth: {treeDepth}
+                      {selectedKey && ` · Chain: ${chainKeys.size}`}
                     </span>
-                    <button onClick={() => setModal(null)} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif" }}>Close</button>
+                    <span style={{ opacity: 0.7 }}>
+                      Data: {fProviders || "Events"} EID {fEids || "—"} {"\u2192"} ProcessEvent {"\u2192"} Tree Index by PID/PPID
+                    </span>
                   </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>
@@ -5393,7 +6252,7 @@ export default function App() {
 
       {/* Lateral Movement Modal */}
       {modal?.type === "lateralMovement" && ct && (() => {
-        const { phase, columns: cols, data, eventIds, excludeLocal, excludeService } = modal;
+        const { phase, columns: cols, data, excludeLocal, excludeService } = modal;
         const viewTab = modal.viewTab || "graph";
         const selectedNode = modal.selectedNode;
         const selectedEdge = modal.selectedEdge;
@@ -5520,6 +6379,33 @@ export default function App() {
           return result;
         };
 
+        const LM_RULES = [
+          { cat: "RDP Session", name: "Network Authentication", sev: "high", eids: ["1149"], hint: "RemoteConnectionManager" },
+          { cat: "RDP Session", name: "Session Logon", sev: "medium", eids: ["21"], hint: "LocalSessionManager" },
+          { cat: "RDP Session", name: "Shell Start Notification", sev: "low", eids: ["22"], hint: "LocalSessionManager" },
+          { cat: "RDP Session", name: "Session Logoff", sev: "low", eids: ["23"], hint: "LocalSessionManager" },
+          { cat: "RDP Session", name: "Session Disconnected", sev: "low", eids: ["24"], hint: "LocalSessionManager" },
+          { cat: "RDP Session", name: "Session Reconnected", sev: "medium", eids: ["25"], hint: "LocalSessionManager" },
+          { cat: "RDP Session", name: "Disconnect by Other / Reason", sev: "low", eids: ["39", "40"], hint: "LocalSessionManager" },
+          { cat: "Security Logon", name: "Successful Logon", sev: "high", eids: ["4624"], hint: "Types 2,3,7,8,9,10,11,12" },
+          { cat: "Security Logon", name: "Failed Logon", sev: "high", eids: ["4625"], hint: "All logon types" },
+          { cat: "Security Logon", name: "Explicit Credentials (RunAs)", sev: "high", eids: ["4648"], hint: "Alternate credential usage" },
+          { cat: "Privileges", name: "Admin Privileges Assigned", sev: "high", eids: ["4672"], hint: "Special privileges at logon" },
+          { cat: "Session Lifecycle", name: "Session Reconnect / Disconnect", sev: "medium", eids: ["4778", "4779"], hint: "Window Station events" },
+          { cat: "Session Lifecycle", name: "Account Logoff", sev: "low", eids: ["4634", "4647"], hint: "Logoff / user-initiated logoff" },
+        ];
+        const LM_SEV_COLORS = { critical: "#f85149", high: "#f0883e", medium: "#d29922", low: "#8b949e" };
+        const lmDisabledSet = modal.lmDisabledRules || new Set();
+        const lmActiveCount = LM_RULES.length - [...lmDisabledSet].filter((k) => k.startsWith("lm-")).length;
+        const lmCustomCount = (modal.lmCustomRules || []).length;
+        const toggleLmRule = (key) => setModal((p) => { const s = new Set(p.lmDisabledRules || []); s.has(key) ? s.delete(key) : s.add(key); return { ...p, lmDisabledRules: s }; });
+        const deleteLmCustomRule = (idx) => setModal((p) => ({ ...p, lmCustomRules: (p.lmCustomRules || []).filter((_, i) => i !== idx) }));
+        const addLmCustomRule = () => {
+          const nr = modal.lmNewRule || {};
+          if (!nr.name && !nr.eventIds) return;
+          setModal((p) => ({ ...p, lmCustomRules: [...(p.lmCustomRules || []), { ...nr }], lmAddingRule: false, lmNewRule: {} }));
+        };
+
         const handleAnalyze = async () => {
           const t0 = Date.now();
           const pInt = setInterval(() => {
@@ -5534,7 +6420,11 @@ export default function App() {
           setModal((p) => ({ ...p, phase: "loading", loading: true, error: null, lmProgress: 0, lmPhaseIdx: 0, _cancelled: false }));
           try {
             const af = activeFilters(ct);
-            const eids = (modal.eventIds || "").split(",").map((s) => s.trim()).filter(Boolean);
+            // Compute event IDs from enabled rules + custom rules
+            const enabledEids = new Set();
+            LM_RULES.forEach((r, i) => { if (!lmDisabledSet.has(`lm-${i}`)) r.eids.forEach((id) => enabledEids.add(id)); });
+            (modal.lmCustomRules || []).forEach((cr) => { (cr.eventIds || "").split(",").map((s) => s.trim()).filter(Boolean).forEach((id) => enabledEids.add(id)); });
+            const eids = [...enabledEids];
             const result = await tle.getLateralMovement(ct.id, {
               sourceCol: cols.source, targetCol: cols.target, userCol: cols.user,
               logonTypeCol: cols.logonType, eventIdCol: cols.eventId, tsCol: cols.ts, domainCol: cols.domain,
@@ -5563,11 +6453,15 @@ export default function App() {
 
         const logonColor = (types) => {
           const t = new Set(types.map(String));
-          if (t.has("10")) return "#58a6ff";
-          if (t.has("3")) return "#3fb950";
-          if (t.has("2")) return "#d29922";
-          if (t.has("7")) return "#a371f7";
-          if (t.has("9")) return "#f0883e";
+          if (t.has("10") || t.has("12")) return "#58a6ff";  // RDP / Cached RDP
+          if (t.has("8")) return "#f85149";                    // Network Cleartext (dangerous!)
+          if (t.has("3")) return "#3fb950";                    // Network
+          if (t.has("2")) return "#d29922";                    // Interactive
+          if (t.has("7") || t.has("13")) return "#a371f7";    // Unlock / Cached Unlock
+          if (t.has("9")) return "#f0883e";                    // RunAs
+          if (t.has("4")) return "#d29922";                    // Batch
+          if (t.has("5")) return "#8b949e";                    // Service
+          if (t.has("11")) return "#d2a8ff";                   // Cached Credentials
           return th.textDim || "#888";
         };
         const edgeWidth = (count) => Math.max(1, Math.min(6, 1 + Math.log2(count)));
@@ -5589,7 +6483,7 @@ export default function App() {
           return false;
         };
 
-        const lmW = modal.lmW || 960, lmH = modal.lmH || Math.round(window.innerHeight * 0.88);
+        const lmW = modal.lmW || Math.round(window.innerWidth * 0.92), lmH = modal.lmH || Math.round(window.innerHeight * 0.88);
         const lmX = modal.lmX ?? Math.round((window.innerWidth - lmW) / 2);
         const lmY = modal.lmY ?? Math.round((window.innerHeight - lmH) / 2);
 
@@ -5679,10 +6573,6 @@ export default function App() {
                         ))}
                       </div>
                     </div>
-                    <div style={ms.fg}>
-                      <label style={ms.lb}>Event IDs (comma-separated, leave empty for all events)</label>
-                      <input value={eventIds} onChange={(e) => setModal((p) => ({ ...p, eventIds: e.target.value }))} style={ms.ip} placeholder="4624,4625,4648,4778" />
-                    </div>
                     <div style={{ display: "flex", gap: 16, marginBottom: 10 }}>
                       <label style={{ fontSize: 11, color: th.textDim, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontFamily: "-apple-system, sans-serif" }}>
                         <input type="checkbox" checked={excludeLocal} onChange={() => setModal((p) => ({ ...p, excludeLocal: !p.excludeLocal }))} /> Exclude local logons
@@ -5690,6 +6580,92 @@ export default function App() {
                       <label style={{ fontSize: 11, color: th.textDim, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontFamily: "-apple-system, sans-serif" }}>
                         <input type="checkbox" checked={excludeService} onChange={() => setModal((p) => ({ ...p, excludeService: !p.excludeService }))} /> Exclude service accounts
                       </label>
+                    </div>
+
+                    {/* Info box */}
+                    <div style={{ padding: "12px 14px", background: `${th.accent}08`, borderRadius: 10, border: `1px solid ${th.accent}15`, marginBottom: 12 }}>
+                      <div style={{ fontSize: 11, color: th.textMuted, fontFamily: "-apple-system, sans-serif", lineHeight: 1.5 }}>
+                        <b style={{ color: th.text }}>Lateral Movement mode</b> tracks 16 event IDs across Security (4624/4625/4634/4647/4648/4672/4778/4779) and TerminalServices (1149, 21-25, 39, 40) channels. Correlates RDP session lifecycles into connected chains (1149{"\u2192"}4624{"\u2192"}21{"\u2192"}22). Flags cleartext logons (Type 8), admin privilege assignments (4672), and explicit credential usage (4648). Builds network graph of host-to-host connections and detects multi-hop lateral movement chains.
+                      </div>
+                    </div>
+
+                    {/* Customize Rules Section */}
+                    <div style={{ marginTop: 4 }}>
+                      <button onClick={() => setModal((p) => ({ ...p, showLmRules: !p.showLmRules }))}
+                        style={{ width: "100%", padding: "10px 14px", background: `${th.accent}08`, border: `1px solid ${th.border}33`, borderRadius: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", transition: "all 0.15s" }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif", display: "flex", alignItems: "center", gap: 6 }}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={th.textMuted} strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                          Customize Rules
+                        </span>
+                        <span style={{ fontSize: 10, color: th.textMuted, fontFamily: "-apple-system, sans-serif", display: "flex", alignItems: "center", gap: 6 }}>
+                          <span>{lmActiveCount}/{LM_RULES.length} rules{lmCustomCount > 0 ? `, ${lmCustomCount} custom` : ""}</span>
+                          <span style={{ transform: modal.showLmRules ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s", fontSize: 12 }}>{"\u25BE"}</span>
+                        </span>
+                      </button>
+
+                      {modal.showLmRules && (
+                        <div style={{ padding: "10px 14px", borderLeft: `1px solid ${th.border}33`, borderRight: `1px solid ${th.border}33`, borderBottom: `1px solid ${th.border}33`, borderRadius: "0 0 10px 10px", background: `${th.panelBg}55` }}>
+                          {/* Built-in rules */}
+                          <div style={{ fontSize: 10, fontWeight: 700, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, fontFamily: "-apple-system, sans-serif" }}>
+                            Detection Rules ({lmActiveCount}/{LM_RULES.length})
+                          </div>
+                          {LM_RULES.map((r, i) => {
+                            const key = `lm-${i}`;
+                            const off = lmDisabledSet.has(key);
+                            return (
+                              <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", cursor: "pointer", opacity: off ? 0.45 : 1, transition: "opacity 0.15s" }}>
+                                <input type="checkbox" checked={!off} onChange={() => toggleLmRule(key)} style={{ accentColor: th.accent, margin: 0, flexShrink: 0 }} />
+                                <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: LM_SEV_COLORS[r.sev] + "22", color: LM_SEV_COLORS[r.sev], fontWeight: 600, fontFamily: "-apple-system, sans-serif", minWidth: 42, textAlign: "center", textTransform: "uppercase" }}>{r.sev}</span>
+                                <span style={{ fontSize: 11, color: th.text, fontFamily: "-apple-system, sans-serif", flex: 1 }}>{r.cat} {"\u2014"} {r.name}</span>
+                                <span style={{ fontSize: 10, color: th.textDim, fontFamily: "SF Mono, monospace" }}>EID {r.eids.join(",")}</span>
+                              </label>
+                            );
+                          })}
+
+                          {/* Custom rules */}
+                          {(modal.lmCustomRules || []).length > 0 && (
+                            <div style={{ marginTop: 10 }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, fontFamily: "-apple-system, sans-serif" }}>Custom Rules</div>
+                              {(modal.lmCustomRules || []).map((cr, i) => (
+                                <div key={`custom-${i}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0" }}>
+                                  <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: LM_SEV_COLORS[cr.severity || "medium"] + "22", color: LM_SEV_COLORS[cr.severity || "medium"], fontWeight: 600, fontFamily: "-apple-system, sans-serif", minWidth: 42, textAlign: "center", textTransform: "uppercase" }}>{cr.severity || "med"}</span>
+                                  <span style={{ fontSize: 11, color: th.text, fontFamily: "-apple-system, sans-serif", flex: 1 }}>{cr.category || "Custom"} {"\u2014"} {cr.name || "Custom Rule"}</span>
+                                  <span style={{ fontSize: 10, color: th.textDim, fontFamily: "SF Mono, monospace" }}>EID {cr.eventIds || ""}</span>
+                                  <button onClick={() => deleteLmCustomRule(i)} style={{ background: "none", border: "none", color: th.textMuted, cursor: "pointer", fontSize: 14, padding: "0 4px", lineHeight: 1 }} onMouseEnter={(e) => e.currentTarget.style.color = th.danger || "#f85149"} onMouseLeave={(e) => e.currentTarget.style.color = th.textMuted}>{"\u00D7"}</button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Add custom rule */}
+                          {!modal.lmAddingRule ? (
+                            <button onClick={() => setModal((p) => ({ ...p, lmAddingRule: true, lmNewRule: {} }))}
+                              style={{ ...ms.bsm, marginTop: 8, display: "flex", alignItems: "center", gap: 4 }}>
+                              <span style={{ fontSize: 13, lineHeight: 1 }}>+</span> Add Custom Rule
+                            </button>
+                          ) : (
+                            <div style={{ marginTop: 8, padding: "10px 12px", background: `${th.accent}08`, border: `1px solid ${th.accent}22`, borderRadius: 8 }}>
+                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                                <input value={(modal.lmNewRule || {}).category || ""} onChange={(e) => setModal((p) => ({ ...p, lmNewRule: { ...p.lmNewRule, category: e.target.value } }))} placeholder="Category" style={{ ...ms.ip, fontSize: 11, padding: "4px 8px" }} />
+                                <input value={(modal.lmNewRule || {}).name || ""} onChange={(e) => setModal((p) => ({ ...p, lmNewRule: { ...p.lmNewRule, name: e.target.value } }))} placeholder="Rule Name" style={{ ...ms.ip, fontSize: 11, padding: "4px 8px" }} />
+                                <input value={(modal.lmNewRule || {}).eventIds || ""} onChange={(e) => setModal((p) => ({ ...p, lmNewRule: { ...p.lmNewRule, eventIds: e.target.value } }))} placeholder="Event IDs (e.g. 7045,4697)" style={{ ...ms.ip, fontSize: 11, padding: "4px 8px" }} />
+                                <select value={(modal.lmNewRule || {}).severity || "medium"} onChange={(e) => setModal((p) => ({ ...p, lmNewRule: { ...p.lmNewRule, severity: e.target.value } }))}
+                                  style={{ ...ms.sl, fontSize: 11, padding: "4px 8px" }}>
+                                  <option value="critical">Critical</option>
+                                  <option value="high">High</option>
+                                  <option value="medium">Medium</option>
+                                  <option value="low">Low</option>
+                                </select>
+                                <input value={(modal.lmNewRule || {}).payloadFilter || ""} onChange={(e) => setModal((p) => ({ ...p, lmNewRule: { ...p.lmNewRule, payloadFilter: e.target.value } }))} placeholder="Payload regex filter (optional)" style={{ ...ms.ip, fontSize: 11, padding: "4px 8px", gridColumn: "1 / -1" }} />
+                              </div>
+                              <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 8 }}>
+                                <button onClick={() => setModal((p) => ({ ...p, lmAddingRule: false, lmNewRule: {} }))} style={ms.bsm}>Cancel</button>
+                                <button onClick={addLmCustomRule} style={{ ...ms.bsm, background: th.primaryBtn, color: "#fff", border: "none" }}>Add Rule</button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -5730,6 +6706,7 @@ export default function App() {
                         { val: data.stats.uniqueHosts, label: "unique hosts", color: th.accent, icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" },
                         { val: data.stats.uniqueConnections, label: "connections", color: "#58a6ff", icon: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" },
                         { val: data.stats.uniqueUsers, label: "users", color: "#d2a8ff", icon: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8" },
+                        { val: data.stats.rdpSessionCount || 0, label: "rdp sessions", color: "#58a6ff", icon: "M2 3h20v14H2zM8 21h8M12 17v4" },
                         { val: data.stats.longestChain, label: "longest chain", color: "#d29922", icon: "M13 17l5-5-5-5M6 17l5-5-5-5" },
                         { val: data.nodes.filter(n => n.isOutlier).length, label: "outliers", color: th.danger || "#f85149", icon: "M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" },
                         { val: data.stats.totalEvents?.toLocaleString(), label: "logon events", color: "#3fb950", icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8" },
@@ -5761,6 +6738,7 @@ export default function App() {
                     <div style={{ display: "inline-flex", background: th.panelBg, borderRadius: 8, padding: 2, marginBottom: 12, border: `1px solid ${th.border}44`, gap: 1 }}>
                       {[
                         { id: "graph", label: "Network Graph", icon: "M22 12h-4l-3 9L9 3l-3 9H2" },
+                        { id: "rdp", label: `RDP Sessions (${data.rdpSessions?.length || 0})`, icon: "M2 3h20v14H2zM8 21h8M12 17v4" },
                         { id: "chains", label: `Chains (${data.chains.length})`, icon: "M13 17l5-5-5-5M6 17l5-5-5-5" },
                         { id: "table", label: `Connections (${data.edges.length})`, icon: "M3 3h18v18H3zM3 9h18M3 15h18M9 3v18M15 3v18" },
                       ].map((tab) => (
@@ -5783,7 +6761,7 @@ export default function App() {
                       const vb = modal.viewBox || { x: 0, y: 0, w: W, h: H };
                       const isIP = (s) => /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(s);
                       const isDC = (s) => /DC\d*$/i.test(s) || /domain.controller/i.test(s);
-                      const logonLabel = (types) => { const t = types.map(String); if (t.includes("10")) return "RDP"; if (t.includes("3")) return "Net"; if (t.includes("2")) return "Local"; if (t.includes("7")) return "Unlock"; return t.join(","); };
+                      const logonLabel = (types) => { const t = types.map(String); if (t.includes("10")) return "RDP"; if (t.includes("12")) return "Cached RDP"; if (t.includes("8")) return "Cleartext"; if (t.includes("3")) return "Net"; if (t.includes("4")) return "Batch"; if (t.includes("5")) return "Service"; if (t.includes("2")) return "Local"; if (t.includes("7")) return "Unlock"; if (t.includes("9")) return "RunAs"; if (t.includes("11")) return "Cached"; if (t.includes("13")) return "Cached Unlock"; return t.join(","); };
                       const tbtn = { padding: "4px 10px", background: `${th.panelBg}cc`, color: th.textDim, border: `1px solid ${th.border}44`, borderRadius: 6, fontSize: 10, cursor: "pointer", fontFamily: "-apple-system, sans-serif", display: "flex", alignItems: "center", gap: 4, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", transition: "all 0.15s", fontWeight: 500 };
 
                       const svgToWorld = (clientX, clientY, svgEl) => {
@@ -6061,41 +7039,59 @@ export default function App() {
                               );
                             })}
 
-                            {/* Legend — glass panel (fixed in top-left of viewport) */}
-                            <g transform={`translate(${vb.x + 10}, ${vb.y + 10})`}>
-                              <rect x={-6} y={-6} width={140} height={135} rx={8} fill={th.panelBg} fillOpacity={0.88} stroke={th.border} strokeWidth={0.5} strokeOpacity={0.3} />
+                            {/* Legend — glass panel (draggable, fixed in viewport) */}
+                            <g transform={`translate(${vb.x + (modal.legendOffX ?? 10)}, ${vb.y + (modal.legendOffY ?? 10)})`} style={{ cursor: "grab" }}
+                              onMouseDown={(ev) => {
+                                ev.stopPropagation(); ev.preventDefault();
+                                const svg = ev.currentTarget.closest("svg");
+                                const rect = svg.getBoundingClientRect();
+                                const startX = ev.clientX, startY = ev.clientY;
+                                const startOx = modal.legendOffX ?? 10, startOy = modal.legendOffY ?? 10;
+                                document.body.style.cursor = "grabbing"; document.body.style.userSelect = "none";
+                                const onMove = (me) => {
+                                  const dx = ((me.clientX - startX) / rect.width) * vb.w;
+                                  const dy = ((me.clientY - startY) / rect.height) * vb.h;
+                                  setModal((p) => ({ ...p, legendOffX: startOx + dx, legendOffY: startOy + dy }));
+                                };
+                                const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+                                document.addEventListener("mousemove", onMove); document.addEventListener("mouseup", onUp);
+                              }}>
+                              <rect x={-6} y={-6} width={155} height={180} rx={8} fill={th.panelBg} fillOpacity={0.88} stroke={th.border} strokeWidth={0.5} strokeOpacity={0.3} />
                               <text x={0} y={6} fill={th.textMuted} fontSize={7.5} fontWeight={600} fontFamily="-apple-system,sans-serif" letterSpacing="0.08em" textTransform="uppercase">CONNECTIONS</text>
                               {[
-                                { color: "#58a6ff", label: "RDP (type 10)" },
+                                { color: "#58a6ff", label: "RDP (type 10/12)" },
                                 { color: "#3fb950", label: "Network (type 3)" },
                                 { color: "#d29922", label: "Interactive (type 2)" },
+                                { color: "#f0883e", label: "RunAs (type 9)" },
+                                { color: "#8b949e", label: "Service (type 5)" },
+                                { color: "#f85149", label: "Cleartext (type 8)" },
                                 { color: th.danger || "#f85149", label: "Failed logon", dashed: true },
                               ].map((item, i) => (
-                                <g key={i} transform={`translate(4, ${i * 15 + 18})`}>
+                                <g key={i} transform={`translate(4, ${i * 14 + 18})`}>
                                   <line x1={0} y1={0} x2={14} y2={0} stroke={item.color} strokeWidth={2} strokeLinecap="round" strokeDasharray={item.dashed ? "3,2" : "none"} />
                                   <circle cx={14} cy={0} r={1.5} fill={item.color} />
-                                  <text x={20} y={3} fill={th.textMuted} fontSize={7.5} fontFamily="-apple-system,sans-serif">{item.label}</text>
+                                  <text x={20} y={3} fill={th.textMuted} fontSize={7} fontFamily="-apple-system,sans-serif">{item.label}</text>
                                 </g>
                               ))}
-                              <line x1={0} y1={78} x2={124} y2={78} stroke={th.border} strokeWidth={0.3} strokeOpacity={0.5} />
-                              <text x={0} y={90} fill={th.textMuted} fontSize={7.5} fontWeight={600} fontFamily="-apple-system,sans-serif" letterSpacing="0.08em">NODES</text>
-                              <g transform="translate(4, 98)">
+                              <line x1={0} y1={118} x2={140} y2={118} stroke={th.border} strokeWidth={0.3} strokeOpacity={0.5} />
+                              <text x={0} y={130} fill={th.textMuted} fontSize={7.5} fontWeight={600} fontFamily="-apple-system,sans-serif" letterSpacing="0.08em">NODES</text>
+                              <g transform="translate(4, 140)">
                                 <circle cx={4} cy={0} r={3.5} fill="url(#lm-grad-green)" stroke="#3fb950" strokeWidth={0.8} strokeDasharray="2.5,1.5" />
                                 <text x={14} y={3} fill={th.textMuted} fontSize={7.5} fontFamily="-apple-system,sans-serif">IP</text>
                               </g>
-                              <g transform="translate(38, 98)">
+                              <g transform="translate(38, 140)">
                                 <rect x={0} y={-4} width={8} height={8} rx={2} fill="url(#lm-grad-blue)" stroke="#58a6ff" strokeWidth={0.8} />
                                 <text x={14} y={3} fill={th.textMuted} fontSize={7.5} fontFamily="-apple-system,sans-serif">DC</text>
                               </g>
-                              <g transform="translate(68, 98)">
+                              <g transform="translate(68, 140)">
                                 <rect x={0} y={-3} width={9} height={6} rx={2} fill="url(#lm-grad-purple)" stroke="#d2a8ff" strokeWidth={0.8} />
                                 <text x={15} y={3} fill={th.textMuted} fontSize={7.5} fontFamily="-apple-system,sans-serif">Host</text>
                               </g>
-                              <g transform="translate(4, 112)">
+                              <g transform="translate(4, 155)">
                                 <rect x={0} y={-3} width={9} height={6} rx={2} fill="url(#lm-grad-red)" stroke={th.danger || "#f85149"} strokeWidth={0.8} strokeDasharray="2,1.5" />
                                 <text x={15} y={3} fill={th.danger || "#f85149"} fontSize={7.5} fontWeight={600} fontFamily="-apple-system,sans-serif">Outlier</text>
                               </g>
-                              <g transform="translate(68, 112)">
+                              <g transform="translate(68, 155)">
                                 <polygon points="4,-5 8.2,2 -0.2,2" fill="#f0883e" />
                                 <text x={14} y={3} fill="#f0883e" fontSize={7.5} fontWeight={500} fontFamily="-apple-system,sans-serif">Sus Host</text>
                               </g>
@@ -6166,10 +7162,23 @@ export default function App() {
                                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, fontSize: 11, color: th.textDim, fontFamily: "-apple-system, sans-serif" }}>
                                   <div><span style={{ fontSize: 8, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>Events</span><div style={{ fontWeight: 700, color: th.text, fontSize: 16, marginTop: 1 }}>{selectedEdge.count}</div></div>
                                   <div><span style={{ fontSize: 8, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>Users</span><div style={{ marginTop: 2 }}>{selectedEdge.users.join(", ")}</div></div>
-                                  <div><span style={{ fontSize: 8, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>Logon Type</span><div style={{ color: logonColor(selectedEdge.logonTypes), marginTop: 2 }}>{logonLabel(selectedEdge.logonTypes)} ({selectedEdge.logonTypes.join(",")})</div></div>
+                                  <div><span style={{ fontSize: 8, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>Logon Type</span><div style={{ color: logonColor(selectedEdge.logonTypes), marginTop: 2 }}>{logonLabel(selectedEdge.logonTypes)} ({selectedEdge.logonTypes.join(",")}){selectedEdge.logonTypes.includes("8") && <span style={{ marginLeft: 4, padding: "1px 5px", background: "#f8514922", color: "#f85149", borderRadius: 3, fontSize: 8, fontWeight: 700 }}>CLEARTEXT</span>}</div></div>
                                   <div><span style={{ fontSize: 8, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>First Seen</span><div style={{ marginTop: 2, fontFamily: "monospace", fontSize: 10 }}>{selectedEdge.firstSeen?.slice(0, 19)}</div></div>
                                   <div><span style={{ fontSize: 8, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>Last Seen</span><div style={{ marginTop: 2, fontFamily: "monospace", fontSize: 10 }}>{selectedEdge.lastSeen?.slice(0, 19)}</div></div>
                                 </div>
+                                {selectedEdge.eventBreakdown && Object.keys(selectedEdge.eventBreakdown).length > 0 && (
+                                  <div style={{ marginTop: 10, paddingTop: 8, borderTop: `1px solid ${th.border}22` }}>
+                                    <span style={{ fontSize: 8, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>Event Breakdown</span>
+                                    <div style={{ display: "flex", gap: 5, marginTop: 4, flexWrap: "wrap" }}>
+                                      {Object.entries(selectedEdge.eventBreakdown).sort((a, b) => b[1] - a[1]).map(([eid, count]) => (
+                                        <span key={eid} style={{ padding: "2px 7px", background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, fontSize: 10, fontFamily: "monospace" }}>
+                                          <span style={{ color: th.accent, fontWeight: 600 }}>{eid}</span>
+                                          <span style={{ color: th.textMuted, marginLeft: 3 }}>{"\u00D7"}{count}</span>
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             );
                           })()}
@@ -6207,6 +7216,324 @@ export default function App() {
                         )}
                       </div>
                     )}
+
+                    {/* RDP Sessions tab */}
+                    {viewTab === "rdp" && (() => {
+                      const sessions = data.rdpSessions || [];
+                      if (sessions.length === 0) {
+                        return <div style={{ textAlign: "center", padding: 30, color: th.textMuted, fontSize: 12, fontFamily: "-apple-system, sans-serif" }}>No RDP sessions detected. Ensure TerminalServices event logs (LocalSessionManager, RemoteConnectionManager) are included in your data.</div>;
+                      }
+                      const rdpHeaders = ["Status", "Source", "Target", "User", "Session ID", "Events", "Start Time", "End Time", "Duration", "Flags"];
+                      const rdpDefWidths = { Status: 95, Source: 130, Target: 130, User: 130, "Session ID": 78, Events: 55, "Start Time": 145, "End Time": 145, Duration: 75, Flags: 105 };
+                      const rdpColWidths = modal.rdpColWidths || rdpDefWidths;
+                      const rdpSortCol = modal.rdpSortCol || "Start Time";
+                      const rdpSortDir = modal.rdpSortDir || "desc";
+
+                      const statusStyle = (status) => {
+                        const map = {
+                          "active": { bg: "#3fb95022", color: "#3fb950", label: "ACTIVE" },
+                          "active (no logoff)": { bg: "#f0883e22", color: "#f0883e", label: "NO LOGOFF" },
+                          "disconnected": { bg: "#d2992222", color: "#d29922", label: "DISCONNECTED" },
+                          "ended": { bg: `${th.textMuted}15`, color: th.textMuted, label: "ENDED" },
+                          "failed": { bg: "#f8514922", color: "#f85149", label: "FAILED" },
+                          "connecting": { bg: "#58a6ff22", color: "#58a6ff", label: "CONNECTING" },
+                          "incomplete": { bg: `${th.textMuted}15`, color: th.textMuted, label: "INCOMPLETE" },
+                        };
+                        return map[status] || map["incomplete"];
+                      };
+                      const fmtDur = (s, e) => {
+                        if (!s || !e) return "\u2014";
+                        const ms = new Date(e) - new Date(s);
+                        if (ms <= 0) return "\u2014";
+                        const sec = Math.floor(ms / 1000), min = Math.floor(sec / 60), hr = Math.floor(min / 60), dy = Math.floor(hr / 24);
+                        const rh = hr % 24, rm = min % 60;
+                        if (dy > 0 && rh > 0) return `${dy}d ${rh}h`;
+                        if (dy > 0) return `${dy}d`;
+                        if (hr > 0 && rm > 0) return `${hr}h ${rm}m`;
+                        if (hr > 0) return `${hr}h`;
+                        if (min > 0) return `${min}m`;
+                        return `${sec}s`;
+                      };
+                      const rdpDurMs = (s) => {
+                        if (!s.startTime || !s.endTime) return 0;
+                        const d = new Date(s.endTime) - new Date(s.startTime);
+                        return isNaN(d) ? 0 : Math.max(0, d);
+                      };
+                      const flagsStr = (s) => { const f = []; if (s.hasAdmin) f.push("ADMIN"); if (s.isReconnect) f.push("RECONNECT"); return f.join(", "); };
+
+                      const rdpCellVal = (s, h) => {
+                        if (h === "Status") return statusStyle(s.status).label;
+                        if (h === "Source") return s.source || "\u2014";
+                        if (h === "Target") return s.target || "\u2014";
+                        if (h === "User") return s.user || "(unknown)";
+                        if (h === "Session ID") return s.sessionId != null ? String(s.sessionId) : "\u2014";
+                        if (h === "Events") return String((s.events || []).length);
+                        if (h === "Start Time") return s.startTime?.slice(0, 19) || "";
+                        if (h === "End Time") return s.endTime?.slice(0, 19) || "";
+                        if (h === "Duration") return fmtDur(s.startTime, s.endTime);
+                        if (h === "Flags") return flagsStr(s);
+                        return "";
+                      };
+                      const rdpSortKey = (s, col) => {
+                        if (col === "Status") return statusStyle(s.status).label;
+                        if (col === "Source") return s.source || "";
+                        if (col === "Target") return s.target || "";
+                        if (col === "User") return s.user || "";
+                        if (col === "Session ID") return s.sessionId != null ? s.sessionId : -1;
+                        if (col === "Events") return (s.events || []).length;
+                        if (col === "Start Time") return s.startTime || "";
+                        if (col === "End Time") return s.endTime || "";
+                        if (col === "Duration") return rdpDurMs(s);
+                        if (col === "Flags") return flagsStr(s);
+                        return "";
+                      };
+
+                      // Column filters
+                      const rdpColFilters = modal.rdpColFilters || {};
+                      const filteredSessions = sessions.filter((s) => {
+                        for (const [col, allowed] of Object.entries(rdpColFilters)) {
+                          if (!allowed || allowed.length === 0) continue;
+                          const val = rdpCellVal(s, col);
+                          if (!allowed.includes(val)) return false;
+                        }
+                        return true;
+                      });
+                      const sortedSessions = [...filteredSessions].sort((a, b) => {
+                        const av = rdpSortKey(a, rdpSortCol), bv = rdpSortKey(b, rdpSortCol);
+                        const cmp = typeof av === "number" ? av - bv : String(av).localeCompare(String(bv));
+                        return rdpSortDir === "asc" ? cmp : -cmp;
+                      });
+                      const toggleRdpSort = (col) => {
+                        setModal((p) => ({ ...p, rdpSortCol: col, rdpSortDir: p.rdpSortCol === col && p.rdpSortDir === "asc" ? "desc" : "asc" }));
+                      };
+
+                      // Checkbox state
+                      const rdpChecked = modal.rdpCheckedRows || new Set();
+                      const rdpRowKey = (s) => `${s.source}|${s.target}|${s.user}|${s.startTime}`;
+                      const isRdpChecked = (s) => rdpChecked.has(rdpRowKey(s));
+                      const toggleRdpCheck = (s, ev) => {
+                        ev.stopPropagation();
+                        const k = rdpRowKey(s);
+                        setModal((p) => { const set = new Set(p.rdpCheckedRows || []); set.has(k) ? set.delete(k) : set.add(k); return { ...p, rdpCheckedRows: set }; });
+                      };
+                      const rdpAllChecked = sortedSessions.length > 0 && sortedSessions.every((s) => isRdpChecked(s));
+                      const toggleAllRdp = (ev) => {
+                        ev.stopPropagation();
+                        setModal((p) => {
+                          if (rdpAllChecked) return { ...p, rdpCheckedRows: new Set() };
+                          return { ...p, rdpCheckedRows: new Set(sortedSessions.map(rdpRowKey)) };
+                        });
+                      };
+                      const rdpCheckedCount = sortedSessions.filter((s) => isRdpChecked(s)).length;
+
+                      // Copy (selected or all)
+                      const copyRdp = () => {
+                        const headerLine = rdpHeaders.join("\t");
+                        const selected = sortedSessions.filter((s) => isRdpChecked(s));
+                        const toCopy = selected.length > 0 ? selected : sortedSessions;
+                        const lines = toCopy.map((s) => rdpHeaders.map((h) => rdpCellVal(s, h)).join("\t"));
+                        navigator.clipboard.writeText([headerLine, ...lines].join("\n"));
+                      };
+
+                      // Resize
+                      const onRdpResizeStart = (colName, e) => {
+                        e.preventDefault(); e.stopPropagation();
+                        const startX = e.clientX;
+                        const startW = rdpColWidths[colName] || rdpDefWidths[colName];
+                        document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none";
+                        const move = (ev) => {
+                          const newW = Math.max(40, startW + ev.clientX - startX);
+                          setModal((p) => ({ ...p, rdpColWidths: { ...(p.rdpColWidths || rdpDefWidths), [colName]: newW } }));
+                        };
+                        const up = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+                        document.addEventListener("mousemove", move);
+                        document.addEventListener("mouseup", up);
+                      };
+
+                      // Column filter dropdown
+                      const openRdpFilter = (colName, e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const counts = {};
+                        for (const s of sessions) { const v = rdpCellVal(s, colName); counts[v] = (counts[v] || 0) + 1; }
+                        const allVals = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+                        const current = rdpColFilters[colName];
+                        const selected = new Set(current && current.length > 0 ? current : allVals);
+                        setModal((p) => ({ ...p, rdpFilterOpen: colName, rdpFilterPos: { x: rect.left, y: rect.bottom + 2 }, rdpFilterVals: allVals, rdpFilterCounts: counts, rdpFilterSel: selected, rdpFilterSearch: "", rdpFilterX: null, rdpFilterY: null }));
+                      };
+                      const rdpFilterOpen = modal.rdpFilterOpen;
+                      const rdpFilterPos = modal.rdpFilterPos || {};
+                      const rdpFilterVals = modal.rdpFilterVals || [];
+                      const rdpFilterCounts = modal.rdpFilterCounts || {};
+                      const rdpFilterSel = modal.rdpFilterSel || new Set();
+                      const rdpFilterSearch = modal.rdpFilterSearch || "";
+                      const rdpDisplayVals = rdpFilterSearch ? rdpFilterVals.filter((v) => v.toLowerCase().includes(rdpFilterSearch.toLowerCase())) : rdpFilterVals;
+                      const rdpActiveFilterCount = Object.values(rdpColFilters).filter((v) => v && v.length > 0).length;
+                      const rdpTotalTableW = 30 + rdpHeaders.reduce((acc, h) => acc + (rdpColWidths[h] || rdpDefWidths[h]), 0);
+                      const expandedIdx = modal.expandedSession;
+
+                      return (
+                        <div>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                            {rdpActiveFilterCount > 0 && (
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: `${th.accent}11`, borderRadius: 6, fontSize: 10, color: th.accent, fontFamily: "-apple-system, sans-serif" }}>
+                                <span style={{ fontWeight: 600 }}>Filter active ({rdpActiveFilterCount} column{rdpActiveFilterCount > 1 ? "s" : ""})</span>
+                                <span style={{ fontSize: 10, color: th.textMuted }}>{"\u2014"} {filteredSessions.length} of {sessions.length} sessions</span>
+                                <button onClick={() => setModal((p) => ({ ...p, rdpColFilters: {} }))} style={{ padding: "1px 8px", fontSize: 9, background: th.accent, color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>Clear All</button>
+                              </div>
+                            )}
+                            <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+                              <button onClick={copyRdp} style={{ padding: "3px 10px", fontSize: 10, background: th.btnBg, color: th.text, border: `1px solid ${th.border}`, borderRadius: 4, cursor: "pointer", fontFamily: "-apple-system, sans-serif" }}
+                                onMouseEnter={(ev) => { ev.currentTarget.style.background = th.accent + "22"; }} onMouseLeave={(ev) => { ev.currentTarget.style.background = th.btnBg; }}>
+                                {rdpCheckedCount > 0 ? `Copy Selected (${rdpCheckedCount})` : `Copy All (${sortedSessions.length})`}
+                              </button>
+                            </div>
+                          </div>
+                          <div style={{ maxHeight: 400, overflow: "auto", border: `1px solid ${th.border}`, borderRadius: 6 }}>
+                            <table style={{ borderCollapse: "collapse", fontSize: 10, fontFamily: "monospace", tableLayout: "fixed", width: rdpTotalTableW }}>
+                              <thead>
+                                <tr>
+                                  <th style={{ position: "sticky", top: 0, width: 30, background: th.headerBg || th.panelBg, borderBottom: `1px solid ${th.border}`, zIndex: 2, textAlign: "center", padding: "6px 4px" }}>
+                                    <input type="checkbox" checked={rdpAllChecked} onChange={toggleAllRdp} style={{ width: 13, height: 13, cursor: "pointer", accentColor: th.accent }} />
+                                  </th>
+                                  {rdpHeaders.map((h) => (
+                                    <th key={h} style={{ position: "sticky", top: 0, width: rdpColWidths[h] || rdpDefWidths[h], minWidth: 40, background: th.headerBg || th.panelBg, color: rdpSortCol === h ? th.text : th.accent, padding: "6px 8px", textAlign: "left", fontSize: 9, borderBottom: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", overflow: "hidden", boxSizing: "border-box", userSelect: "none", zIndex: 2 }}>
+                                      <div style={{ display: "flex", alignItems: "center", gap: 3, position: "relative" }}>
+                                        <span onClick={() => toggleRdpSort(h)} style={{ cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis" }}>{h}</span>
+                                        {rdpSortCol === h && <span style={{ fontSize: 7, color: th.accent }}>{rdpSortDir === "asc" ? "\u25B2" : "\u25BC"}</span>}
+                                        <span onClick={(e) => openRdpFilter(h, e)} style={{ cursor: "pointer", fontSize: 7, color: rdpColFilters[h] ? th.accent : th.textMuted + "66", flexShrink: 0, marginLeft: "auto", paddingRight: 8 }}>{"\u25BC"}</span>
+                                        <div onMouseDown={(e) => onRdpResizeStart(h, e)} style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 6, cursor: "col-resize" }}>
+                                          <div style={{ position: "absolute", right: 2, top: 2, bottom: 2, width: 1, background: th.border }} />
+                                        </div>
+                                      </div>
+                                    </th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {sortedSessions.map((s, i) => {
+                                  const st = statusStyle(s.status);
+                                  const dur = fmtDur(s.startTime, s.endTime);
+                                  const durMs = rdpDurMs(s);
+                                  const expanded = expandedIdx === i;
+                                  return (
+                                    <Fragment key={i}>
+                                      <tr onClick={() => setModal((p) => ({ ...p, expandedSession: expanded ? null : i }))}
+                                        style={{ background: isRdpChecked(s) ? `${th.accent}0a` : i % 2 === 0 ? "transparent" : (th.rowAlt || th.panelBg + "44"), cursor: "pointer" }}>
+                                        <td style={{ padding: "4px 4px", textAlign: "center" }}>
+                                          <input type="checkbox" checked={isRdpChecked(s)} onChange={(ev) => toggleRdpCheck(s, ev)} style={{ width: 13, height: 13, cursor: "pointer", accentColor: th.accent }} />
+                                        </td>
+                                        <td style={{ padding: "4px 8px" }}>
+                                          <span style={{ padding: "2px 7px", background: st.bg, color: st.color, borderRadius: 4, fontSize: 8, fontWeight: 700, fontFamily: "-apple-system, sans-serif" }}>{st.label}</span>
+                                        </td>
+                                        <td style={{ padding: "4px 8px", color: th.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.source || "\u2014"}</td>
+                                        <td style={{ padding: "4px 8px", color: th.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.target || "\u2014"}</td>
+                                        <td style={{ padding: "4px 8px", color: th.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.user || "(unknown)"}</td>
+                                        <td style={{ padding: "4px 8px", color: th.textDim, textAlign: "center" }}>{s.sessionId != null ? s.sessionId : "\u2014"}</td>
+                                        <td style={{ padding: "4px 8px", fontWeight: 600, color: th.text, textAlign: "center" }}>{(s.events || []).length}</td>
+                                        <td style={{ padding: "4px 8px", color: th.textDim, whiteSpace: "nowrap" }}>{s.startTime?.slice(0, 19)}</td>
+                                        <td style={{ padding: "4px 8px", color: th.textDim, whiteSpace: "nowrap" }}>{s.endTime?.slice(0, 19)}</td>
+                                        <td style={{ padding: "4px 8px", whiteSpace: "nowrap", color: durMs >= 86400000 ? (th.danger || "#f85149") : durMs >= 3600000 ? "#f0883e" : th.textDim, fontWeight: durMs >= 86400000 ? 600 : 400 }}>{dur}</td>
+                                        <td style={{ padding: "4px 8px" }}>
+                                          <div style={{ display: "flex", gap: 3 }}>
+                                            {s.hasAdmin && <span style={{ padding: "1px 5px", background: "#f8514918", color: "#f85149", borderRadius: 3, fontSize: 8, fontWeight: 700, fontFamily: "-apple-system, sans-serif" }}>ADMIN</span>}
+                                            {s.isReconnect && <span style={{ padding: "1px 5px", background: "#a371f718", color: "#a371f7", borderRadius: 3, fontSize: 8, fontFamily: "-apple-system, sans-serif" }}>RECONNECT</span>}
+                                          </div>
+                                        </td>
+                                      </tr>
+                                      {expanded && (
+                                        <tr>
+                                          <td colSpan={rdpHeaders.length + 1} style={{ padding: "0 12px 10px 48px", borderTop: `1px solid ${th.border}22`, background: `${st.color}04` }}>
+                                            <div style={{ position: "relative", paddingLeft: 18, marginTop: 8 }}>
+                                              <div style={{ position: "absolute", left: 4, top: 2, bottom: 2, width: 1, background: `${st.color}44` }} />
+                                              {(s.events || []).map((evt, ei) => {
+                                                const dotColor = evt.eventId === "4625" ? "#f85149" : evt.eventId === "4672" ? "#f0883e" : evt.eventId === "4624" ? "#58a6ff" : ["21","22","25","1149"].includes(evt.eventId) ? "#3fb950" : ["23","4634","4647"].includes(evt.eventId) ? th.textMuted : ["24","39","40","4779"].includes(evt.eventId) ? "#d29922" : st.color;
+                                                return (
+                                                  <div key={ei} style={{ position: "relative", paddingLeft: 18, paddingBottom: 6, fontSize: 10, display: "flex", alignItems: "center", gap: 8 }}>
+                                                    <div style={{ position: "absolute", left: 0, top: 4, width: 9, height: 9, borderRadius: "50%", background: dotColor, border: `2px solid ${th.panelBg}`, boxShadow: `0 0 0 1px ${dotColor}44` }} />
+                                                    <span style={{ padding: "1px 5px", background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 3, fontSize: 9, fontFamily: "monospace", color: th.accent, minWidth: 32, textAlign: "center", fontWeight: 600 }}>{evt.eventId}</span>
+                                                    <span style={{ color: th.textDim, fontFamily: "-apple-system, sans-serif" }}>{evt.description}</span>
+                                                    <span style={{ marginLeft: "auto", color: th.textMuted, fontFamily: "monospace", fontSize: 9 }}>{evt.ts?.slice(11, 23) || ""}</span>
+                                                  </div>
+                                                );
+                                              })}
+                                            </div>
+                                          </td>
+                                        </tr>
+                                      )}
+                                    </Fragment>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                          {/* RDP Column filter dropdown popup */}
+                          {rdpFilterOpen && (
+                            <>
+                              <div style={{ position: "fixed", inset: 0, zIndex: 998 }} onClick={() => setModal((p) => ({ ...p, rdpFilterOpen: null }))} />
+                              <div style={{ position: "fixed", left: modal.rdpFilterX ?? Math.min(rdpFilterPos.x || 0, window.innerWidth - 340), top: modal.rdpFilterY ?? Math.min(rdpFilterPos.y || 0, window.innerHeight - 440), width: modal.rdpFilterW || 320, height: modal.rdpFilterH || 420, background: th.modalBg, border: `1px solid ${th.border}`, borderRadius: 8, boxShadow: "0 8px 32px rgba(0,0,0,0.5)", zIndex: 999, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                                <div style={{ padding: "8px 10px", borderBottom: `1px solid ${th.border}33`, display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "grab", userSelect: "none", flexShrink: 0 }}
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    const startX = e.clientX, startY = e.clientY;
+                                    const startLeft = modal.rdpFilterX ?? Math.min(rdpFilterPos.x || 0, window.innerWidth - 340);
+                                    const startTop = modal.rdpFilterY ?? Math.min(rdpFilterPos.y || 0, window.innerHeight - 440);
+                                    document.body.style.cursor = "grabbing"; document.body.style.userSelect = "none";
+                                    const onMove = (ev) => setModal((p) => ({ ...p, rdpFilterX: startLeft + ev.clientX - startX, rdpFilterY: startTop + ev.clientY - startY }));
+                                    const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                                    window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+                                  }}>
+                                  <span style={{ fontSize: 11, fontWeight: 600, color: th.text, fontFamily: "SF Mono, Menlo, monospace" }}>FILTER {"\u2014"} {rdpFilterOpen.toUpperCase()}</span>
+                                  <span style={{ cursor: "pointer", color: th.textMuted, fontSize: 14, lineHeight: 1 }} onClick={() => setModal((p) => ({ ...p, rdpFilterOpen: null }))}>{"\u00D7"}</span>
+                                </div>
+                                <div style={{ padding: "6px 10px", flexShrink: 0 }}>
+                                  <input type="text" placeholder="Search values..." value={rdpFilterSearch} onChange={(e) => setModal((p) => ({ ...p, rdpFilterSearch: e.target.value }))}
+                                    style={{ width: "100%", boxSizing: "border-box", padding: "5px 8px", fontSize: 11, background: th.panelBg, border: `1px solid ${th.border}55`, borderRadius: 4, color: th.text, outline: "none", fontFamily: "SF Mono, Menlo, monospace" }}
+                                    autoFocus />
+                                </div>
+                                <div style={{ padding: "2px 10px 6px", display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+                                  <button onClick={() => setModal((p) => ({ ...p, rdpFilterSel: new Set(rdpFilterVals) }))} style={{ padding: "2px 8px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Select All</button>
+                                  <button onClick={() => setModal((p) => ({ ...p, rdpFilterSel: new Set() }))} style={{ padding: "2px 8px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Clear</button>
+                                  <span style={{ marginLeft: "auto", fontSize: 10, color: th.textMuted }}>{rdpFilterVals.length} values</span>
+                                </div>
+                                <div style={{ flex: 1, overflow: "auto", padding: "0 6px", minHeight: 0 }}>
+                                  {rdpDisplayVals.slice(0, 1000).map((v) => (
+                                    <div key={v} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 4px", borderRadius: 3, cursor: "pointer" }}
+                                      onClick={() => setModal((p) => { const set = new Set(p.rdpFilterSel || []); set.has(v) ? set.delete(v) : set.add(v); return { ...p, rdpFilterSel: set }; })}
+                                      onMouseEnter={(e) => e.currentTarget.style.background = `${th.accent}0a`}
+                                      onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
+                                      <input type="checkbox" checked={rdpFilterSel.has(v)} readOnly style={{ width: 13, height: 13, accentColor: th.accent, cursor: "pointer", flexShrink: 0 }} />
+                                      <span style={{ fontSize: 11, color: th.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "SF Mono, Menlo, monospace" }}>{v || "(empty)"}</span>
+                                      <span style={{ fontSize: 10, color: th.textMuted, flexShrink: 0 }}>{rdpFilterCounts[v]}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div style={{ padding: "8px 10px", borderTop: `1px solid ${th.border}33`, display: "flex", gap: 6, justifyContent: "flex-end", flexShrink: 0 }}>
+                                  <button onClick={() => setModal((p) => { const cf = { ...(p.rdpColFilters || {}) }; delete cf[rdpFilterOpen]; return { ...p, rdpColFilters: cf, rdpFilterOpen: null }; })}
+                                    style={{ padding: "4px 12px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Reset</button>
+                                  <button onClick={() => setModal((p) => ({ ...p, rdpFilterOpen: null }))}
+                                    style={{ padding: "4px 12px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Cancel</button>
+                                  <button onClick={() => setModal((p) => ({ ...p, rdpColFilters: { ...(p.rdpColFilters || {}), [rdpFilterOpen]: [...(p.rdpFilterSel || [])] }, rdpFilterOpen: null }))}
+                                    style={{ padding: "4px 12px", fontSize: 10, background: th.accent, border: "none", borderRadius: 4, color: "#fff", cursor: "pointer", fontWeight: 600 }}>Apply</button>
+                                </div>
+                                <div onMouseDown={(e) => {
+                                  e.preventDefault(); e.stopPropagation();
+                                  const startX = e.clientX, startY = e.clientY, startW = modal.rdpFilterW || 320, startH = modal.rdpFilterH || 420;
+                                  document.body.style.cursor = "nwse-resize"; document.body.style.userSelect = "none";
+                                  const onMove = (ev) => setModal((p) => ({ ...p, rdpFilterW: Math.max(240, startW + ev.clientX - startX), rdpFilterH: Math.max(250, startH + ev.clientY - startY) }));
+                                  const onUp = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+                                  window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
+                                }} style={{ position: "absolute", bottom: 0, right: 0, width: 14, height: 14, cursor: "nwse-resize" }}>
+                                  <svg width="10" height="10" viewBox="0 0 10 10" style={{ position: "absolute", bottom: 2, right: 2 }}>
+                                    <path d="M8 2L2 8M8 5L5 8M8 8L8 8" stroke={th.textMuted} strokeWidth="1.5" strokeLinecap="round" />
+                                  </svg>
+                                </div>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })()}
 
                     {/* Connections table tab */}
                     {viewTab === "table" && (() => {
@@ -6656,7 +7983,7 @@ export default function App() {
         const allCategories = data?.stats?.byCategory ? Object.keys(data.stats.byCategory).sort() : [];
         const collapsedCats = modal.collapsedCats || new Set();
 
-        const paW = modal.modalW || 960, paH = modal.modalH || Math.round(window.innerHeight * 0.88);
+        const paW = modal.modalW || Math.round(window.innerWidth * 0.92), paH = modal.modalH || Math.round(window.innerHeight * 0.88);
         const paX = modal.paX ?? Math.round((window.innerWidth - paW) / 2);
         const paY = modal.paY ?? Math.round((window.innerHeight - paH) / 2);
 
@@ -7575,23 +8902,35 @@ export default function App() {
       {contextMenu && (
         <>
           <div onMouseDown={(e) => { if (e.button === 0) setContextMenu(null); }} onContextMenu={(e) => { e.preventDefault(); }} style={{ position: "fixed", inset: 0, zIndex: 299 }} />
-          <div style={{ position: "fixed", left: contextMenu.x, top: contextMenu.y, background: th.modalBg, border: `1px solid ${th.modalBorder}`, borderRadius: 6, padding: "4px 0", zIndex: 300, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", minWidth: 180 }}>
+          <div style={{ position: "fixed", left: contextMenu.x, top: contextMenu.y, background: themeName === "dark" ? "rgba(30,33,38,0.82)" : "rgba(255,255,255,0.88)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", border: `1px solid ${themeName === "dark" ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)"}`, borderRadius: 10, padding: "5px 0", zIndex: 300, boxShadow: themeName === "dark" ? "0 12px 40px rgba(0,0,0,0.55), 0 0 0 0.5px rgba(255,255,255,0.06) inset" : "0 12px 40px rgba(0,0,0,0.18), 0 0 0 0.5px rgba(255,255,255,0.5) inset", minWidth: 200 }}>
             {[
-              { label: (ct?.pinnedColumns || []).includes(contextMenu.colName) ? "Unpin Column" : "Pin Column", icon: "📌",
-                action: () => (ct?.pinnedColumns || []).includes(contextMenu.colName) ? unpinColumn(contextMenu.colName) : pinColumn(contextMenu.colName) },
-              { label: "Hide Column", icon: "👁", action: () => up("hiddenColumns", new Set([...(ct?.hiddenColumns || []), contextMenu.colName])) },
+              ...(contextMenu.colName !== "__tags__" ? [
+                { label: (ct?.pinnedColumns || []).includes(contextMenu.colName) ? "Unpin Column" : "Pin Column",
+                  icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={th.accent} strokeWidth="2" strokeLinecap="round"><path d="M12 17v5M9 11l-4 4h14l-4-4V5a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v6z"/></svg>,
+                  action: () => (ct?.pinnedColumns || []).includes(contextMenu.colName) ? unpinColumn(contextMenu.colName) : pinColumn(contextMenu.colName) },
+                { label: "Hide Column",
+                  icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={th.textDim} strokeWidth="2" strokeLinecap="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>,
+                  action: () => up("hiddenColumns", new Set([...(ct?.hiddenColumns || []), contextMenu.colName])) },
+                null,
+              ] : []),
+              { label: "Best Fit",
+                icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={th.textDim} strokeWidth="2" strokeLinecap="round"><path d="M21 12H3M21 12l-4-4M21 12l-4 4M3 12l4-4M3 12l4 4"/></svg>,
+                action: () => autoFitColumn(contextMenu.colName) },
+              { label: "Best Fit (All Columns)",
+                icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={th.textDim} strokeWidth="2" strokeLinecap="round"><path d="M22 12H2M22 12l-3-3M22 12l-3 3M2 12l3-3M2 12l3 3M12 2v20"/></svg>,
+                action: () => autoFitAllColumns() },
+              { label: "Reset Column Widths",
+                icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={th.textDim} strokeWidth="2" strokeLinecap="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>,
+                action: () => resetColumnWidths() },
               null,
-              { label: (ct?.groupByColumns || []).includes(contextMenu.colName) ? "Remove Grouping" : "Group by this Column", icon: "▤",
-                action: () => (ct?.groupByColumns || []).includes(contextMenu.colName) ? removeGroupBy(contextMenu.colName) : addGroupBy(contextMenu.colName) },
+              { label: "Sort Ascending",
+                icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={th.accent} strokeWidth="2" strokeLinecap="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>,
+                action: () => { up("sortCol", contextMenu.colName); up("sortDir", "asc"); } },
+              { label: "Sort Descending",
+                icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={th.accent} strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>,
+                action: () => { up("sortCol", contextMenu.colName); up("sortDir", "desc"); } },
               null,
-              { label: "Best Fit", icon: "↔", action: () => autoFitColumn(contextMenu.colName) },
-              { label: "Best Fit (All Columns)", icon: "⇔", action: () => autoFitAllColumns() },
-              { label: "Reset Column Widths", icon: "↩", action: () => resetColumnWidths() },
-              null,
-              { label: "Sort Ascending", icon: "▲", action: () => { up("sortCol", contextMenu.colName); up("sortDir", "asc"); } },
-              { label: "Sort Descending", icon: "▼", action: () => { up("sortCol", contextMenu.colName); up("sortDir", "desc"); } },
-              null,
-              { label: "Stack Values", icon: "≡", action: () => {
+              { label: "Stack Values", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={th.accent} strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="18" height="4" rx="1"/><rect x="3" y="10" width="14" height="4" rx="1"/><rect x="3" y="17" width="8" height="4" rx="1"/></svg>, action: () => {
                 setModal({ type: "stacking", colName: contextMenu.colName, data: null, loading: true, filterText: "", sortBy: "count" });
                 const af = activeFilters(ct);
                 tle.getStackingData(ct.id, contextMenu.colName, {
@@ -7603,7 +8942,7 @@ export default function App() {
                   .catch(() => setModal((p) => p?.type === "stacking" ? { ...p, loading: false, data: { entries: [], totalUnique: 0, totalRows: 0 } } : p));
               }},
               null,
-              { label: "Column Stats", icon: "📊", action: () => {
+              { label: "Column Stats", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={th.accent} strokeWidth="2" strokeLinecap="round"><rect x="3" y="12" width="4" height="9" rx="1"/><rect x="10" y="6" width="4" height="15" rx="1"/><rect x="17" y="3" width="4" height="18" rx="1"/></svg>, action: () => {
                 setModal({ type: "columnStats", colName: contextMenu.colName, data: null, loading: true });
                 const af = activeFilters(ct);
                 tle.getColumnStats(ct.id, contextMenu.colName, {
@@ -7615,13 +8954,13 @@ export default function App() {
               }},
             ].map((item, i) =>
               item === null ? (
-                <div key={i} style={{ height: 1, background: th.border, margin: "4px 0" }} />
+                <div key={i} style={{ height: 1, background: themeName === "dark" ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)", margin: "4px 8px" }} />
               ) : (
                 <button key={i} onClick={() => { item.action(); setContextMenu(null); }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = th.btnBg; }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = `${th.accent}22`; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                  style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 12px", background: "none", border: "none", color: th.text, fontSize: 12, cursor: "pointer", textAlign: "left", fontFamily: "-apple-system, sans-serif" }}>
-                  <span style={{ width: 16, textAlign: "center" }}>{item.icon}</span>
+                  style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "6px 14px", background: "none", border: "none", color: th.text, fontSize: 12, cursor: "pointer", textAlign: "left", fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif", borderRadius: 5, margin: "0 4px", maxWidth: "calc(100% - 8px)", letterSpacing: "-0.01em" }}>
+                  <span style={{ width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{item.icon}</span>
                   {item.label}
                 </button>
               )

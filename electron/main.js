@@ -18,12 +18,21 @@ let tabCounter = 0;
 
 // ── Debug trace logger (writes to stderr + file) ────────────────
 const debugLogPath = path.join(require("os").homedir(), "tle-debug.log");
+let _logBuf = [];
 function dbg(tag, msg, data) {
   const ts = new Date().toISOString();
   const line = `[${ts}] [${tag}] ${msg}${data !== undefined ? " " + JSON.stringify(data, null, 0) : ""}`;
   console.error(line);
-  try { fs.appendFileSync(debugLogPath, line + "\n"); } catch {}
+  _logBuf.push(line);
+  if (_logBuf.length >= 50) _flushLog();
 }
+function _flushLog() {
+  if (!_logBuf.length) return;
+  try { fs.appendFileSync(debugLogPath, _logBuf.join("\n") + "\n"); } catch {}
+  _logBuf = [];
+}
+setInterval(_flushLog, 2000);
+process.on("exit", _flushLog);
 dbg("INIT", `IRFlow Timeline starting, debug log: ${debugLogPath}`);
 
 // ── Global crash guards ──────────────────────────────────────────
@@ -62,6 +71,76 @@ function safeSend(channel, data) {
   }
 }
 
+// ── Import queue — serialize file imports to prevent concurrent memory exhaustion ──
+const _importQueue = [];
+let _importRunning = false;
+const _pendingIndexTabs = []; // tabs waiting for index/FTS build (deferred until queue drains)
+
+function enqueueImport(filePath) {
+  let fileName; try { fileName = decodeURIComponent(path.basename(filePath)); } catch { fileName = path.basename(filePath); }
+  let fileSize = 0; try { fileSize = fs.statSync(filePath).size; } catch {}
+  _importQueue.push({ filePath, fileName, fileSize });
+  _broadcastQueue();
+  _processQueue();
+}
+
+function _broadcastQueue() {
+  const pending = _importQueue.map((q) => ({ fileName: q.fileName, fileSize: q.fileSize }));
+  safeSend("import-queue", { pending, running: _importRunning });
+}
+
+async function _processQueue() {
+  if (_importRunning || _importQueue.length === 0) return;
+  _importRunning = true;
+  const item = _importQueue.shift();
+  _broadcastQueue();
+
+  // Log memory before import
+  const memBefore = process.memoryUsage();
+  dbg("QUEUE", `Starting import: ${item.fileName}`, { heapMB: Math.round(memBefore.heapUsed / 1048576), rssMB: Math.round(memBefore.rss / 1048576), queueRemaining: _importQueue.length });
+
+  try {
+    await importFile(item.filePath);
+  } catch (err) {
+    dbg("QUEUE", `importFile failed for ${item.fileName}`, { error: err?.message });
+  }
+  _importRunning = false;
+  _broadcastQueue();
+
+  if (_importQueue.length > 0) {
+    // GC-friendly pause: yield to event loop + request GC before next import
+    await new Promise((r) => setTimeout(r, 100));
+    if (global.gc) { try { global.gc(); } catch {} }
+    _processQueue();
+  } else {
+    // Queue fully drained — now build deferred indexes/FTS
+    _buildDeferredIndexes();
+  }
+}
+
+function _buildDeferredIndexes() {
+  if (_pendingIndexTabs.length === 0) return;
+  const tabs = _pendingIndexTabs.splice(0);
+  dbg("QUEUE", `Building deferred indexes for ${tabs.length} tabs`);
+
+  // Build indexes sequentially to avoid memory spikes
+  let chain = Promise.resolve();
+  for (const tabId of tabs) {
+    chain = chain.then(() =>
+      db.buildIndexesAsync(tabId, (progress) => {
+        safeSend("index-progress", { tabId, ...progress });
+      })
+    ).then(() =>
+      db.buildFtsAsync(tabId, (progress) => {
+        safeSend("fts-progress", { tabId, ...progress });
+      })
+    ).catch((err) => {
+      console.error(`Index/FTS build failed for tab ${tabId}:`, err?.message || err);
+      safeSend("fts-progress", { tabId, indexed: 0, total: 0, done: true, error: err?.message });
+    });
+  }
+}
+
 // ── macOS lifecycle ────────────────────────────────────────────────
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
@@ -81,7 +160,7 @@ app.on("before-quit", () => {
 app.on("open-file", (event, filePath) => {
   event.preventDefault();
   if (mainWindow && mainWindow.webContents) {
-    importFile(filePath);
+    enqueueImport(filePath);
   } else {
     app.pendingFilePath = filePath;
   }
@@ -116,7 +195,7 @@ function createWindow() {
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
     if (app.pendingFilePath) {
-      importFile(app.pendingFilePath);
+      enqueueImport(app.pendingFilePath);
       delete app.pendingFilePath;
     }
   });
@@ -137,7 +216,7 @@ function createWindow() {
 // ── File import ────────────────────────────────────────────────────
 async function importFile(filePath) {
   const tabId = `tab_${++tabCounter}_${Date.now()}`;
-  const fileName = decodeURIComponent(path.basename(filePath));
+  let fileName; try { fileName = decodeURIComponent(path.basename(filePath)); } catch { fileName = path.basename(filePath); }
   const ext = path.extname(filePath).toLowerCase();
   dbg("IMPORT", `importFile called`, { filePath, tabId, ext });
 
@@ -221,18 +300,23 @@ async function startImport(filePath, tabId, fileName, sheetName) {
       emptyColumns,
     });
 
-    // Build column indexes FIRST, then FTS — sequential for better cache utilization
-    // (interleaved builds thrash the SQLite page cache between two different workloads)
-    db.buildIndexesAsync(tabId, (progress) => {
-      safeSend("index-progress", { tabId, ...progress });
-    }).then(() => {
-      return db.buildFtsAsync(tabId, (progress) => {
-        safeSend("fts-progress", { tabId, ...progress });
+    // Defer index/FTS builds when more imports are queued to avoid memory spikes
+    if (_importQueue.length > 0) {
+      dbg("IMPORT", `Deferring index/FTS build for ${tabId} (${_importQueue.length} imports queued)`);
+      _pendingIndexTabs.push(tabId);
+    } else {
+      // No more imports queued — build immediately
+      db.buildIndexesAsync(tabId, (progress) => {
+        safeSend("index-progress", { tabId, ...progress });
+      }).then(() => {
+        return db.buildFtsAsync(tabId, (progress) => {
+          safeSend("fts-progress", { tabId, ...progress });
+        });
+      }).catch((err) => {
+        console.error(`Index/FTS build failed for tab ${tabId}:`, err?.message || err);
+        safeSend("fts-progress", { tabId, indexed: 0, total: 0, done: true, error: err?.message });
       });
-    }).catch((err) => {
-      console.error(`Index/FTS build failed for tab ${tabId}:`, err?.message || err);
-      safeSend("fts-progress", { tabId, indexed: 0, total: 0, done: true, error: err?.message });
-    });
+    }
   } catch (err) {
     dbg("IMPORT", `startImport FAILED`, { error: err.message, stack: err.stack });
     // Clean up partially-imported tab on failure
@@ -261,7 +345,7 @@ safeHandle("open-file-dialog", async () => {
     ],
   });
   if (result.canceled) return null;
-  await Promise.allSettled(result.filePaths.map((fp) => importFile(fp)));
+  for (const fp of result.filePaths) enqueueImport(fp);
   return true;
 });
 
@@ -319,15 +403,92 @@ safeHandle("load-ioc-file", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openFile"],
     filters: [
-      { name: "IOC Files", extensions: ["txt", "csv", "ioc"] },
+      { name: "IOC Files", extensions: ["txt", "csv", "ioc", "tsv", "xlsx", "xls"] },
       { name: "All Files", extensions: ["*"] },
     ],
     title: "Open IOC List",
   });
   if (result.canceled || !result.filePaths.length) return null;
+  const filePath = result.filePaths[0];
+  const fileName = path.basename(filePath);
+  const ext = path.extname(filePath).toLowerCase();
+  // Common IOC value column names (lowercase for matching)
+  const IOC_VALUE_HEADERS = new Set([
+    "ioc_value", "ioc", "indicator", "value", "observable", "artifact",
+    "indicator_value", "observable_value", "ioc_data", "data", "pattern",
+  ]);
+
+  // Detect IOC value column index from a header row
+  function findIocColumn(headerRow) {
+    if (!headerRow || headerRow.length === 0) return -1;
+    for (let i = 0; i < headerRow.length; i++) {
+      const h = String(headerRow[i]).trim().toLowerCase().replace(/[\s-]+/g, "_");
+      if (IOC_VALUE_HEADERS.has(h)) return i;
+    }
+    return -1;
+  }
+
+  // Check if a row looks like a header (all cells are short non-IOC-like strings)
+  function looksLikeHeader(row) {
+    return row.length > 1 && row.every((c) => {
+      const s = String(c).trim();
+      return s.length < 30 && /^[a-zA-Z_\s-]+$/.test(s);
+    });
+  }
+
   try {
-    const raw = fs.readFileSync(result.filePaths[0], "utf-8");
-    return { content: raw, fileName: path.basename(result.filePaths[0]) };
+    if (ext === ".xlsx" || ext === ".xls") {
+      const XLSX = require("xlsx");
+      const wb = XLSX.readFile(filePath);
+      const values = [];
+      for (const sheetName of wb.SheetNames) {
+        const sheet = wb.Sheets[sheetName];
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+        if (rows.length === 0) continue;
+        // Try to detect structured data with a header row
+        const iocCol = looksLikeHeader(rows[0]) ? findIocColumn(rows[0]) : -1;
+        if (iocCol >= 0) {
+          // Structured: extract only the IOC value column, skip header
+          for (let r = 1; r < rows.length; r++) {
+            const v = String(rows[r][iocCol] || "").trim();
+            if (v) values.push(v);
+          }
+        } else {
+          // Flat list or unknown structure: extract all cells
+          for (const row of rows) {
+            for (const cell of row) {
+              const v = String(cell).trim();
+              if (v) values.push(v);
+            }
+          }
+        }
+      }
+      return { content: values.join("\n"), fileName };
+    }
+    // Plain text formats: .txt, .csv, .ioc, .tsv
+    let raw = fs.readFileSync(filePath, "utf-8");
+    if (ext === ".csv" || ext === ".tsv") {
+      const delim = ext === ".tsv" ? "\t" : ",";
+      const lines = raw.split(/\r?\n/);
+      if (lines.length > 1) {
+        const headerCells = lines[0].split(delim).map((c) => c.trim().replace(/^"|"$/g, ""));
+        const iocCol = looksLikeHeader(headerCells) ? findIocColumn(headerCells) : -1;
+        if (iocCol >= 0) {
+          // Structured CSV/TSV: extract only IOC value column, skip header
+          const values = [];
+          for (let i = 1; i < lines.length; i++) {
+            const cells = lines[i].split(delim).map((c) => c.trim().replace(/^"|"$/g, ""));
+            const v = (cells[iocCol] || "").trim();
+            if (v) values.push(v);
+          }
+          raw = values.join("\n");
+        } else {
+          // No recognized header: split all cells onto separate lines
+          raw = lines.map((l) => l.split(delim).map((c) => c.trim().replace(/^"|"$/g, "")).join("\n")).join("\n");
+        }
+      }
+    }
+    return { content: raw, fileName };
   } catch (e) {
     return { error: e.message };
   }
@@ -363,13 +524,15 @@ safeHandle("get-group-values", (event, { tabId, groupCol, options }) => {
   return db.getGroupValues(tabId, groupCol, options);
 });
 
-// Export filtered data (CSV or XLSX)
+// Export filtered data (CSV, TSV, XLSX, XLS)
 safeHandle("export-filtered", async (event, { tabId, options }) => {
   const result = await dialog.showSaveDialog(mainWindow, {
     defaultPath: `filtered_export.csv`,
     filters: [
-      { name: "CSV Files", extensions: ["csv"] },
-      { name: "Excel Files", extensions: ["xlsx"] },
+      { name: "CSV (Comma-separated)", extensions: ["csv"] },
+      { name: "TSV (Tab-separated)", extensions: ["tsv"] },
+      { name: "Excel Workbook (.xlsx)", extensions: ["xlsx"] },
+      { name: "Excel 97-2003 (.xls)", extensions: ["xls"] },
     ],
   });
   if (result.canceled) return false;
@@ -377,9 +540,10 @@ safeHandle("export-filtered", async (event, { tabId, options }) => {
   const exportData = db.exportQuery(tabId, options);
   if (!exportData) return false;
 
-  const isXlsx = result.filePath.toLowerCase().endsWith(".xlsx");
+  const ext = path.extname(result.filePath).toLowerCase();
 
-  if (isXlsx) {
+  // Excel export (XLSX or XLS)
+  if (ext === ".xlsx" || ext === ".xls") {
     const ExcelJS = require("exceljs");
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("Export");
@@ -416,26 +580,37 @@ safeHandle("export-filtered", async (event, { tabId, options }) => {
       col.width = Math.min(Math.max(maxLen + 2, 8), 60);
     });
 
-    await workbook.xlsx.writeFile(result.filePath);
+    if (ext === ".xls") {
+      // XLS: write as XLSX buffer then save (ExcelJS outputs OOXML; .xls extension for compat)
+      await workbook.xlsx.writeFile(result.filePath);
+    } else {
+      await workbook.xlsx.writeFile(result.filePath);
+    }
     return { count, filePath: result.filePath };
   }
 
-  // CSV export
+  // Delimited text export (CSV or TSV)
+  const delimiter = ext === ".tsv" ? "\t" : ",";
   const writeStream = fs.createWriteStream(result.filePath, { encoding: "utf-8" });
 
   // Write header
-  writeStream.write(exportData.headers.join(",") + "\n");
+  writeStream.write(exportData.headers.join(delimiter) + "\n");
 
   // Stream rows
   let count = 0;
   for (const rawRow of exportData.iterator) {
     const values = exportData.safeCols.map((sc) => {
       const val = rawRow[sc] || "";
+      if (delimiter === "\t") {
+        // TSV: escape tabs and newlines within values
+        return val.includes("\t") || val.includes("\n") ? val.replace(/\t/g, " ").replace(/\n/g, " ") : val;
+      }
+      // CSV: quote fields containing comma, quote, or newline
       return val.includes(",") || val.includes('"') || val.includes("\n")
         ? `"${val.replace(/"/g, '""')}"`
         : val;
     });
-    writeStream.write(values.join(",") + "\n");
+    writeStream.write(values.join(delimiter) + "\n");
     count++;
     if (count % 100000 === 0) {
       safeSend("export-progress", { count });
@@ -609,16 +784,14 @@ safeHandle("load-session", async () => {
 // Import file for session restore (no dialog)
 // Import files by path (used for drag-and-drop)
 safeHandle("import-files", async (event, { filePaths }) => {
-  await Promise.allSettled(
-    filePaths.filter((fp) => fs.existsSync(fp)).map((fp) => importFile(fp))
-  );
+  for (const fp of filePaths) { if (fs.existsSync(fp)) enqueueImport(fp); }
   return true;
 });
 
 safeHandle("import-file-for-restore", async (event, { filePath, sheetName }) => {
   if (!fs.existsSync(filePath)) return { error: `File not found: ${filePath}` };
   const tabId = `tab_${++tabCounter}_${Date.now()}`;
-  const fileName = decodeURIComponent(path.basename(filePath));
+  let fileName; try { fileName = decodeURIComponent(path.basename(filePath)); } catch { fileName = path.basename(filePath); }
   startImport(filePath, tabId, fileName, sheetName || undefined);
   return { tabId, fileName };
 });

@@ -23,12 +23,21 @@ const crypto = require("crypto");
 
 // ── Debug trace logger (shared with main.js) ────────────────────
 const debugLogPath = path.join(os.homedir(), "tle-debug.log");
+let _logBuf = [];
 function dbg(tag, msg, data) {
   const ts = new Date().toISOString();
   const line = `[${ts}] [${tag}] ${msg}${data !== undefined ? " " + JSON.stringify(data, null, 0) : ""}`;
   console.error(line);
-  try { fs.appendFileSync(debugLogPath, line + "\n"); } catch {}
+  _logBuf.push(line);
+  if (_logBuf.length >= 50) _flushLog();
 }
+function _flushLog() {
+  if (!_logBuf.length) return;
+  try { fs.appendFileSync(debugLogPath, _logBuf.join("\n") + "\n"); } catch {}
+  _logBuf = [];
+}
+setInterval(_flushLog, 2000);
+process.on("exit", _flushLog);
 
 class TimelineDB {
   constructor() {
@@ -50,9 +59,13 @@ class TimelineDB {
 
     try {
     // Register REGEXP function for regex search mode
+    let _reCache = null, _rePattern = null;
     db.function("regexp", { deterministic: true }, (pattern, value) => {
       if (pattern == null || value == null) return 0;
-      try { return new RegExp(pattern, "i").test(value) ? 1 : 0; } catch { return 0; }
+      try {
+        if (pattern !== _rePattern) { _reCache = new RegExp(pattern, "i"); _rePattern = pattern; }
+        return _reCache.test(value) ? 1 : 0;
+      } catch { return 0; }
     });
 
     // Register FUZZY_MATCH function for fuzzy/approximate search
@@ -81,8 +94,8 @@ class TimelineDB {
     db.function("extract_date", { deterministic: true }, (val) => {
       if (val == null) return null;
       const s = String(val).trim();
-      // ISO: 2026-02-05... → substr
-      if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.substring(0, 10);
+      // Fast path: ISO format (avoids regex — called millions of times)
+      if (s.length >= 10 && s.charCodeAt(4) === 45 && s.charCodeAt(7) === 45 && s.charCodeAt(0) >= 48 && s.charCodeAt(0) <= 57) return s.substring(0, 10);
       // US date: 02/05/2026 or 02-05-2026
       let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
       if (m) return `${m[3]}-${m[1].padStart(2,"0")}-${m[2].padStart(2,"0")}`;
@@ -114,7 +127,13 @@ class TimelineDB {
     db.function("extract_datetime_minute", { deterministic: true }, (val) => {
       if (val == null) return null;
       const s = String(val).trim();
-      // ISO: 2026-02-05 15:30:00 or 2026-02-05T15:30:00
+      // Fast path: ISO format (avoids regex — called millions of times)
+      // Check for "YYYY-MM-DD HH:MM" or "YYYY-MM-DDTHH:MM" pattern by char codes
+      if (s.length >= 16 && s.charCodeAt(4) === 45 && s.charCodeAt(7) === 45 && s.charCodeAt(0) >= 48 && s.charCodeAt(0) <= 57) {
+        const sep = s.charCodeAt(10); // space (32) or T (84)
+        if ((sep === 32 || sep === 84) && s.charCodeAt(13) === 58) return `${s.substring(0, 10)} ${s.substring(11, 16)}`;
+      }
+      // Non-ISO fallback with regex
       let m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
       if (m) return `${m[1]} ${m[2]}`;
       // Excel serial date (e.g. 45566.833 = 2024-10-05 20:00)
@@ -444,7 +463,7 @@ class TimelineDB {
     const safeCol = meta.colMap[colName];
     if (!safeCol || meta.indexedCols.has(safeCol)) return;
     try {
-      meta.db.exec(`CREATE INDEX IF NOT EXISTS idx_${safeCol} ON data(${safeCol})`);
+      meta.db.exec(`CREATE INDEX IF NOT EXISTS idx_${safeCol} ON data(${safeCol} COLLATE NOCASE)`);
     } catch (e) {
       // Ignore index creation failures
     }
@@ -618,7 +637,7 @@ class TimelineDB {
         // yielding after each keeps the event loop responsive for UI updates
         const col = cols[built];
         try {
-          meta.db.exec(`CREATE INDEX IF NOT EXISTS idx_${col.safe} ON data(${col.safe})`);
+          meta.db.exec(`CREATE INDEX IF NOT EXISTS idx_${col.safe} ON data(${col.safe} COLLATE NOCASE)`);
           meta.indexedCols.add(col.safe);
         } catch (e) {
           dbg("DB", `index creation failed for ${col.original}`, { error: e.message });
@@ -681,6 +700,11 @@ class TimelineDB {
     // ── Column filters ─────────────────────────────────────────
     for (const [colName, filterVal] of Object.entries(columnFilters)) {
       if (!filterVal) continue;
+      if (colName === "__tags__") {
+        whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag LIKE ?)`);
+        params.push(`%${filterVal}%`);
+        continue;
+      }
       const safeCol = meta.colMap[colName];
       if (!safeCol) continue;
       whereConditions.push(`${safeCol} LIKE ?`);
@@ -1305,6 +1329,11 @@ class TimelineDB {
 
     for (const [cn, fv] of Object.entries(columnFilters)) {
       if (!fv) continue;
+      if (cn === "__tags__") {
+        whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag LIKE ?)`);
+        params.push(`%${fv}%`);
+        continue;
+      }
       const sc = meta.colMap[cn];
       if (!sc) continue;
       whereConditions.push(`${sc} LIKE ?`);
@@ -1373,6 +1402,11 @@ class TimelineDB {
 
     for (const [cn, fv] of Object.entries(columnFilters)) {
       if (!fv) continue;
+      if (cn === "__tags__") {
+        whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag LIKE ?)`);
+        params.push(`%${fv}%`);
+        continue;
+      }
       const sc = meta.colMap[cn];
       if (!sc) continue;
       whereConditions.push(`${sc} LIKE ?`);
@@ -1455,27 +1489,33 @@ class TimelineDB {
       return { matchedRowIds, perIocCounts };
     }
 
-    // Phase 2: per-IOC hit counts on matched rows only
+    // Phase 2: per-IOC hit counts AND per-row IOC mapping
     const allMatchedRows = [];
     for (let i = 0; i < matchedRowIds.length; i += 500) {
       const batch = matchedRowIds.slice(i, i + 500);
       const ph = batch.map(() => "?").join(",");
-      const rows = db.prepare(`SELECT ${colList.join(", ")} FROM data WHERE rowid IN (${ph})`).all(...batch);
+      const rows = db.prepare(`SELECT rowid, ${colList.join(", ")} FROM data WHERE rowid IN (${ph})`).all(...batch);
       for (const r of rows) allMatchedRows.push(r);
     }
 
     const perIocCounts = {};
-    for (const pattern of iocPatterns) {
+    const perRowIocs = {}; // rowId -> [patternIndex, ...]
+    for (let pi = 0; pi < iocPatterns.length; pi++) {
+      const pattern = iocPatterns[pi];
       let count = 0;
       let re;
       try { re = new RegExp(pattern, "i"); } catch { perIocCounts[pattern] = 0; continue; }
       for (const row of allMatchedRows) {
-        if (colList.some((c) => re.test(row[c] || ""))) count++;
+        if (colList.some((c) => re.test(row[c] || ""))) {
+          count++;
+          if (!perRowIocs[row.rowid]) perRowIocs[row.rowid] = [];
+          perRowIocs[row.rowid].push(pi);
+        }
       }
       perIocCounts[pattern] = count;
     }
 
-    return { matchedRowIds, perIocCounts };
+    return { matchedRowIds, perIocCounts, perRowIocs };
   }
 
   /**
@@ -1508,6 +1548,11 @@ class TimelineDB {
 
     for (const [colName, filterVal] of Object.entries(columnFilters)) {
       if (!filterVal) continue;
+      if (colName === "__tags__") {
+        whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag LIKE ?)`);
+        params.push(`%${filterVal}%`);
+        continue;
+      }
       const safeCol = meta.colMap[colName];
       if (!safeCol) continue;
       whereConditions.push(`${safeCol} LIKE ?`);
@@ -1583,8 +1628,9 @@ class TimelineDB {
   getColumnStats(tabId, colName, options = {}) {
     const meta = this.databases.get(tabId);
     if (!meta) return null;
-    const safeCol = meta.colMap[colName];
-    if (!safeCol) return null;
+    const isTagCol = colName === "__tags__";
+    const safeCol = isTagCol ? null : meta.colMap[colName];
+    if (!isTagCol && !safeCol) return null;
 
     const {
       searchTerm = "", searchMode = "mixed", searchCondition = "contains",
@@ -1600,6 +1646,7 @@ class TimelineDB {
     // Build WHERE clause (same pattern as getGroupValues/getStackingData)
     for (const [cn, fv] of Object.entries(columnFilters)) {
       if (!fv) continue;
+      if (cn === "__tags__") { whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag LIKE ?)`); params.push(`%${fv}%`); continue; }
       const sc = meta.colMap[cn]; if (!sc) continue;
       whereConditions.push(`${sc} LIKE ?`); params.push(`%${fv}%`);
     }
@@ -1626,52 +1673,59 @@ class TimelineDB {
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
 
     try {
-      const totalRows = db.prepare(`SELECT COUNT(*) as cnt FROM data ${whereClause}`).get(...params).cnt;
+      if (isTagCol) {
+        // Tags column stats — query from tags table
+        const totalRows = db.prepare(`SELECT COUNT(*) as cnt FROM data ${whereClause}`).get(...params).cnt;
+        const joinWhere = whereClause ? `${whereClause} AND data.rowid = tags.rowid` : `WHERE data.rowid = tags.rowid`;
+        const taggedRows = db.prepare(`SELECT COUNT(DISTINCT tags.rowid) as cnt FROM tags, data ${joinWhere}`).get(...params).cnt;
+        const uniqueTags = db.prepare(`SELECT COUNT(DISTINCT tag) as cnt FROM tags, data ${joinWhere}`).get(...params).cnt;
+        const topValues = db.prepare(`SELECT tag as val, COUNT(*) as cnt FROM tags, data ${joinWhere} GROUP BY tag ORDER BY cnt DESC LIMIT 25`).all(...params);
+        return { totalRows, nonEmptyCount: taggedRows, emptyCount: totalRows - taggedRows, uniqueCount: uniqueTags, fillRate: totalRows > 0 ? Math.round((taggedRows / totalRows) * 10000) / 100 : 0, topValues };
+      }
 
-      // Non-empty count — append condition to existing WHERE
+      // Combined stats query — 1 scan instead of 3 separate COUNT queries
+      const isTs = meta.tsColumns.has(colName);
+      const isNum = meta.numericColumns && meta.numericColumns.has(colName);
+      let statsSql = `SELECT COUNT(*) as total, SUM(CASE WHEN ${safeCol} IS NOT NULL AND ${safeCol} != '' THEN 1 ELSE 0 END) as nonEmpty, COUNT(DISTINCT CASE WHEN ${safeCol} IS NOT NULL AND ${safeCol} != '' THEN ${safeCol} END) as uniq`;
+      if (isTs) statsSql += `, MIN(sort_datetime(${safeCol})) as earliest, MAX(sort_datetime(${safeCol})) as latest`;
+      if (isNum) statsSql += `, MIN(CAST(${safeCol} AS REAL)) as minVal, MAX(CAST(${safeCol} AS REAL)) as maxVal, AVG(CAST(${safeCol} AS REAL)) as avgVal`;
+      statsSql += ` FROM data ${whereClause}`;
+      const stats = db.prepare(statsSql).get(...params);
+
+      const totalRows = stats.total;
+      const nonEmptyCount = stats.nonEmpty;
+      const emptyCount = totalRows - nonEmptyCount;
+      const uniqueCount = stats.uniq;
+      const fillRate = totalRows > 0 ? Math.round((nonEmptyCount / totalRows) * 10000) / 100 : 0;
+
+      // Top 25 values (still needs separate GROUP BY query)
       const neWhere = whereConditions.length > 0
         ? `WHERE ${whereConditions.join(" AND ")} AND ${safeCol} IS NOT NULL AND ${safeCol} != ''`
         : `WHERE ${safeCol} IS NOT NULL AND ${safeCol} != ''`;
-      const nonEmptyCount = db.prepare(`SELECT COUNT(*) as cnt FROM data ${neWhere}`).get(...params).cnt;
-      const emptyCount = totalRows - nonEmptyCount;
-      const uniqueCount = db.prepare(`SELECT COUNT(DISTINCT ${safeCol}) as cnt FROM data ${whereClause}`).get(...params).cnt;
-      const fillRate = totalRows > 0 ? Math.round((nonEmptyCount / totalRows) * 10000) / 100 : 0;
-
-      // Top 25 values
       const topValues = db.prepare(
         `SELECT ${safeCol} as val, COUNT(*) as cnt FROM data ${neWhere} GROUP BY ${safeCol} ORDER BY cnt DESC LIMIT 25`
       ).all(...params);
 
       const result = { totalRows, nonEmptyCount, emptyCount, uniqueCount, fillRate, topValues };
 
-      // Timestamp stats
-      if (meta.tsColumns.has(colName)) {
-        const tsRange = db.prepare(
-          `SELECT MIN(sort_datetime(${safeCol})) as earliest, MAX(sort_datetime(${safeCol})) as latest FROM data ${neWhere}`
-        ).get(...params);
-        if (tsRange && tsRange.earliest) {
-          result.tsStats = { earliest: tsRange.earliest, latest: tsRange.latest };
-          try {
-            const e = new Date(tsRange.earliest.replace(" ", "T"));
-            const l = new Date(tsRange.latest.replace(" ", "T"));
-            const diffMs = l.getTime() - e.getTime();
-            if (!isNaN(diffMs) && diffMs >= 0) result.tsStats.timespanMs = diffMs;
-          } catch { /* non-parseable */ }
-        }
+      // Timestamp stats (already computed in combined query)
+      if (isTs && stats.earliest) {
+        result.tsStats = { earliest: stats.earliest, latest: stats.latest };
+        try {
+          const e = new Date(stats.earliest.replace(" ", "T"));
+          const l = new Date(stats.latest.replace(" ", "T"));
+          const diffMs = l.getTime() - e.getTime();
+          if (!isNaN(diffMs) && diffMs >= 0) result.tsStats.timespanMs = diffMs;
+        } catch { /* non-parseable */ }
       }
 
-      // Numeric stats
-      if (meta.numericColumns && meta.numericColumns.has(colName)) {
-        const numStats = db.prepare(
-          `SELECT MIN(CAST(${safeCol} AS REAL)) as minVal, MAX(CAST(${safeCol} AS REAL)) as maxVal, AVG(CAST(${safeCol} AS REAL)) as avgVal FROM data ${neWhere}`
-        ).get(...params);
-        if (numStats) {
-          result.numStats = {
-            min: numStats.minVal,
-            max: numStats.maxVal,
-            avg: Math.round(numStats.avgVal * 100) / 100,
-          };
-        }
+      // Numeric stats (already computed in combined query)
+      if (isNum && stats.minVal != null) {
+        result.numStats = {
+          min: stats.minVal,
+          max: stats.maxVal,
+          avg: Math.round(stats.avgVal * 100) / 100,
+        };
       }
 
       return result;
@@ -1687,14 +1741,14 @@ class TimelineDB {
     const meta = this.databases.get(tabId);
     if (!meta) return [];
     const db = meta.db;
-    const empty = [];
-    for (const h of meta.headers) {
-      const safeCol = meta.colMap[h];
-      if (!safeCol) continue;
-      const row = db.prepare(`SELECT 1 FROM data WHERE ${safeCol} IS NOT NULL AND ${safeCol} != '' LIMIT 1`).get();
-      if (!row) empty.push(h);
-    }
-    return empty;
+    // Single query instead of one per column — 50-100x faster on wide tables
+    const checks = meta.safeCols.map((c) => `MAX(CASE WHEN ${c.safe} IS NOT NULL AND ${c.safe} != '' THEN 1 ELSE 0 END) as ${c.safe}`);
+    const row = db.prepare(`SELECT ${checks.join(", ")} FROM data`).get();
+    if (!row) return [...meta.headers];
+    return meta.headers.filter((h) => {
+      const sc = meta.colMap[h];
+      return sc && !row[sc];
+    });
   }
 
   /**
@@ -1837,6 +1891,7 @@ class TimelineDB {
 
     for (const [cn, fv] of Object.entries(columnFilters)) {
       if (!fv) continue;
+      if (cn === "__tags__") { whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag LIKE ?)`); params.push(`%${fv}%`); continue; }
       const sc = meta.colMap[cn];
       if (!sc) continue;
       whereConditions.push(`${sc} LIKE ?`);
@@ -1945,7 +2000,7 @@ class TimelineDB {
     const whereClause = `WHERE ${whereConditions.join(" AND ")}`;
     const extractFn = granularity === "hour" ? `substr(extract_datetime_minute(${safeCol}), 1, 13)` : `extract_date(${safeCol})`;
     const sql = `SELECT ${extractFn} as day, COUNT(*) as cnt FROM data ${whereClause} GROUP BY day HAVING day IS NOT NULL ORDER BY day`;
-    try { return db.prepare(sql).all(...params); } catch { return []; }
+    try { return db.prepare(sql).all(...params); } catch (err) { console.error(`Histogram query failed: ${err.message}`); return []; }
   }
 
   /**
@@ -2070,6 +2125,7 @@ class TimelineDB {
 
     for (const [cn, fv] of Object.entries(columnFilters)) {
       if (!fv) continue;
+      if (cn === "__tags__") { whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag LIKE ?)`); params.push(`%${fv}%`); continue; }
       const sc = meta.colMap[cn]; if (!sc) continue;
       whereConditions.push(`${sc} LIKE ?`); params.push(`%${fv}%`);
     }
@@ -2141,6 +2197,7 @@ class TimelineDB {
 
     for (const [cn, fv] of Object.entries(columnFilters)) {
       if (!fv) continue;
+      if (cn === "__tags__") { whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag LIKE ?)`); params.push(`%${fv}%`); continue; }
       const sc = meta.colMap[cn]; if (!sc) continue;
       whereConditions.push(`${sc} LIKE ?`); params.push(`%${fv}%`);
     }
@@ -2264,8 +2321,9 @@ class TimelineDB {
   getStackingData(tabId, colName, options = {}) {
     const meta = this.databases.get(tabId);
     if (!meta) return { totalRows: 0, totalUnique: 0, values: [] };
-    const safeCol = meta.colMap[colName];
-    if (!safeCol) return { totalRows: 0, totalUnique: 0, values: [] };
+    const isTagCol = colName === "__tags__";
+    const safeCol = isTagCol ? null : meta.colMap[colName];
+    if (!isTagCol && !safeCol) return { totalRows: 0, totalUnique: 0, values: [] };
     const {
       searchTerm = "", searchMode = "mixed", searchCondition = "contains",
       columnFilters = {}, checkboxFilters = {},
@@ -2278,6 +2336,7 @@ class TimelineDB {
     const whereConditions = [];
     for (const [cn, fv] of Object.entries(columnFilters)) {
       if (!fv) continue;
+      if (cn === "__tags__") { whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag LIKE ?)`); params.push(`%${fv}%`); continue; }
       const sc = meta.colMap[cn]; if (!sc) continue;
       whereConditions.push(`${sc} LIKE ?`); params.push(`%${fv}%`);
     }
@@ -2300,13 +2359,37 @@ class TimelineDB {
     if (bookmarkedOnly) whereConditions.push(`data.rowid IN (SELECT rowid FROM bookmarks)`);
     if (searchTerm.trim()) this._applySearch(searchTerm, searchMode, meta, whereConditions, params, searchCondition);
     this._applyAdvancedFilters(advancedFilters, meta, whereConditions, params);
-    if (filterText.trim()) {
+    if (!isTagCol && filterText.trim()) {
       whereConditions.push(`${safeCol} LIKE ?`); params.push(`%${filterText}%`);
     }
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
     const orderBy = sortBy === "value" ? `val ASC` : `cnt DESC, val ASC`;
     const MAX_STACKING_VALUES = 10000;
     try {
+      if (isTagCol) {
+        // Tags stacking: query from tags table joined with data filters
+        const filterParams = [...params];
+        if (filterText.trim()) {
+          const tfCond = `tag LIKE ?`;
+          const tagWhere = whereClause ? `${whereClause} AND data.rowid = tags.rowid AND ${tfCond}` : `WHERE data.rowid = tags.rowid AND ${tfCond}`;
+          filterParams.push(`%${filterText}%`);
+          const totalRow = db.prepare(`SELECT COUNT(DISTINCT data.rowid) as total FROM data ${whereClause}`).get(...params);
+          const totalRows = totalRow?.total || 0;
+          const uniqueRow = db.prepare(`SELECT COUNT(DISTINCT tag) as cnt FROM tags, data ${tagWhere}`).get(...filterParams);
+          const totalUnique = uniqueRow?.cnt || 0;
+          const sql = `SELECT tag as val, COUNT(*) as cnt FROM tags, data ${tagWhere} GROUP BY tag ORDER BY ${orderBy} LIMIT ${MAX_STACKING_VALUES}`;
+          const values = db.prepare(sql).all(...filterParams);
+          return { totalRows, totalUnique, values, truncated: totalUnique > MAX_STACKING_VALUES };
+        }
+        const joinWhere = whereClause ? `${whereClause} AND data.rowid = tags.rowid` : `WHERE data.rowid = tags.rowid`;
+        const totalRow = db.prepare(`SELECT COUNT(DISTINCT data.rowid) as total FROM data ${whereClause}`).get(...params);
+        const totalRows = totalRow?.total || 0;
+        const uniqueRow = db.prepare(`SELECT COUNT(DISTINCT tag) as cnt FROM tags, data ${joinWhere}`).get(...params);
+        const totalUnique = uniqueRow?.cnt || 0;
+        const sql = `SELECT tag as val, COUNT(*) as cnt FROM tags, data ${joinWhere} GROUP BY tag ORDER BY ${orderBy} LIMIT ${MAX_STACKING_VALUES}`;
+        const values = db.prepare(sql).all(...params);
+        return { totalRows, totalUnique, values, truncated: totalUnique > MAX_STACKING_VALUES };
+      }
       const totalRow = db.prepare(`SELECT COUNT(*) as total FROM data ${whereClause}`).get(...params);
       const totalRows = totalRow?.total || 0;
       const uniqueRow = db.prepare(`SELECT COUNT(DISTINCT ${safeCol}) as cnt FROM data ${whereClause}`).get(...params);
@@ -2329,7 +2412,7 @@ class TimelineDB {
       pidCol: userPidCol, ppidCol: userPpidCol,
       guidCol: userGuidCol, parentGuidCol: userParentGuidCol,
       imageCol: userImageCol, cmdLineCol: userCmdLineCol,
-      userCol: userUserCol, tsCol: userTsCol, eventIdCol: userEventIdCol,
+      userCol: userUserCol, tsCol: userTsCol, eventIdCol: userEventIdCol, providerCol: userProviderCol,
       searchTerm = "", searchMode = "mixed", searchCondition = "contains",
       columnFilters = {}, checkboxFilters = {},
       bookmarkedOnly = false, dateRangeFilters = {},
@@ -2363,6 +2446,8 @@ class TimelineDB {
       eventId:     userEventIdCol    || detect([/^EventID$/i, /^event_id$/i, /^eventid$/i, /^EventId$/]),
       elevation:   detect([/^TokenElevationType$/i, /^Token_Elevation_Type$/i]),
       integrity:   detect([/^MandatoryLabel$/i, /^Mandatory_Label$/i, /^IntegrityLevel$/i]),
+      provider:    userProviderCol || detect([/^Provider$/i, /^SourceName$/i, /^Channel$/i]),
+      hostname:    detect([/^Computer$/i, /^ComputerName$/i, /^Hostname$/i, /^MachineName$/i]),
     };
 
     // EvtxECmd: OVERRIDE columns — ProcessId in CSV header is the logging service PID (e.g., Sysmon 5464),
@@ -2398,9 +2483,21 @@ class TimelineDB {
       }
     }
 
+    // EvtxECmd: auto-filter to Security + Sysmon providers only.
+    // EvtxECmd CSV aggregates ALL providers — many have EID 1 (Kernel-IO, AzureGuestAgent, etc.)
+    // that are NOT process creation events. Only Sysmon EID 1 and Security EID 4688 are relevant.
+    if (isEvtxECmdPT && columns.provider) {
+      const safeProv = meta.colMap[columns.provider];
+      if (safeProv) {
+        whereConditions.push(`(${safeProv} LIKE ? OR ${safeProv} LIKE ?)`);
+        params.push("%Sysmon%", "%Security-Auditing%");
+      }
+    }
+
     // Standard filter application
     for (const [cn, fv] of Object.entries(columnFilters)) {
       if (!fv) continue;
+      if (cn === "__tags__") { whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag LIKE ?)`); params.push(`%${fv}%`); continue; }
       const sc = meta.colMap[cn]; if (!sc) continue;
       whereConditions.push(`${sc} LIKE ?`); params.push(`%${fv}%`);
     }
@@ -2497,18 +2594,54 @@ class TimelineDB {
 
         const processName = imagePath.split("\\").pop().split("/").pop() || "(unknown)";
 
+        const parentImageRaw = row.parentImage || "";
+        const parentProcessName = parentImageRaw.split("\\").pop().split("/").pop() || "";
+
         const node = {
           key, parentKey, rowid: row._rowid,
           pid, ppid, guid, parentGuid,
-          image: imagePath, processName, parentImage: row.parentImage || "",
+          image: imagePath, processName, parentImage: parentImageRaw, parentProcessName,
           cmdLine, user: row.user || "", ts: row.ts || "",
           elevation: row.elevation || "", integrity: row.integrity || "",
+          provider: row.provider || "", eventId: row.eventId || "",
+          hostname: row.hostname || "",
           childCount: 0, depth: 0,
         };
         processes.push(node);
         byKey.set(key, node);
         if (!childrenOf.has(parentKey)) childrenOf.set(parentKey, []);
         childrenOf.get(parentKey).push(key);
+      }
+
+      // PID-based trees: re-link parent-child using PID matching (keys include rowid suffix, so direct parentKey lookup fails)
+      if (!useGuid) {
+        // Build PID → [nodes] lookup (sorted by time since processes are already time-ordered)
+        const pidToNodes = new Map();
+        for (const node of processes) {
+          if (!node.pid) continue;
+          if (!pidToNodes.has(node.pid)) pidToNodes.set(node.pid, []);
+          pidToNodes.get(node.pid).push(node);
+        }
+        // Re-link each process to its parent via PID matching
+        childrenOf.clear();
+        for (const node of processes) {
+          if (!node.ppid) continue;
+          const candidates = pidToNodes.get(node.ppid);
+          if (!candidates || candidates.length === 0) continue;
+          // Pick the best parent: latest process with matching PID created before this node
+          let parent = null;
+          for (let i = candidates.length - 1; i >= 0; i--) {
+            if (candidates[i].key !== node.key) {
+              if (!node.ts || !candidates[i].ts || candidates[i].ts <= node.ts) { parent = candidates[i]; break; }
+            }
+          }
+          if (!parent && candidates.length > 0 && candidates[0].key !== node.key) parent = candidates[0];
+          if (parent) {
+            node.parentKey = parent.key;
+            if (!childrenOf.has(parent.key)) childrenOf.set(parent.key, []);
+            childrenOf.get(parent.key).push(node.key);
+          }
+        }
       }
 
       // Child counts
@@ -2518,8 +2651,9 @@ class TimelineDB {
       const roots = processes.filter((p) => !byKey.has(p.parentKey));
       const visited = new Set();
       const queue = roots.map((r) => ({ key: r.key, depth: 0 }));
-      while (queue.length > 0) {
-        const { key, depth } = queue.shift();
+      let qi = 0;
+      while (qi < queue.length) {
+        const { key, depth } = queue[qi++];
         if (visited.has(key)) continue; // guard against cycles
         visited.add(key);
         const node = byKey.get(key);
@@ -2527,12 +2661,16 @@ class TimelineDB {
         for (const ck of (childrenOf.get(key) || [])) queue.push({ key: ck, depth: depth + 1 });
       }
 
+      // Safe maxDepth computation (avoid spreading large arrays)
+      let maxDepth = 0;
+      for (const p of processes) { if (p.depth > maxDepth) maxDepth = p.depth; }
+
       return {
         processes, columns, useGuid,
         stats: {
           totalProcesses: processes.length,
           rootCount: roots.length,
-          maxDepth: processes.length > 0 ? Math.max(...processes.map((p) => p.depth)) : 0,
+          maxDepth,
           truncated: rows.length >= maxRows,
         },
       };
@@ -2549,7 +2687,7 @@ class TimelineDB {
       sourceCol: userSourceCol, targetCol: userTargetCol,
       userCol: userUserCol, logonTypeCol: userLogonTypeCol,
       eventIdCol: userEventIdCol, tsCol: userTsCol, domainCol: userDomainCol,
-      eventIds = ["4624", "4625", "4648", "4778"],
+      eventIds = ["4624","4625","4634","4647","4648","4672","4778","4779","1149","21","22","23","24","25","39","40"],
       excludeLocalLogons = true,
       excludeServiceAccounts = true,
       searchTerm = "", searchMode = "mixed", searchCondition = "contains",
@@ -2586,6 +2724,8 @@ class TimelineDB {
       _remoteHost: isEvtxECmd ? detect([/^RemoteHost$/i]) : null,
       _payloadData1: isEvtxECmd ? detect([/^PayloadData1$/i]) : null,
       _payloadData2: isEvtxECmd ? detect([/^PayloadData2$/i]) : null,
+      _payloadData3: isEvtxECmd ? detect([/^PayloadData3$/i]) : null,
+      _channel: detect([/^Channel$/i, /^SourceName$/i, /^Provider$/i]),
     };
     columns._isEvtxECmd = isEvtxECmd;
 
@@ -2606,6 +2746,7 @@ class TimelineDB {
 
     for (const [cn, fv] of Object.entries(columnFilters)) {
       if (!fv) continue;
+      if (cn === "__tags__") { whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag LIKE ?)`); params.push(`%${fv}%`); continue; }
       const sc = meta.colMap[cn]; if (!sc) continue;
       whereConditions.push(`${sc} LIKE ?`); params.push(`%${fv}%`);
     }
@@ -2645,26 +2786,74 @@ class TimelineDB {
 
       const EXCLUDED_IPS = new Set(["-", "::1", "127.0.0.1", "0.0.0.0", ""]);
       const SERVICE_RE = /^(SYSTEM|LOCAL SERVICE|NETWORK SERVICE|DWM-\d+|UMFD-\d+|ANONYMOUS LOGON)$/i;
+      // Session-only events are for RDP session correlation but don't create graph edges
+      const SESSION_ONLY_EVENTS = new Set(["23","24","39","40","4634","4647","4672","4779"]);
+
+      const RDP_EVENT_DESC = {
+        "1149": "Network auth succeeded", "4624": "Logon succeeded", "4625": "Logon failed",
+        "21": "Session logon succeeded", "22": "Shell start notification", "23": "Session logoff",
+        "24": "Session disconnected", "25": "Session reconnected", "39": "Disconnected by another session",
+        "40": "Session disconnect (reason code)", "4634": "Account logged off", "4647": "User-initiated logoff",
+        "4648": "Explicit credentials used", "4672": "Admin privileges assigned",
+        "4778": "Session reconnected (window station)", "4779": "Session disconnected (window station)",
+      };
 
       const edgeMap = new Map();
       const hostSet = new Map();
       const timeOrdered = [];
+      const rdpEvents = []; // collect all events for RDP session correlation
 
       for (const row of rows) {
         const targetHost = (row.target || "").toUpperCase().trim();
         if (!targetHost) continue;
 
-        const eventId = row.eventId || "";
+        const eventId = String(row.eventId || "").trim();
 
-        // 4778: Session reconnected — ClientName is attacker hostname, ClientAddress is attacker IP
+        // Detect channel for TerminalServices event parsing
+        const channelRaw = row._channel ? String(row._channel).toLowerCase() : "";
+        const isLocalSessionMgr = channelRaw.includes("localsessionmanager");
+        const isRemoteConnMgr = channelRaw.includes("remoteconnectionmanager");
+        const isTermSvc = isLocalSessionMgr || isRemoteConnMgr;
+
         let clientName = "";
         let clientAddress = "";
         let sourceHost = "";
+        let user = "";
+        let logonType = "";
+        let sessionId = "";
 
-        if (eventId === "4778") {
+        // === TerminalServices event parsing ===
+        if (isTermSvc || (!channelRaw && ["21","22","23","24","25","39","40","1149"].includes(eventId) && isEvtxECmd && row._payloadData3)) {
+          const pd1 = (row._payloadData1 || row.user || "").trim();
+          const pd2 = (row._payloadData2 || row.logonType || "").trim();
+          const pd3 = (row._payloadData3 || "").trim();
+
+          if (isLocalSessionMgr || ["21","22","23","24","25","39","40"].includes(eventId)) {
+            // LocalSessionManager: PD1="User: DOMAIN\user", PD2="Session ID: N", PD3="Source Network Address: x.x.x.x"
+            const userMatch = pd1.match(/(?:^User:\s*|^)(?:([^\\]+)\\)?(.+)$/i);
+            if (userMatch) user = userMatch[2].trim();
+            const sidMatch = pd2.match(/Session\s*ID:\s*(\d+)/i);
+            if (sidMatch) sessionId = sidMatch[1];
+            const ipMatch = pd3.match(/Source\s*Network\s*Address:\s*(.+)/i);
+            if (ipMatch) {
+              const srcIP = ipMatch[1].trim();
+              if (srcIP && srcIP !== "LOCAL" && !EXCLUDED_IPS.has(srcIP.toUpperCase())) sourceHost = srcIP.toUpperCase();
+            }
+          } else if (isRemoteConnMgr || eventId === "1149") {
+            // RemoteConnectionManager 1149: PD1="User: username", PD2="Domain: DOMAIN", PD3="Source Network Address: x.x.x.x"
+            const userMatch = pd1.match(/(?:^User:\s*|^)(.+)$/i);
+            if (userMatch) user = userMatch[1].trim();
+            const ipMatch = pd3.match(/Source\s*Network\s*Address:\s*(.+)/i);
+            if (ipMatch) {
+              const srcIP = ipMatch[1].trim();
+              if (srcIP && !EXCLUDED_IPS.has(srcIP.toUpperCase())) sourceHost = srcIP.toUpperCase();
+            }
+          }
+
+        // === 4778/4779: Session reconnect/disconnect — ClientName/ClientAddress ===
+        } else if (eventId === "4778" || eventId === "4779") {
           clientName = (row.clientName || "").trim();
           clientAddress = (row.clientAddress || "").trim();
-          // For EvtxECmd, ClientName/ClientAddress may be in PayloadData fields
           if (isEvtxECmd && !clientName && row._payloadData1) {
             const cnMatch = row._payloadData1.match(/ClientName:\s*(.+?)(?:\s*$|,)/i);
             if (cnMatch) clientName = cnMatch[1].trim();
@@ -2673,16 +2862,24 @@ class TimelineDB {
             const caMatch = row._payloadData2.match(/ClientAddress:\s*(.+?)(?:\s*$|,)/i);
             if (caMatch) clientAddress = caMatch[1].trim();
           }
-          // Use ClientName as source host (attacker hostname), fall back to ClientAddress
           sourceHost = clientName ? clientName.toUpperCase() : clientAddress ? clientAddress.toUpperCase() : "";
+
+          // Parse user from standard Security format
+          user = row.user || "";
+          if (isEvtxECmd && user) {
+            const pdMatch = user.match(/^Target:\s*(?:([^\\]+)\\)?(.+)$/i);
+            if (pdMatch) user = pdMatch[2].trim();
+            else user = "";
+          }
+
+        // === Standard Security event parsing (4624, 4625, 4634, 4647, 4648, 4672) ===
         } else {
           sourceHost = (row.workstation || "").toUpperCase().trim();
           if (!sourceHost || sourceHost === "-") sourceHost = (row.source || "").toUpperCase().trim();
 
-          // EvtxECmd: RemoteHost format is "WorkstationName (IpAddress)" e.g. "- (::1)" or "WKST01 (10.0.0.5)"
+          // EvtxECmd: RemoteHost format is "WorkstationName (IpAddress)"
           if (isEvtxECmd && row.source) {
             const rh = row.source.trim();
-            // Skip non-host values from firewall/other events: *:, *: 445, LOCALSUBNET:*, LOCAL, etc.
             if (/^\*/.test(rh) || /^LOCALSUBNET/i.test(rh) || /^LOCAL$/i.test(rh)) { continue; }
             const rhMatch = rh.match(/^(.+?)\s*\(([^)]+)\)$/);
             if (rhMatch) {
@@ -2693,31 +2890,44 @@ class TimelineDB {
               sourceHost = rh.toUpperCase();
             }
           }
+
+          // EvtxECmd: PayloadData1 format is "Target: DOMAIN\User"
+          user = row.user || "";
+          if (isEvtxECmd && user) {
+            const pdMatch = user.match(/^Target:\s*(?:([^\\]+)\\)?(.+)$/i);
+            if (pdMatch) user = pdMatch[2].trim();
+            else user = "";
+          }
+
+          // EvtxECmd: PayloadData2 format is "LogonType N"
+          logonType = row.logonType || "";
+          if (isEvtxECmd && logonType) {
+            const ltMatch = logonType.match(/LogonType\s+(\d+)/i);
+            if (ltMatch) logonType = ltMatch[1];
+            else logonType = "";
+          }
         }
 
-        if (!sourceHost || EXCLUDED_IPS.has(sourceHost)) continue;
+        if (!sourceHost || EXCLUDED_IPS.has(sourceHost)) {
+          // Still collect for RDP session correlation if we have target + user (for logoff/disconnect events)
+          if (SESSION_ONLY_EVENTS.has(eventId) && targetHost && user) {
+            rdpEvents.push({ eventId, ts: row.ts || "", user, sourceHost: "", targetHost, logonType, sessionId, channel: channelRaw });
+          }
+          continue;
+        }
         if (excludeLocalLogons && sourceHost === targetHost) continue;
-
-        // EvtxECmd: PayloadData1 format is "Target: DOMAIN\User" — only parse if it matches, else clear
-        let user = row.user || "";
-        if (isEvtxECmd && user) {
-          const pdMatch = user.match(/^Target:\s*(?:([^\\]+)\\)?(.+)$/i);
-          if (pdMatch) user = pdMatch[2].trim();
-          else user = "";  // Not a logon event — PayloadData1 has unrelated data
-        }
         if (excludeServiceAccounts && user && (SERVICE_RE.test(user) || user.endsWith("$"))) continue;
-
-        // EvtxECmd: PayloadData2 format is "LogonType N" — only parse if it matches, else clear
-        let logonType = row.logonType || "";
-        if (isEvtxECmd && logonType) {
-          const ltMatch = logonType.match(/LogonType\s+(\d+)/i);
-          if (ltMatch) logonType = ltMatch[1];
-          else logonType = "";  // Not a logon event — PayloadData2 has unrelated data
-        }
 
         const ts = row.ts || "";
         const isFailure = eventId === "4625";
 
+        // Collect for RDP session correlation
+        rdpEvents.push({ eventId, ts, user, sourceHost, targetHost, logonType, sessionId, channel: channelRaw });
+
+        // Session-only events: don't create graph edges, only used for RDP session correlation
+        if (SESSION_ONLY_EVENTS.has(eventId)) continue;
+
+        // === Build graph edges (edge-creating events only) ===
         if (!hostSet.has(sourceHost)) hostSet.set(sourceHost, { isSource: false, isTarget: false, eventCount: 0 });
         if (!hostSet.has(targetHost)) hostSet.set(targetHost, { isSource: false, isTarget: false, eventCount: 0 });
         hostSet.get(sourceHost).isSource = true;
@@ -2727,7 +2937,7 @@ class TimelineDB {
 
         const edgeKey = `${sourceHost}->${targetHost}`;
         if (!edgeMap.has(edgeKey)) {
-          edgeMap.set(edgeKey, { source: sourceHost, target: targetHost, count: 0, users: new Set(), logonTypes: new Set(), firstSeen: ts, lastSeen: ts, hasFailures: false, clientNames: new Set(), clientAddresses: new Set() });
+          edgeMap.set(edgeKey, { source: sourceHost, target: targetHost, count: 0, users: new Set(), logonTypes: new Set(), firstSeen: ts, lastSeen: ts, hasFailures: false, clientNames: new Set(), clientAddresses: new Set(), eventBreakdown: new Map() });
         }
         const edge = edgeMap.get(edgeKey);
         edge.count++;
@@ -2738,8 +2948,119 @@ class TimelineDB {
         if (isFailure) edge.hasFailures = true;
         if (clientName) edge.clientNames.add(clientName);
         if (clientAddress && clientAddress !== "LOCAL") edge.clientAddresses.add(clientAddress);
+        if (eventId) edge.eventBreakdown.set(eventId, (edge.eventBreakdown.get(eventId) || 0) + 1);
 
         timeOrdered.push({ source: sourceHost, target: targetHost, user, ts, logonType });
+      }
+
+      // === RDP Session Correlation ===
+      rdpEvents.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
+      const rdpSessions = [];
+      const openSessions = new Map(); // key => session
+
+      const findNearestSession = (baseKey, ts, windowMs) => {
+        let best = null, bestDiff = Infinity;
+        for (const [key, session] of openSessions) {
+          if (!key.startsWith(baseKey)) continue;
+          const lastEvt = session.events[session.events.length - 1];
+          if (!lastEvt?.ts || !ts) { if (!best) best = session; continue; }
+          const diff = Math.abs(new Date(ts) - new Date(lastEvt.ts));
+          if (diff < windowMs && diff < bestDiff) { best = session; bestDiff = diff; }
+        }
+        return best;
+      };
+
+      for (const evt of rdpEvents) {
+        const baseKey = `${evt.sourceHost || "?"}->${evt.targetHost}|${evt.user}`;
+        const sessionKey = evt.sessionId ? `${baseKey}|s${evt.sessionId}` : baseKey;
+        const eid = evt.eventId;
+        const desc = (eid === "4624" && evt.logonType === "10") ? "RDP logon succeeded"
+          : (eid === "4624" && evt.logonType === "7") ? "Reconnect logon"
+          : (eid === "4624" && evt.logonType === "12") ? "Cached RDP logon"
+          : RDP_EVENT_DESC[eid] || `Event ${eid}`;
+
+        // Connection-starting events
+        if (eid === "1149" || (eid === "4624" && ["10","7","12"].includes(evt.logonType))) {
+          let session = openSessions.get(sessionKey);
+          if (!session || eid === "1149") {
+            session = {
+              id: rdpSessions.length, source: evt.sourceHost || "", target: evt.targetHost,
+              user: evt.user, sessionId: evt.sessionId || "",
+              events: [], startTime: evt.ts, endTime: null,
+              status: "connecting", isReconnect: evt.logonType === "7",
+              hasAdmin: false, hasFailed: false,
+            };
+            rdpSessions.push(session);
+            openSessions.set(sessionKey, session);
+          }
+          session.events.push({ eventId: eid, ts: evt.ts, description: desc });
+        }
+        // Session-active events: 21, 22, 25
+        else if (["21","22","25"].includes(eid)) {
+          const session = openSessions.get(sessionKey) || findNearestSession(baseKey, evt.ts, 30000);
+          if (session) {
+            session.status = "active";
+            session.events.push({ eventId: eid, ts: evt.ts, description: desc });
+            if (eid === "25") session.isReconnect = true;
+          }
+        }
+        // Admin privilege: 4672
+        else if (eid === "4672") {
+          const session = findNearestSession(baseKey, evt.ts, 5000);
+          if (session) {
+            session.hasAdmin = true;
+            session.events.push({ eventId: eid, ts: evt.ts, description: desc });
+          }
+        }
+        // Disconnect events: 24, 39, 40, 4779
+        else if (["24","39","40","4779"].includes(eid)) {
+          const session = openSessions.get(sessionKey) || findNearestSession(baseKey, evt.ts, 60000);
+          if (session) {
+            session.status = "disconnected";
+            session.events.push({ eventId: eid, ts: evt.ts, description: desc });
+          }
+        }
+        // Logoff events: 23, 4634, 4647
+        else if (["23","4634","4647"].includes(eid)) {
+          const session = openSessions.get(sessionKey) || findNearestSession(baseKey, evt.ts, 60000);
+          if (session) {
+            session.status = "ended";
+            session.endTime = evt.ts;
+            session.events.push({ eventId: eid, ts: evt.ts, description: desc });
+            openSessions.delete(sessionKey);
+          }
+        }
+        // Failed logon: 4625
+        else if (eid === "4625") {
+          const session = openSessions.get(sessionKey);
+          if (session) {
+            session.hasFailed = true;
+            session.status = "failed";
+            session.events.push({ eventId: eid, ts: evt.ts, description: desc });
+            openSessions.delete(sessionKey);
+          } else {
+            rdpSessions.push({
+              id: rdpSessions.length, source: evt.sourceHost || "", target: evt.targetHost,
+              user: evt.user, sessionId: "", events: [{ eventId: eid, ts: evt.ts, description: desc }],
+              startTime: evt.ts, endTime: evt.ts,
+              status: "failed", isReconnect: false, hasAdmin: false, hasFailed: true,
+            });
+          }
+        }
+        // 4648: explicit creds, 4778: reconnect
+        else if (eid === "4648" || eid === "4778") {
+          const session = openSessions.get(sessionKey) || findNearestSession(baseKey, evt.ts, 30000);
+          if (session) {
+            session.events.push({ eventId: eid, ts: evt.ts, description: desc });
+            if (eid === "4778") { session.isReconnect = true; session.status = "active"; }
+          }
+        }
+      }
+      // Mark remaining open sessions
+      for (const session of openSessions.values()) {
+        if (session.status === "connecting" || session.status === "active") {
+          session.status = session.events.length > 1 ? "active (no logoff)" : "incomplete";
+        }
       }
 
       // Chain detection: time-ordered DFS for multi-hop paths
@@ -2785,7 +3106,6 @@ class TimelineDB {
       chains.sort((a, b) => b.hops - a.hops);
 
       // Outlier host detection — flag default/generic/suspicious hostnames
-      // Threat actor machines typically use default OS install names or pentest distro defaults
       const OUTLIER_PATS = [
         [/^DESKTOP-[A-Z0-9]{5,}$/, "Default Windows hostname"],
         [/^WIN-[A-Z0-9]{5,}$/, "Default Windows hostname"],
@@ -2813,15 +3133,19 @@ class TimelineDB {
         }),
         edges: [...edgeMap.values()].map((e) => ({
           ...e, users: [...e.users], logonTypes: [...e.logonTypes], clientNames: [...e.clientNames], clientAddresses: [...e.clientAddresses],
+          eventBreakdown: Object.fromEntries(e.eventBreakdown),
         })),
         chains,
+        rdpSessions,
         stats: {
           totalEvents: timeOrdered.length, uniqueHosts: hostSet.size,
           uniqueUsers: new Set(timeOrdered.map((e) => e.user).filter(Boolean)).size,
           uniqueConnections: edgeMap.size,
-          failedLogons: timeOrdered.filter((e) => e.logonType === "4625" || rows.find((r) => r._rowid && r.eventId === "4625")).length,
+          failedLogons: [...edgeMap.values()].reduce((s, e) => s + (e.hasFailures ? 1 : 0), 0),
           longestChain: chains.length > 0 ? chains[0].hops : 0,
           chainCount: chains.length,
+          rdpSessionCount: rdpSessions.length,
+          adminSessions: rdpSessions.filter((s) => s.hasAdmin).length,
         },
         columns, error: null,
       };
@@ -3072,6 +3396,7 @@ class TimelineDB {
     // Apply standard filters (same pattern as getLateralMovement)
     for (const [cn, fv] of Object.entries(columnFilters)) {
       if (!fv) continue;
+      if (cn === "__tags__") { whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag LIKE ?)`); params.push(`%${fv}%`); continue; }
       const sc = meta.colMap[cn]; if (!sc) continue;
       whereConditions.push(`${sc} LIKE ?`); params.push(`%${fv}%`);
     }

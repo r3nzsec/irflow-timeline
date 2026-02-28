@@ -1,5 +1,43 @@
 # Changelog
 
+## v1.0.2-beta
+
+### Performance
+
+- **Histogram drag optimization** — Zero-rerender brush selection on large files
+  - DOM-based overlay positioning replaces React state updates during drag
+  - Eliminates re-rendering of 8,000+ SVG rect elements on every mouse move
+  - Skip same-bar moves for reduced DOM writes
+  - Smooth brush selection even on 1GB+ files at hourly granularity
+
+- **Multi-file EVTX import stability** — Fixed crashes when importing 15+ EVTX files
+  - Global EVTX message provider cache (created once, reused across all imports)
+  - GC pause between sequential imports to prevent memory accumulation
+  - Deferred index/FTS builds until import queue fully drains
+  - Explicit EvtxFile handle cleanup and large array nulling after parse
+
+- **SQLite query optimization** — Faster column stats, empty column detection, and sorting
+  - `getColumnStats` combined 3-6 full table scans into 1 query
+  - `getEmptyColumns` combined per-column queries into single combined query
+  - COLLATE NOCASE indexes for proper sort alignment (eliminates full-table sort on text columns)
+  - `extract_date` / `extract_datetime_minute` charCodeAt fast path (~2x faster than regex on ISO timestamps)
+
+- **Render optimization** — Faster cell rendering and column lookups
+  - Set-based visible column lookups replacing O(n) Array.includes()
+  - Memoized combined highlight regex (IOC + search) avoids per-cell regex creation
+  - Silent histogram query errors now logged for debugging
+
+### UI Improvements
+
+- **Welcome screen** — Larger, more prominent welcome card
+  - Increased card padding, logo size, title font, and button size
+  - Added minimum width for consistent layout
+
+### Robustness
+
+- **Memory logging** — Heap and RSS usage logged after each EVTX parse for diagnostics
+- **Import queue safety** — Index and FTS builds deferred until all queued imports complete
+
 ## v1.0.0-beta
 
 ### New Features

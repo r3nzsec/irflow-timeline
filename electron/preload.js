@@ -61,6 +61,7 @@ contextBridge.exposeInMainWorld("tle", {
   onImportProgress: (cb) => ipcRenderer.on("import-progress", (_, d) => cb(d)),
   onImportComplete: (cb) => ipcRenderer.on("import-complete", (_, d) => cb(d)),
   onImportError: (cb) => ipcRenderer.on("import-error", (_, d) => cb(d)),
+  onImportQueue: (cb) => ipcRenderer.on("import-queue", (_, d) => cb(d)),
   onExportProgress: (cb) => ipcRenderer.on("export-progress", (_, d) => cb(d)),
   onFtsProgress: (cb) => ipcRenderer.on("fts-progress", (_, d) => cb(d)),
   onIndexProgress: (cb) => ipcRenderer.on("index-progress", (_, d) => cb(d)),
