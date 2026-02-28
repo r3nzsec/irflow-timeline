@@ -53,7 +53,7 @@ graph TB
 
 ### Renderer Process (React)
 
-**File:** `src/App.jsx` (~7,755 lines)
+**File:** `src/App.jsx` (~8,753 lines)
 
 The renderer runs in a sandboxed browser context with no direct Node.js access. All system operations go through the IPC bridge.
 
@@ -72,7 +72,7 @@ The preload script creates a secure bridge between the renderer and main process
 
 ### Main Process (Electron)
 
-**File:** `main.js` (~959 lines)
+**File:** `main.js` (~1,036 lines)
 
 The main process runs with full Node.js access and manages:
 - Window lifecycle and native menus
@@ -84,7 +84,7 @@ The main process runs with full Node.js access and manages:
 
 ### Data Engine (SQLite)
 
-**File:** `db.js` (~3,659 lines)
+**File:** `db.js` (~3,922 lines)
 
 The `TimelineDB` class wraps `better-sqlite3` with forensic-analysis-specific operations:
 
@@ -112,7 +112,7 @@ CREATE TABLE color_rules (id, col_name, condition, value, bg_color, fg_color);
 
 ### Parser Layer
 
-**File:** `parser.js` (~1,054 lines)
+**File:** `parser.js` (~1,061 lines)
 
 Streaming parsers convert source files into SQLite batch inserts:
 

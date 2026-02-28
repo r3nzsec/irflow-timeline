@@ -88,7 +88,11 @@ Eight built-in presets are available for common forensic patterns (PowerShell, M
 
 ### Search Highlighting
 
-When search is active in highlight mode, matching terms are marked with yellow background within each cell. Supports regex and multi-word mixed/AND search term highlighting.
+When search is active in highlight mode, matching terms are marked with yellow/amber background within each cell. Supports regex and multi-word mixed/AND search term highlighting.
+
+### IOC Highlighting
+
+After running an IOC scan, matched indicator values are highlighted inline in the grid with orange semi-transparent background and bold text. When both search and IOC highlights are active, they use distinct colors — orange for IOC matches, amber for search matches. IOC patterns are sorted longest-first to prevent shorter substrings from stealing matches. An "IOC Highlights" badge in the status bar shows the count and can be clicked to clear.
 
 ### Timestamp Formatting
 
@@ -125,15 +129,22 @@ Query results are cached per unique filter configuration (up to 4 cache entries 
 
 ## Context Menu
 
-### Column Header (Right-Click)
+The context menu uses a macOS-style glass/blur aesthetic with inline SVG icons for each action.
 
-- **Pin / Unpin** column
-- **Hide Column**
-- **Group by** / Remove Grouping
-- **Best Fit** column width
-- **Sort Ascending / Descending**
-- **Stacking** — open value frequency analysis for this column
-- **Column Stats** — value distribution and type statistics
+**Open via:** Right-click a column header, or `Cmd/Ctrl+Click` a column header (trackpad-friendly alternative).
+
+### Column Header Menu
+
+| Icon | Action | Description |
+|------|--------|-------------|
+| Pin | **Pin / Unpin** | Pin column to the left side |
+| Eye-slash | **Hide Column** | Remove column from view |
+| Arrows | **Best Fit** | Auto-size column to content |
+| Undo | **Reset Widths** | Reset all column widths to default |
+| Up arrow | **Sort Ascending** | Sort A→Z / oldest→newest |
+| Down arrow | **Sort Descending** | Sort Z→A / newest→oldest |
+| Stacked bars | **Stack Values** | Open value frequency analysis |
+| Bar chart | **Column Stats** | Value distribution and type statistics |
 
 ### Row / Cell (Right-Click)
 
@@ -151,7 +162,7 @@ Click the star icon in the bookmark column to flag important rows. Bookmarked ro
 
 ### Tags
 
-The tags column displays color-coded tag pills per row. Add tags via the context menu with tag name suggestions. Tags support bulk operations — select multiple rows and apply or remove tags in one action.
+The Tags column is a full first-class grid column displaying color-coded tag pills per row. It supports sorting, text filtering, checkbox filtering, stacking, and column stats — just like any data column. Add tags via the context menu with tag name suggestions. Tags support bulk operations — select multiple rows and apply or remove tags in one action. See [Bookmarks & Tags](/features/bookmarks-tags) for full details.
 
 ## Performance Characteristics
 

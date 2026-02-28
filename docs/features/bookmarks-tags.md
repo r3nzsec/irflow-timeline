@@ -31,7 +31,7 @@ Bookmarked rows are included in HTML reports with their full data. They appear i
 
 ## Tags
 
-Tags are free-form labels you attach to rows for categorization. Each row can have multiple tags, and tags are color-coded for visual distinction.
+Tags are free-form labels you attach to rows for categorization. Each row can have multiple tags, and tags are color-coded for visual distinction. The Tags column is a full first-class grid column — you can sort, filter, and stack by tags just like any other column.
 
 ### Adding Tags
 
@@ -55,7 +55,7 @@ IRFlow Timeline includes common DFIR investigation tags:
 | **Execution** | Malicious execution events |
 | **Credential Access** | Credential harvesting/dumping |
 
-You can also create custom tags — just type any name.
+You can also create custom tags — just type any name. IOC Matching automatically creates per-indicator tags (e.g., `IOC: cmd.exe`, `IOC: 185.220.101.34`) with orange coloring.
 
 ### Bulk Tagging
 
@@ -82,10 +82,22 @@ Apply any combination of filters, then use **Edit > Tag All Filtered** to tag ev
 
 Each unique tag is assigned a color from the palette. Colors are consistent within a session and persist when saving/loading sessions.
 
+### Tags Column Features
+
+The Tags column behaves as a full grid column with:
+
+- **Sorting** — click the Tags column header to sort rows by their tag values
+- **Text filtering** — type in the Tags filter cell to search for specific tags using SQL `LIKE` matching
+- **Checkbox filtering** — click the dropdown button in the Tags filter cell to select specific tags from a checkbox list
+- **Stacking** — right-click the Tags header and select Stack Values to see tag frequency distribution
+- **Column Stats** — view tag statistics including total tagged rows, unique tags, and top values
+- **Disable/enable** — toggle the tag filter on/off without removing it (shown with strikethrough when disabled)
+
 ### Filtering by Tag
 
-- Click a tag chip to filter the grid to rows with that tag
-- Use the tag filter dropdown to select one or more tags
+- Type in the Tags filter cell to filter by tag name
+- Use the dropdown checkbox filter to select one or more specific tags
+- Click a tag chip in a row to filter to rows with that tag
 - Combine tag filters with other filter types
 
 ### In Reports
