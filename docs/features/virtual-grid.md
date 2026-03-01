@@ -63,14 +63,29 @@ Drag column headers to rearrange them directly in the grid. Column order is pers
 
 ## Row Selection
 
+Each row has a checkbox for multi-selection, plus these interaction methods:
+
+- **Checkbox** — click the checkbox cell to toggle selection without affecting the detail panel
 - **Single click** — selects a row and displays it in the detail panel
 - **Shift+Click** — selects a range of rows from the last clicked row to the current
 - **Cmd+Click** — toggles individual rows in/out of the selection without clearing existing selections
 - **Arrow Up/Down** — navigates selection with auto-scroll to keep the selected row visible
 
+The header row includes a master checkbox (select all / deselect all). In grouped view, each group header has its own checkbox to select or deselect all rows within that group (shows indeterminate state when partially selected).
+
+### Bulk Selection Actions
+
+Available from the **Actions** menu:
+
+- **Select All** — selects all rows (works in both normal and grouped mode)
+- **Deselect All** — clears the selection
+- **Invert Selection** — toggles the selection state of every row
+- **Copy Selected Rows** (`Cmd+C`) — copies selected rows as tab-separated text to the clipboard
+- **Export Selected Rows** — exports selected rows as CSV via a save dialog
+
 Selection state (selected rows, last clicked row, scroll position) is preserved per tab — switching tabs and back restores exactly where you left off.
 
-The status bar shows "Row: X" for single selection or "N rows selected" for multi-select.
+The status bar shows "Row: X" for single selection or "N rows selected" for multi-select, along with the full file path of the active tab.
 
 ## Detail Panel
 
@@ -153,6 +168,10 @@ The context menu uses a macOS-style glass/blur aesthetic with inline SVG icons f
 - **Bookmark / Remove Bookmark**
 - **Add Tag**
 - **Bulk Tag / Untag** selected rows
+
+## Find Duplicates
+
+Open **Actions > Find Duplicates** to find repeated values in any column. Select a column from the dropdown and click "Find Duplicates" to scan for values that appear more than once. Results show the duplicate value and occurrence count (capped at 100 displayed). Click "Filter to Duplicates" to apply a checkbox filter on the selected column showing only rows with duplicate values.
 
 ## Bookmarks and Tags
 

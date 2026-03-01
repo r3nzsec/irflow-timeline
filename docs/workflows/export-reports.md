@@ -35,14 +35,23 @@ IRFlow Timeline supports exporting filtered data and generating investigation re
 3. Choose a save location
 4. Compatible with older Excel versions and third-party tools
 
+### Export Selected Rows
+
+1. Select rows using checkboxes in the data grid
+2. **Menu:** Actions > Export Selected Rows
+3. Choose a save location
+4. Exports only the selected rows as CSV
+
 ### What Gets Exported
 
-Exports include:
+Full export (File > Export) includes:
 
 - All columns (visible and hidden)
 - Only rows matching current filters, search, and date range
 - Bookmarked/tagged rows if those filters are active
 - Data in the current sort order
+
+Selected export (Actions > Export Selected Rows) includes only the checked rows regardless of filters.
 
 ::: tip Export Bookmarked Only
 Enable the bookmark filter (`Cmd+B`) before exporting to create a file containing only your flagged rows.
