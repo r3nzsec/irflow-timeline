@@ -35,7 +35,7 @@ Drag the right edge of any column header to resize it. Minimum width is 60px. Co
 
 ### Pinning
 
-Right-click a column header and select **Pin Left** to pin it to the left side of the grid. Pinned columns use sticky positioning so they stay visible as you scroll horizontally — useful for keeping timestamp or event name columns always in view.
+`Cmd+Click` a column header and select **Pin Left** to pin it to the left side of the grid. Pinned columns use sticky positioning so they stay visible as you scroll horizontally — useful for keeping timestamp or event name columns always in view.
 
 ### Hiding / Showing
 
@@ -55,11 +55,11 @@ Drag column headers to rearrange them directly in the grid. Column order is pers
 
 ### Auto-Fit
 
-Right-click a column header and select **Best Fit** to auto-size the column width to its content with 10% padding.
+`Cmd+Click` a column header and select **Best Fit** to auto-size the column width to its content with 10% padding.
 
 ### Column Quick Stats
 
-Right-click a column header and select **Column Stats** to see value distribution, fill rate, and type-specific statistics for that column.
+`Cmd+Click` a column header and select **Column Stats** to see value distribution, fill rate, and type-specific statistics for that column.
 
 ## Row Selection
 
@@ -117,7 +117,7 @@ A filter row below the column headers provides a text input per column. Typing f
 
 ### Checkbox Filters
 
-Right-click a column header to open a checkbox filter showing the top 25 values for that column. Search within the value list to find specific entries. Toggle values on/off to include or exclude them.
+`Cmd+Click` a column header to open a checkbox filter showing the top 25 values for that column. Search within the value list to find specific entries. Toggle values on/off to include or exclude them.
 
 ### Disable Individual Filters
 
@@ -131,7 +131,7 @@ Query results are cached per unique filter configuration (up to 4 cache entries 
 
 The context menu uses a macOS-style glass/blur aesthetic with inline SVG icons for each action.
 
-**Open via:** Right-click a column header, or `Cmd/Ctrl+Click` a column header (trackpad-friendly alternative).
+**Open via:** `Cmd+Click` a column header.
 
 ### Column Header Menu
 
@@ -146,7 +146,7 @@ The context menu uses a macOS-style glass/blur aesthetic with inline SVG icons f
 | Stacked bars | **Stack Values** | Open value frequency analysis |
 | Bar chart | **Column Stats** | Value distribution and type statistics |
 
-### Row / Cell (Right-Click)
+### Row / Cell (Cmd+Click)
 
 - **Copy Cell** value
 - **Copy Row** as TSV

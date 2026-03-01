@@ -89,7 +89,7 @@ The Tags column behaves as a full grid column with:
 - **Sorting** — click the Tags column header to sort rows by their tag values
 - **Text filtering** — type in the Tags filter cell to search for specific tags using SQL `LIKE` matching
 - **Checkbox filtering** — click the dropdown button in the Tags filter cell to select specific tags from a checkbox list
-- **Stacking** — right-click the Tags header and select Stack Values to see tag frequency distribution
+- **Stacking** — `Cmd+Click` the Tags header and select Stack Values to see tag frequency distribution
 - **Column Stats** — view tag statistics including total tagged rows, unique tags, and top values
 - **Disable/enable** — toggle the tag filter on/off without removing it (shown with strikethrough when disabled)
 
