@@ -169,7 +169,7 @@ function _buildDeferredIndexes() {
   }
 }
 
-// ── macOS lifecycle ────────────────────────────────────────────────
+// ── App lifecycle ──────────────────────────────────────────────
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     db.closeAll();
@@ -196,14 +196,13 @@ app.on("open-file", (event, filePath) => {
 
 // ── Window ─────────────────────────────────────────────────────────
 function createWindow() {
-  mainWindow = new BrowserWindow({
+  const isMac = process.platform === "darwin";
+
+  const windowOptions = {
     width: 1500,
     height: 950,
     minWidth: 900,
     minHeight: 600,
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 16, y: 16 },
-    vibrancy: "under-window",
     backgroundColor: "#0f1114",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -211,7 +210,16 @@ function createWindow() {
       nodeIntegration: false,
     },
     show: false,
-  });
+  };
+
+  // macOS-specific window chrome
+  if (isMac) {
+    windowOptions.titleBarStyle = "hiddenInset";
+    windowOptions.trafficLightPosition = { x: 16, y: 16 };
+    windowOptions.vibrancy = "under-window";
+  }
+
+  mainWindow = new BrowserWindow(windowOptions);
 
   const isDev = !app.isPackaged;
   if (isDev) {
@@ -870,10 +878,12 @@ safeHandle("save-filter-presets", async (event, { presets }) => {
   return true;
 });
 
-// ── Native macOS Menu ──────────────────────────────────────────────
+// ── Application Menu ───────────────────────────────────────────────
 function _rebuildMenu() { buildMenu(); }
 
 function buildMenu() {
+  const isMac = process.platform === "darwin";
+
   // Build recent files submenu
   const recentFiles = _loadRecentFiles();
   const recentSubmenu = recentFiles.length > 0
@@ -889,7 +899,8 @@ function buildMenu() {
     : [{ label: "No Recent Files", enabled: false }];
 
   const template = [
-    {
+    // macOS app menu (hidden on Windows/Linux)
+    ...(isMac ? [{
       label: "IRFlow Timeline",
       submenu: [
         { role: "about" },
@@ -902,7 +913,7 @@ function buildMenu() {
         { type: "separator" },
         { role: "quit" },
       ],
-    },
+    }] : []),
     {
       label: "File",
       submenu: [
@@ -950,6 +961,7 @@ function buildMenu() {
         },
         { type: "separator" },
         { role: "close" },
+        ...(!isMac ? [{ type: "separator" }, { role: "quit" }] : []),
       ],
     },
     {
@@ -1061,7 +1073,9 @@ function buildMenu() {
     },
     {
       label: "Window",
-      submenu: [{ role: "minimize" }, { role: "zoom" }, { type: "separator" }, { role: "front" }],
+      submenu: isMac
+        ? [{ role: "minimize" }, { role: "zoom" }, { type: "separator" }, { role: "front" }]
+        : [{ role: "minimize" }, { role: "zoom" }, { role: "close" }],
     },
     {
       label: "Help",

@@ -1,7 +1,7 @@
 {
   "name": "irflow-timeline",
-  "version": "1.0.0-beta",
-  "description": "IRFlow Timeline — High-performance DFIR timeline viewer for macOS (30-50GB+ CSV/XLSX)",
+  "version": "1.0.3-beta",
+  "description": "IRFlow Timeline — High-performance DFIR timeline viewer (30-50GB+ CSV/XLSX)",
   "main": "electron/main.js",
   "author": "DFIR Community",
   "license": "MIT",
@@ -12,6 +12,8 @@
     "dist": "npm run build:renderer && electron-builder --mac",
     "dist:dmg": "npm run build:renderer && electron-builder --mac dmg",
     "dist:universal": "npm run build:renderer && electron-builder --mac --universal",
+    "dist:win": "npm run build:renderer && electron-builder --win",
+    "dist:linux": "npm run build:renderer && electron-builder --linux",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "postinstall": "patch-package",
     "docs:dev": "vitepress dev docs",
@@ -34,6 +36,39 @@
       ],
       "darkModeSupport": true,
       "hardenedRuntime": true
+    },
+    "win": {
+      "icon": "assets/icon.svg",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/icon.svg",
+      "uninstallerIcon": "assets/icon.svg"
+    },
+    "linux": {
+      "icon": "assets/icon.svg",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        },
+        {
+          "target": "deb",
+          "arch": ["x64"]
+        }
+      ],
+      "category": "Development"
     },
     "dmg": {
       "title": "IRFlow Timeline",
