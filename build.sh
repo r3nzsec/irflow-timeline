@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
 
-echo "╔══════════════════════════════════════════════════════════╗"
-echo "║   IRFlow Timeline v2.1 — macOS Build (SQLite-backed)     ║"
-echo "╚══════════════════════════════════════════════════════════╝"
+echo "╔════════════════════════════════════════════════════════════╗"
+echo "║  IRFlow Timeline v1.0.3-beta — macOS Build (SQLite-backed) ║"
+echo "╚════════════════════════════════════════════════════════════╝"
 echo ""
 
 # Check prerequisites
