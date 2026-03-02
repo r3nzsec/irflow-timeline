@@ -3,7 +3,10 @@
   "version": "1.0.3-beta",
   "description": "IRFlow Timeline — High-performance DFIR timeline viewer (30-50GB+ CSV/XLSX)",
   "main": "electron/main.js",
-  "author": "DFIR Community",
+  "author": {
+    "name": "DFIR Community",
+    "email": "dfir-community@users.noreply.github.com"
+  },
   "license": "MIT",
   "scripts": {
     "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
@@ -38,7 +41,7 @@
       "hardenedRuntime": true
     },
     "win": {
-      "icon": "assets/icon.svg",
+      "icon": "assets/icon.png",
       "target": [
         {
           "target": "nsis",
@@ -55,7 +58,7 @@
       "allowToChangeInstallationDirectory": true
     },
     "linux": {
-      "icon": "assets/icon.svg",
+      "icon": "assets/icon.png",
       "target": [
         {
           "target": "AppImage",
