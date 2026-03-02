@@ -33,7 +33,7 @@ If you prefer to build from source:
 ```bash
 # Clone the repository
 git clone https://github.com/r3nzsec/irflow-timeline.git
-cd tle-app
+cd irflow-timeline
 
 # Install dependencies
 npm install
