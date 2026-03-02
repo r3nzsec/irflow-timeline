@@ -45,4 +45,4 @@ Thanks to the following people for testing and providing feedback:
 
 ## License
 
-IRFlow Timeline is released under the [MIT License](https://opensource.org/licenses/MIT).
+IRFlow Timeline is released under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).

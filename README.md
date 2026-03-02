@@ -73,4 +73,4 @@ Thanks to the following people for testing and providing feedback:
 
 ## License
 
-MIT
+Apache-2.0
