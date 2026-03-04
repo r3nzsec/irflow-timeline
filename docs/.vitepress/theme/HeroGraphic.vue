@@ -230,10 +230,22 @@ function edgeColor(type) {
   return '#E8613A'
 }
 
+const prefersReducedMotion = typeof window !== 'undefined'
+  && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
 let scanIv = null
 let timers = []
 
 onMounted(() => {
+  if (prefersReducedMotion) {
+    // Show everything immediately without animation
+    histogramAnim.value = true
+    showTree.value = true
+    showNetwork.value = true
+    visibleRows.value = timelineEvents.length
+    return
+  }
+
   timers.push(setTimeout(() => { histogramAnim.value = true }, 300))
   timers.push(setTimeout(() => { showTree.value = true }, 600))
   timers.push(setTimeout(() => { showNetwork.value = true }, 900))
@@ -303,10 +315,10 @@ onUnmounted(() => {
 .dot-red { background: #FF5F57; }
 .dot-yellow { background: #FFBD2E; }
 .dot-green { background: #28C840; }
-.title-text { color: #888; font-size: 12px; margin-left: 8px !important; line-height: 1; }
+.title-text { color: #999; font-size: 12px; margin-left: 8px !important; line-height: 1; }
 .title-right { display: flex; align-items: center; gap: 16px; }
 .brand-name { color: #E8613A; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; line-height: 1; }
-.brand-version { color: #555; font-size: 11px; line-height: 1; }
+.brand-version { color: #777; font-size: 11px; line-height: 1; }
 
 /* Stats bar */
 .stats-bar {
@@ -324,7 +336,7 @@ onUnmounted(() => {
   gap: 2px;
 }
 .stat-last { border-right: none; }
-.stat-label { font-size: 9px; color: #555; letter-spacing: 1.5px; line-height: 1; }
+.stat-label { font-size: 9px; color: #777; letter-spacing: 1.5px; line-height: 1; }
 .stat-value { font-size: 16px; font-weight: 600; line-height: 1.2; }
 
 /* Histogram */
@@ -362,7 +374,7 @@ onUnmounted(() => {
   align-items: center;
   padding: 4px 0 8px !important;
 }
-.hist-label { font-size: 9px; color: #555; line-height: 1; }
+.hist-label { font-size: 9px; color: #777; line-height: 1; }
 .hist-alert { font-size: 9px; color: #E8613A; font-weight: 600; line-height: 1; }
 
 /* Main content */
@@ -389,7 +401,7 @@ onUnmounted(() => {
 }
 .header-cell {
   font-size: 9px;
-  color: #555;
+  color: #777;
   letter-spacing: 1.2px;
   font-weight: 600;
   line-height: 1;
@@ -454,7 +466,7 @@ onUnmounted(() => {
   justify-content: space-between;
   margin-bottom: 10px;
 }
-.panel-title { font-size: 10px; color: #555; letter-spacing: 1.2px; font-weight: 600; line-height: 1; }
+.panel-title { font-size: 10px; color: #777; letter-spacing: 1.2px; font-weight: 600; line-height: 1; }
 .panel-badge { font-size: 9px; padding: 2px 8px !important; border-radius: 3px; line-height: 1; }
 .badge-orange { color: #E8613A; background: #E8613A15; }
 .badge-red { color: #FF3B3B; background: #FF3B3B15; }
@@ -466,11 +478,11 @@ onUnmounted(() => {
   margin-bottom: 3px;
   transition: opacity 0.3s ease;
 }
-.tree-branch { color: #333; font-size: 11px; margin-right: 6px !important; white-space: pre; line-height: 1; }
+.tree-branch { color: #555; font-size: 11px; margin-right: 6px !important; white-space: pre; line-height: 1; }
 .tree-name { font-size: 11px; color: #888; line-height: 1; }
 .tree-suspicious { color: #E8613A; font-weight: 600; }
 .tree-danger { color: #FF3B3B !important; }
-.tree-pid { font-size: 9px; color: #555; margin-left: 8px !important; line-height: 1; }
+.tree-pid { font-size: 9px; color: #777; margin-left: 8px !important; line-height: 1; }
 .tree-lolbin {
   font-size: 8px;
   color: #FF3B3B;
@@ -514,7 +526,7 @@ onUnmounted(() => {
 }
 .status-left, .status-right { display: flex; align-items: center; gap: 16px; }
 .status-right { gap: 12px; }
-.status-item { font-size: 9px; color: #555; line-height: 1; white-space: nowrap; }
+.status-item { font-size: 9px; color: #777; line-height: 1; white-space: nowrap; }
 .status-green { color: #28C840; margin-right: 4px !important; }
 .status-accent { font-size: 9px; color: #E8613A; line-height: 1; white-space: nowrap; }
 
@@ -538,5 +550,15 @@ onUnmounted(() => {
     grid-template-columns: 70px 1fr;
   }
   .cell-source, .cell-id { display: none; }
+}
+
+/* Accessibility: disable animations for users who prefer reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .scan-line { display: none; }
+  .hist-bar { transition: none !important; }
+  .table-row { transition: none !important; }
+  .panel { transition: none !important; }
+  .tree-node { transition: none !important; }
+  .hist-alert-dot { box-shadow: none; }
 }
 </style>

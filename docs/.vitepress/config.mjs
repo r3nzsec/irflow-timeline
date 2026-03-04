@@ -5,6 +5,12 @@ export default defineConfig({
   description: 'High-performance DFIR timeline analysis tool for macOS',
   base: '/irflow-timeline/',
   lastUpdated: true,
+  cleanUrls: true,
+  markdown: {
+    image: {
+      lazyLoading: true
+    }
+  },
   sitemap: {
     hostname: 'https://r3nzsec.github.io/irflow-timeline/'
   },
