@@ -57,15 +57,13 @@ IRFlow Timeline is a native macOS application purpose-built for digital forensic
 
 ### Who Is This For?
 
-IRFlow Timeline is built for professionals who work with forensic timelines daily:
-
-- **Incident Responders** — reconstruct attacker kill chains across endpoints without booting a Windows VM
+- **Incident Responders** — reconstruct kill chains across endpoints on macOS, no Windows VM required
 - **SOC Analysts** — triage KAPE collections and hunt through millions of event log entries at native speed
-- **Forensic Examiners** — correlate MFT, Prefetch, Amcache, and registry artifacts in a unified timeline
-- **Threat Hunters** — sweep IOC lists, stack column values, and detect lateral movement patterns across your environment
-- **IR Consultants** — produce tagged, bookmarked, and exportable evidence packages for client deliverables
+- **Forensic Examiners** — correlate MFT, Prefetch, Amcache, and registry artifacts in a single unified timeline
+- **Threat Hunters** — detect lateral movement patterns, stack column values, and sweep IOC lists across your environment
+- **IR Consultants** — deliver tagged and bookmarked evidence packages ready for client reporting
 
-If you have ever struggled with Timeline Explorer only being available on Windows, or hit Excel's row limits while reviewing a super-timeline, IRFlow Timeline was built for you.
+If you've hit Excel's 1M-row limit on a super-timeline, or you're tired of spinning up a Windows VM just to run Timeline Explorer — this is the tool that replaces both.
 
 ### Supported Formats
 
