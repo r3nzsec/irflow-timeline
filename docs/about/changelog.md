@@ -4,6 +4,31 @@ description: IRFlow Timeline changelog — version history, new features, perfor
 
 # Changelog
 
+## v1.0.4-beta — March 10, 2026
+
+### Performance
+
+- **Stacking analytics — 3 queries → 1** — `getStackingData` now runs a single GROUP BY query and derives totals from the result. Only falls back to a COUNT query in the rare >10K unique values case. Eliminates two full-table scans per stacking panel open
+- **CSV parsing rewrite — O(n²) → O(n)** — `parseCSVLine` replaced per-character string concatenation with substring range tracking and array join. Significant speedup on wide rows with many quoted fields
+- **Plaso field discovery — single-pass sampling** — Combined two separate sampling queries (start + middle) into a single `UNION ALL` query covering start, middle, and end of the dataset. Eliminates an extra table scan and improves field coverage
+- **Timestamp-priority indexing** — `buildIndexesAsync` now builds indexes on timestamp columns first, since users typically sort by time immediately after import. Reduces the chance of hitting the synchronous `_ensureIndex` fallback
+- **Concurrent index build cap** — Deferred index builds limited to 2 concurrent tabs to prevent memory exhaustion. Previously, importing 10 files could trigger 10 parallel index builds each allocating 256MB–1GB cache
+- **Sample-based empty column detection** — `getEmptyColumns` now samples 50K rows (25K from start + 25K from end) instead of scanning the full table. Reduces a 10–30s UI block to <1s on 30M+ row tables
+
+### Stability
+
+- **MFT attribute buffer overflow protection** — Added bounds checks (`pos + nameOffset + nameLen * 2 <= buf.length`) before `toString("utf16le")` calls on `$DATA` ADS names and `$LOGGED_UTILITY_STREAM` attributes. Prevents reading past buffer on corrupt MFT records
+- **Export crash safety** — Both XLSX and CSV/TSV export iterator loops wrapped in try-catch. If a tab is closed mid-export, the partial file is saved and the error is logged instead of crashing
+- **IPC error guard on USN path refresh** — Added `__ipcError` check before accessing `result.rows` in `onUsnPathsUpdated`. Prevents setting tab rows to `undefined` which would crash downstream rendering
+- **Process tree preview timer leak fix** — Replaced `window._ptPreviewTimer` global with local closure variable, matching the existing `_lmPreviewTimer` pattern. Prevents timer accumulation across modal opens/closes
+- **Analysis modal error recovery** — Added `.catch()` handlers to `detectTimestomping`, `getFileActivityHeatmap`, and `analyzeADS` IPC calls. Modals now exit loading state on failure instead of hanging forever
+- **VT bulk lookup window guard** — Loop checks `mainWindow.isDestroyed()` before each iteration. Stops wasting API quota when the window is closed mid-lookup
+- **VT retry sleep cancellable** — 429 rate-limit retry sleep now polls every 2s checking `job.cancelled`, reducing max cancellation latency from 60s to 2s
+- **Preview cache invalidation** — `_invalidateCountCache` now also clears `_ptPreviewCache` and `_lmPreviewCache` entries for the affected tab, preventing stale process tree and lateral movement previews after tag/bookmark changes
+- **Import progress null safety** — Added fallback for `prev[tabId]` in `onImportProgress` handler to handle race between `import-start` and `import-progress` events
+
+---
+
 ## v1.0.3-beta — March 1, 2026
 
 ### New Features
