@@ -14,10 +14,10 @@ concurrency:
 
 jobs:
   release:
-    # macos-13 is Intel (x86_64). Universal builds with native addons (better-sqlite3)
-    # require Intel — ARM64 runners (macos-14) cannot reliably cross-compile .node files
-    # to x86_64, resulting in arm64-only binaries that crash on Intel Macs.
-    runs-on: macos-13
+    # macos-14 (ARM64). The "Build universal better-sqlite3" step below explicitly
+    # rebuilds better-sqlite3 for both x64 and arm64 and lipo-merges them, so
+    # electron-builder receives a ready-made fat binary and npmRebuild is disabled.
+    runs-on: macos-14
     env:
       IRFLOW_UPDATE_BASE_URL: ${{ vars.IRFLOW_UPDATE_BASE_URL }}
       IRFLOW_UPDATE_CHANNEL: ${{ vars.IRFLOW_UPDATE_CHANNEL }}
