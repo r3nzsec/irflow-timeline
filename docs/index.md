@@ -26,7 +26,7 @@ features:
     details: Reconstruct process trees from Sysmon and Security logs with 4-tier threat scoring, 342 chain rules + 13 standalone patterns mapped to MITRE ATT&CK.
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#E85D2A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/><line x1="8.5" y1="7.5" x2="15.5" y2="16.5"/><line x1="15.5" y1="7.5" x2="8.5" y2="16.5"/><line x1="6" y1="9" x2="6" y2="15"/><line x1="18" y1="9" x2="18" y2="15"/></svg>'
     title: Lateral Movement Tracker
-    details: Network graph with multi-hop chain reconstruction and RDP session correlation. Detects brute force, password spray, Impacket, and 30 RMM tools.
+    details: Network graph with multi-hop chain reconstruction and RDP session correlation. Detects brute force, password spray, Impacket, 33 RMM tools, and 7 network tunnels.
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#E85D2A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="rgba(232,93,42,0.15)"/><path d="M9 12l2 2 4-4"/></svg>'
     title: Persistence Analyzer
     details: Automated detection of 30+ persistence techniques with risk scoring across services, scheduled tasks, WMI subscriptions, and autorun keys.
@@ -48,7 +48,7 @@ features:
 - **VirusTotal Integration** — Single and bulk IOC lookups with persistent cache, configurable rate limiting, color-coded verdict badges, and auto-tagging. Bulk lookups are now cancellable mid-retry and stop automatically if the window closes
 - **Auto-Update** — In-app update notifications with download progress and one-click install
 - **Analyst Profiles** — Suppressions and baselines for Process Inspector false-positive management
-- **Attack Pattern Detection** — Automated MITRE ATT&CK-mapped findings for brute force, password spray, credential compromise, Impacket (5 variants), and RMM tool scanning (30 tools)
+- **Attack Pattern Detection** — Automated MITRE ATT&CK-mapped findings for brute force, password spray, credential compromise, Impacket (5 variants), and RMM tool scanning (33 tools + 7 tunnels)
 
 [Full changelog →](/about/changelog)
 

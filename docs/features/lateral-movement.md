@@ -194,7 +194,7 @@ The Findings tab displays automated attack pattern detections with MITRE ATT&CK 
 | **Password Spray** | T1110.003 | High | Same source fails against 3+ different targets within 30 minutes |
 | **Credential Compromise** | T1078 | Critical | Failed logon (4625) followed by successful logon (4624) from same source to same target within 10 minutes |
 | **Impacket Execution** | T1569.002 | Critical | 11 detection patterns across 5 Impacket variants (see below) |
-| **RMM Tool Detection** | T1219 | High | 30 remote monitoring tools detected in process/service events |
+| **RMM Tool Detection** | T1219 | High | 33 remote monitoring tools + 7 network tunneling tools detected in process/service events |
 | **Lateral Pivot** | T1021 | High | Host identified as middle node in multi-hop lateral movement chain |
 | **First Seen Connection** | T1021 | Low | Connection is within the first 1% of the timeline or is the first connection from a source host |
 
@@ -214,9 +214,11 @@ Service-based detections (EID 7045/4697) also flag random service names — 4-ch
 
 #### RMM Tool Detection
 
-Scans process and service events for 30 remote monitoring and management tools commonly abused in intrusions:
+Scans process and service events for 33 remote monitoring and management tools commonly abused in intrusions, plus 7 network tunneling tools:
 
-ConnectWise ScreenConnect, AnyDesk, TeamViewer, Atera, NetSupport Manager, Splashtop, RustDesk, PDQ Connect, MeshAgent/MeshCentral, Action1, Ammyy Admin, Remote Utilities, SimpleHelp, TacticalRMM, FleetDeck, Level.io, DWService, ngrok, ISL Online, HopToDesk, Lite Manager, UltraVNC, TigerVNC, RAdmin, Zoho Assist, Pulseway, LabTech/Automate, Tailscale, Kaseya VSA, N-able/SolarWinds
+**RMM Tools (33):** ConnectWise ScreenConnect, AnyDesk, TeamViewer, Atera, NetSupport Manager, Splashtop, RustDesk, PDQ Connect, MeshAgent/MeshCentral, Action1, Ammyy Admin, Remote Utilities, SimpleHelp, TacticalRMM, FleetDeck, Level.io, DWService, ISL Online, HopToDesk, Lite Manager, UltraVNC, TigerVNC, RAdmin, Zoho Assist, Pulseway, LabTech/Automate, Kaseya VSA, N-able/SolarWinds, GoTo Resolve/LogMeIn, BeyondTrust (Bomgar), Dameware, Supremo, FixMe.IT
+
+**Network Tunnels (7):** ngrok, Tailscale, Cloudflare Tunnel, Chisel, FRP (Fast Reverse Proxy), Ligolo, WireGuard
 
 #### Finding Actions
 
