@@ -31,6 +31,14 @@ const config = {
     entitlements: "entitlements.mac.plist",
     entitlementsInherit: "entitlements.mac.plist",
   },
+  win: {
+    target: [
+      {
+        target: "zip",
+        arch: ["x64"],
+      },
+    ],
+  },
   afterSign: "scripts/notarize.js",
   electronUpdaterCompatibility: ">=2.16",
   dmg: {

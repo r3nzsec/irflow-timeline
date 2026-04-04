@@ -1,0 +1,65 @@
+name: Release Windows
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild better-sqlite3 for Electron (x64)
+        run: |
+          electron_version="$(node -p "require('./node_modules/electron/package.json').version")"
+          npx @electron/rebuild -f -w better-sqlite3 -v "${electron_version}" --arch x64
+
+      - name: Build Windows release
+        run: |
+          npm run build:renderer
+          npx electron-builder --win \
+            --config electron-builder.config.cjs \
+            --config.npmRebuild=false
+
+      - name: Collect release artifacts
+        id: artifacts
+        run: |
+          pkg_version="$(node -p "require('./package.json').version")"
+
+          zip_path="$(find release -maxdepth 1 -type f -name "*${pkg_version}*.zip" | sort | head -n 1)"
+          yml_path="release/latest.yml"
+
+          echo "zip=${zip_path}" >> "${GITHUB_OUTPUT}"
+          echo "yml=${yml_path}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-${{ github.ref_name }}
+          path: |
+            ${{ steps.artifacts.outputs.zip }}
+            ${{ steps.artifacts.outputs.yml }}
+          if-no-files-found: error
