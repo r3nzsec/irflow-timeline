@@ -7,6 +7,9 @@ const FILTER_HEIGHT = 28;
 const OVERSCAN = 20;
 const VIRTUAL_WINDOW = 10000;   // rows to fetch per SQL query window
 const VIRTUAL_AHEAD = 2000;     // trigger re-fetch when within this many rows of edge
+// Chromium/Electron hit layout/scroll precision limits around ~16.7M px tall elements.
+// Keep the physical scroll rail below that and map it back to the full logical row space.
+const MAX_VIRTUAL_SCROLL_HEIGHT = (16 * 1024 * 1024) - 4096;
 const QUERY_DEBOUNCE = 500;
 const DETAIL_PANEL_HEIGHT_DEFAULT = 200;
 const DETAIL_PANEL_MIN_HEIGHT = 80;
@@ -1497,7 +1500,17 @@ export default function App() {
   const scrollFetchTimer = useRef(null);
   useEffect(() => {
     if (!ct || !ct.dataReady || isGrouped) return;
-    const scrollRow = Math.floor(scrollTop / ROW_HEIGHT);
+    const viewH = scrollRef.current?.clientHeight || Math.max(0, viewportH - 190);
+    const total = ct?.totalFiltered || 0;
+    const logicalTotalH = total * ROW_HEIGHT;
+    const useBoundedScroll = logicalTotalH > MAX_VIRTUAL_SCROLL_HEIGHT;
+    const scrollTrackH = useBoundedScroll ? MAX_VIRTUAL_SCROLL_HEIGHT : logicalTotalH;
+    const maxPhysicalScroll = Math.max(0, scrollTrackH - viewH);
+    const maxLogicalScroll = Math.max(0, logicalTotalH - viewH);
+    const effectiveScrollTop = (useBoundedScroll && maxPhysicalScroll > 0)
+      ? Math.min(maxLogicalScroll, (scrollTop / maxPhysicalScroll) * maxLogicalScroll)
+      : scrollTop;
+    const scrollRow = Math.floor(effectiveScrollTop / ROW_HEIGHT);
     const windowEnd = (ct.rowOffset || 0) + (ct.rows?.length || 0);
     const needsFetch = scrollRow < (ct.rowOffset || 0) + VIRTUAL_AHEAD
       || scrollRow + 60 > windowEnd - VIRTUAL_AHEAD;
@@ -1505,7 +1518,7 @@ export default function App() {
     if (!needsFetch || (ct.rows?.length || 0) >= (ct.totalFiltered || 0)) return;
     if (scrollFetchTimer.current) clearTimeout(scrollFetchTimer.current);
     scrollFetchTimer.current = setTimeout(() => fetchData(ct, scrollRow), 50);
-  }, [scrollTop, ct?.rowOffset, ct?.rows?.length, ct?.totalFiltered, isGrouped]);
+  }, [scrollTop, ct?.rowOffset, ct?.rows?.length, ct?.totalFiltered, isGrouped, viewportH]);
 
   // ── Group expand/collapse (multi-level) ─────────────────────────
   const expandGroup = useCallback(async (pathKey, parentFilters, depth) => {
@@ -2345,11 +2358,19 @@ export default function App() {
   const detailVisible = detailPanelOpen && selectedRowData !== null;
   const totalCount = isGrouped ? displayRows.length : (ct?.totalFiltered || 0);
   const rowOffset = ct?.rowOffset || 0;
-  const totalH = totalCount * ROW_HEIGHT;
+  const logicalTotalH = totalCount * ROW_HEIGHT;
   // Use actual scroll container height when available (adapts to zoom/resize), fall back to estimate
   const vh = (scrollRef.current?.clientHeight || (viewportH - 190)) - (detailVisible ? detailPanelHeight : 0);
-  const si = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
-  const ei = Math.min(totalCount, Math.ceil((scrollTop + vh) / ROW_HEIGHT) + OVERSCAN);
+  const useBoundedVirtualScroll = logicalTotalH > MAX_VIRTUAL_SCROLL_HEIGHT;
+  const scrollTrackH = useBoundedVirtualScroll ? MAX_VIRTUAL_SCROLL_HEIGHT : logicalTotalH;
+  const maxPhysicalScroll = Math.max(0, scrollTrackH - vh);
+  const maxLogicalScroll = Math.max(0, logicalTotalH - vh);
+  const logicalScrollTop = (useBoundedVirtualScroll && maxPhysicalScroll > 0)
+    ? Math.min(maxLogicalScroll, (scrollTop / maxPhysicalScroll) * maxLogicalScroll)
+    : scrollTop;
+  const si = Math.max(0, Math.floor(logicalScrollTop / ROW_HEIGHT) - OVERSCAN);
+  const ei = Math.min(totalCount, Math.ceil((logicalScrollTop + vh) / ROW_HEIGHT) + OVERSCAN);
+  const visibleStartAi = isGrouped ? si : Math.max(si, rowOffset);
   // For grouped mode: direct slice. For flat mode: map to windowed cache via rowOffset.
   const visible = useMemo(() => isGrouped
     ? displayRows.slice(si, ei)
@@ -2367,6 +2388,17 @@ export default function App() {
     }
     return indices;
   }, [isGrouped, visible.length, si, ei, rowOffset, rows.length]);
+  const renderWindowH = Math.max(0, (ei - si) * ROW_HEIGHT);
+  const renderBaseTopUnclamped = scrollTop - (logicalScrollTop - (si * ROW_HEIGHT));
+  const renderBaseTop = Math.max(0, Math.min(renderBaseTopUnclamped, Math.max(0, scrollTrackH - renderWindowH)));
+  const rowTopForIndex = (absIdx) => renderBaseTop + ((absIdx - si) * ROW_HEIGHT);
+  const physicalScrollTopForLogical = (logicalTop) => {
+    if (!useBoundedVirtualScroll || maxPhysicalScroll <= 0 || maxLogicalScroll <= 0) {
+      return Math.max(0, logicalTop);
+    }
+    const clamped = Math.max(0, Math.min(logicalTop, maxLogicalScroll));
+    return (clamped / maxLogicalScroll) * maxPhysicalScroll;
+  };
 
   const compiledColors = useMemo(() => compileColorRules(ct?.colorRules || []), [ct?.colorRules]);
   const gw = (col) => ct?.columnWidths[col] || 150;
@@ -2478,10 +2510,10 @@ export default function App() {
     if (!scrollRef.current) return;
     const top = idx * ROW_HEIGHT;
     const bot = top + ROW_HEIGHT;
-    const curTop = scrollRef.current.scrollTop;
+    const curTop = logicalScrollTop;
     const viewH = scrollRef.current.clientHeight;
-    if (top < curTop) scrollRef.current.scrollTop = top;
-    else if (bot > curTop + viewH) scrollRef.current.scrollTop = bot - viewH;
+    if (top < curTop) scrollRef.current.scrollTop = physicalScrollTopForLogical(top);
+    else if (bot > curTop + viewH) scrollRef.current.scrollTop = physicalScrollTopForLogical(bot - viewH);
   };
 
   const navigateSearch = (dir) => {
@@ -2753,7 +2785,7 @@ export default function App() {
           // Position near the selected row using the scroll container
           const scrollEl = scrollRef.current;
           const rect = scrollEl ? scrollEl.getBoundingClientRect() : { left: 200, top: 200 };
-          const yPos = rect.top + (lastClickedRow * ROW_HEIGHT) - (scrollEl ? scrollEl.scrollTop : 0) + HEADER_HEIGHT + FILTER_HEIGHT + ROW_HEIGHT / 2;
+          const yPos = rect.top + rowTopForIndex(lastClickedRow) - (scrollEl ? scrollEl.scrollTop : 0) + HEADER_HEIGHT + FILTER_HEIGHT + ROW_HEIGHT / 2;
           setRowContextMenu({ x: rect.left + 100, y: Math.min(Math.max(yPos, rect.top + 40), window.innerHeight - 300), rowId: row.__idx, rowIndex: lastClickedRow, currentTags: rTags, row });
         }
       }
@@ -4212,9 +4244,9 @@ export default function App() {
               </div>
 
               {/* Virtual rows */}
-              <div style={{ height: totalH, position: "relative" }}>
+              <div style={{ height: scrollTrackH, position: "relative" }}>
                 {visible.map((item, vi) => {
-                  const ai = si + vi;
+                  const ai = visibleStartAi + vi;
 
                   // ── Grouped mode: group header ──
                   if (isGrouped && item.type === "group") {
@@ -4223,7 +4255,7 @@ export default function App() {
                     const gcs = isExpanded ? getGroupCheckState(ai, item.depth) : null;
                     return (
                       <div key={`g-${item.pathKey}`} onClick={() => isExpanded ? collapseGroup(item.pathKey) : expandGroup(item.pathKey, item.filters, item.depth + 1)}
-                        style={{ display: "flex", alignItems: "center", height: ROW_HEIGHT, position: "absolute", top: ai * ROW_HEIGHT, width: tw, background: th.bgAlt, cursor: "pointer", borderBottom: `1px solid ${th.border}`, paddingLeft: indent, gap: 8 }}>
+                        style={{ display: "flex", alignItems: "center", height: ROW_HEIGHT, position: "absolute", top: rowTopForIndex(ai), width: tw, background: th.bgAlt, cursor: "pointer", borderBottom: `1px solid ${th.border}`, paddingLeft: indent, gap: 8 }}>
                         {isExpanded && gcs && gcs.total > 0 && (
                           <div onClick={(e) => { e.stopPropagation(); handleGroupSelectAll(ai); }}
                             style={{ display: "flex", alignItems: "center", cursor: "pointer", flexShrink: 0 }}>
@@ -4245,7 +4277,7 @@ export default function App() {
                     const indent = (item.depth || 0) * 20 + 32;
                     const remaining = item.total - item.loaded;
                     return (
-                      <div key={`m-${item.pathKey}`} style={{ height: ROW_HEIGHT, position: "absolute", top: ai * ROW_HEIGHT, display: "flex", alignItems: "center", paddingLeft: indent, color: th.textMuted, fontSize: 11, fontFamily: "-apple-system, sans-serif", gap: 8 }}>
+                      <div key={`m-${item.pathKey}`} style={{ height: ROW_HEIGHT, position: "absolute", top: rowTopForIndex(ai), display: "flex", alignItems: "center", paddingLeft: indent, color: th.textMuted, fontSize: 11, fontFamily: "-apple-system, sans-serif", gap: 8 }}>
                         <span style={{ fontStyle: "italic" }}>Showing {formatNumber(item.loaded)} of {formatNumber(item.total)}</span>
                         <button onClick={() => loadMoreGroupRows(item.pathKey, false)}
                           style={{ background: th.accent + "22", color: th.accent, border: `1px solid ${th.accent}44`, borderRadius: 3, padding: "1px 8px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>
@@ -4274,7 +4306,7 @@ export default function App() {
                   return (
                     <div key={row.__idx} data-row-id={row.__idx} data-row-index={ai} onClick={(e) => handleRowClick(ai, e)}
                       onContextMenu={(e) => { e.preventDefault(); setRowContextMenu({ x: e.clientX, y: e.clientY, rowId: row.__idx, rowIndex: ai, currentTags: rTags, row }); }}
-                      style={{ display: "flex", height: ROW_HEIGHT, position: "absolute", top: ai * ROW_HEIGHT, width: tw,
+                      style={{ display: "flex", height: ROW_HEIGHT, position: "absolute", top: rowTopForIndex(ai), width: tw,
                         background: rowBg, color: cm ? cm.fg : th.text, borderBottom: `1px solid ${th.cellBorder}`,
                         boxShadow: sel ? `inset 2px 0 0 0 ${th.borderAccent}` : "none", cursor: "default",
                         paddingLeft: isGrouped ? 16 : 0 }}>
@@ -4358,7 +4390,7 @@ export default function App() {
                 })}
                 {/* Skeleton placeholder rows shown during fast scroll when data is loading */}
                 {skeletonIndices.length > 0 && skeletonIndices.map((ai) => (
-                  <div key={`sk-${ai}`} style={{ display: "flex", alignItems: "center", height: ROW_HEIGHT, position: "absolute", top: ai * ROW_HEIGHT, width: tw, borderBottom: `1px solid ${th.cellBorder}`, background: ai % 2 === 0 ? th.rowEven : th.rowOdd, gap: 12, paddingLeft: BKMK_COL_WIDTH + tagColWidth + 8 }}>
+                  <div key={`sk-${ai}`} style={{ display: "flex", alignItems: "center", height: ROW_HEIGHT, position: "absolute", top: rowTopForIndex(ai), width: tw, borderBottom: `1px solid ${th.cellBorder}`, background: ai % 2 === 0 ? th.rowEven : th.rowOdd, gap: 12, paddingLeft: BKMK_COL_WIDTH + tagColWidth + 8 }}>
                     <div style={{ width: 50, height: 8, background: th.border, borderRadius: 3 }} />
                     <div style={{ width: 130, height: 8, background: th.border, borderRadius: 3 }} />
                     <div style={{ width: 40, height: 8, background: th.border, borderRadius: 3 }} />
