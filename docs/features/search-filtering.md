@@ -31,7 +31,7 @@ power*              → prefix match: powershell, powerpoint, etc.
 Best for: Fast keyword searches across large datasets.
 
 ::: info FTS Index
-The FTS index is built lazily on first search. Building processes 100,000 rows per chunk asynchronously so the UI remains responsive. If the index isn't ready yet, the search transparently falls back to LIKE mode.
+The FTS index is built lazily on first search. Building processes 300,000 rows per chunk asynchronously so the UI remains responsive. If the index isn't ready yet, the search transparently falls back to LIKE mode.
 :::
 
 ### LIKE (Substring)

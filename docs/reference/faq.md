@@ -110,7 +110,7 @@ The UI remains interactive during import. You can continue working in other tabs
 
 ### Search returns no results even though the data exists
 
-The full-text search (FTS) index builds in the background after import. If you search before it completes, the app falls back to LIKE-based search, which may miss some matches. Check the toolbar for the FTS build progress indicator. Once it shows complete, FTS search will return comprehensive results.
+The full-text search (FTS) index builds in the background after import. If you search before it completes, the app falls back to LIKE-based matching. Most searches still work, but advanced full-text behavior can differ slightly until indexing finishes. Check the toolbar for the FTS build progress indicator. Once it shows complete, FTS search will return its full behavior and performance.
 
 ### The app uses a lot of disk space
 
