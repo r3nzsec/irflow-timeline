@@ -56,3 +56,21 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+{
+  "id": "6a359df138c442b385d20140d4d96919",
+  "name": "Example Ruleset",
+  "description": "Description of Example Ruleset",
+  "kind": "custom",
+  "version": "2",
+  "phase": "http_request_firewall_custom",
+  "rules": [
+    {
+      "id": "fdb0dd271f3f40b19679cc5d91396024",
+      "version": "2",
+      "action": "block",
+      "expression": "cf.zone.name eq \"example.com\" ",
+      "last_updated": "2022-07-20T10:44:29.124515Z"
+    }
+  ],
+  "last_updated": "2022-07-20T10:44:29.124515Z"
+}
