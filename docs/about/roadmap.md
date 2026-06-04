@@ -19,8 +19,8 @@ This page outlines the planned direction for IRFlow Timeline. Priorities may shi
 ## Planned
 
 ### Cross-Platform Support
-- **Windows** and **Linux** builds to make IRFlow Timeline available beyond macOS
-- Platform-specific packaging (MSI/EXE for Windows, AppImage/deb for Linux)
+- **Windows** installer (NSIS `.exe` + portable) to make IRFlow Timeline fully cross-platform
+- ✅ **Linux** builds (AppImage + `.deb`, x86_64 and arm64) — shipped in v1.0.6 via the [multi-OS fork](https://github.com/jo3rg/irflow-timeline-multios)
 
 ### Timeline Diffing
 - Compare two timelines or sessions side by side

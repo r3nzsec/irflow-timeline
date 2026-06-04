@@ -136,7 +136,7 @@ Produce the raw data exports that support your report narrative.
 
 The HTML report is a self-contained deliverable that combines summary statistics, tagged event tables, and bookmarked rows.
 
-1. Go to **Tools → Export → Generate Report** (or macOS **File → Generate Report…**, `Cmd+Shift+R`)
+1. Go to **Tools → Export → Generate Report** (or **File → Generate Report…** in the native menu, `Cmd+Shift+R` / `Ctrl+Shift+R`)
 2. Choose a save location (use a descriptive name like `incident-2026-0042-report.html`)
 3. The report opens in your browser and includes:
    - Summary cards with row counts, bookmark counts, and tag counts

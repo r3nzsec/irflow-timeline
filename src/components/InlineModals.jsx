@@ -265,7 +265,7 @@ export function ImportProgress({ th, info }) {
       <line x1="32" y1="20" x2="34.5" y2="20" stroke={th.accent} strokeWidth="1.2" opacity="0.7" strokeLinecap="round" />
     </svg>
     <div style={{ fontSize: 18, fontWeight: 700, color: th.text, fontFamily: "-apple-system, 'SF Pro Display', sans-serif", marginBottom: 2 }}>IRFlow <span style={{ color: th.accent }}>Timeline</span></div>
-    <p style={{ color: th.textMuted, fontSize: 12, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 28, fontFamily: "-apple-system, sans-serif" }}>DFIR Timeline Analysis for macOS</p>
+    <p style={{ color: th.textMuted, fontSize: 12, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 28, fontFamily: "-apple-system, sans-serif" }}>DFIR Timeline Analysis</p>
     {/* Progress */}
     <div style={{ width: 400, maxWidth: "100%" }}>
       <h3 style={{ color: th.text, fontSize: 16, marginBottom: 8, fontFamily: "-apple-system, sans-serif" }}>

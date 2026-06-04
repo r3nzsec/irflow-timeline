@@ -18,11 +18,11 @@ The settings capsule to the right of **File / View / Actions / Tools / Help** pr
 | **A − / +** | Decrease or increase grid font size (9–18px) |
 | **Histogram** icon | Show or hide the timeline histogram panel |
 
-These mirror the options under the macOS **Tools** menu described below.
+These mirror the options under the native **Tools** menu described below.
 
-## macOS application menu (Tools)
+## Native menu (Tools)
 
-The native **Tools** menu (top of the screen on macOS) includes additional items:
+The native **Tools** menu includes additional items. On macOS it lives at the top of the screen (in the system menu bar); on Linux and Windows it lives inside the app window. The items below are the same on every platform — the menu is the primary way to reach the items that don't have an in-window control.
 
 ### Datetime Format
 

@@ -20,7 +20,7 @@ IRFlow Timeline is built on the shoulders of incredible open source projects and
 | **React** | UI rendering | [facebook/react](https://github.com/facebook/react) |
 | **Vite** | Build tooling and hot-reload | [vitejs/vite](https://github.com/vitejs/vite) |
 | **VitePress** | Documentation site | [vuejs/vitepress](https://github.com/vuejs/vitepress) |
-| **electron-builder** | macOS DMG packaging | [electron-userland/electron-builder](https://github.com/electron-userland/electron-builder) |
+| **electron-builder** | macOS DMG + Linux AppImage / `.deb` packaging | [electron-userland/electron-builder](https://github.com/electron-userland/electron-builder) |
 | **bmc-tools** | RDP Bitmap Cache recovery | [ANSSI-FR/bmc-tools](https://github.com/ANSSI-FR/bmc-tools) |
 
 ## Inspiration
