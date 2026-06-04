@@ -1,0 +1,12 @@
+diff --git a/node_modules/yargs/package.json b/node_modules/yargs/package.json
+index 0000001..0000002 100644
+--- a/node_modules/yargs/package.json
++++ b/node_modules/yargs/package.json
+@@ -28,7 +28,6 @@
+       "./yargs"
+     ]
+   },
+-  "type": "module",
+   "module": "./index.mjs",
+   "contributors": [
+     {
