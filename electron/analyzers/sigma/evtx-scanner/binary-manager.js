@@ -159,12 +159,18 @@ function hayabusaAssetPattern(platform, arch) {
 function wrapDownloadError(err) {
   const msg = err?.message || String(err);
   if (/self.signed|DEPTH_ZERO_SELF_SIGNED|CERT_|unable to verify|certificate/i.test(msg)) {
+    // The hand-off path the user is told to drop the manual binary into is
+    // app.getPath("userData") on every platform; the OS-prefix string below just
+    // describes where that lands in human-readable form. Keeping it platform-aware
+    // means an analyst on Linux doesn't get told to look in ~/Library.
+    let userDataHint;
+    try { userDataHint = app.getPath("userData"); } catch { userDataHint = "<userData>"; }
     return new Error(
       "Failed to download Hayabusa: your network uses TLS inspection (self-signed certificate in chain). " +
       "Hayabusa is bundled with the app — if you see this the bundled binary could not be located. " +
       "Try restarting the app; if the problem persists, manually install Hayabusa from " +
       "https://github.com/Yamato-Security/hayabusa/releases and place it at " +
-      "~/Library/Application Support/irflow-timeline/hayabusa/hayabusa."
+      `${userDataHint}/hayabusa/hayabusa${process.platform === "win32" ? ".exe" : ""}.`
     );
   }
   if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|network/i.test(msg)) {

@@ -132,7 +132,9 @@ function createUpdateController({ getWindow, sendStatus }) {
       detail: [
         `Expected config: ${getUpdateConfigPath()}`,
         "",
-        "To enable in-app updates, publish signed macOS builds with a zip target and app-update.yml/latest-mac.yml metadata.",
+        "To enable in-app updates, publish a signed build with a platform-appropriate",
+        "target (mac: zip + app-update.yml/latest-mac.yml, win: nupkg + latest.yml,",
+        "linux: AppImage + latest-linux.yml) and point this build at its feed URL.",
       ].join("\n"),
       buttons: ["OK"],
     });

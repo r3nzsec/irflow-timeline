@@ -25,6 +25,29 @@ const { loadTempDirSetting, saveTempDirSetting, isUsable } = require("./utils/te
 function buildMenu(deps) {
   const { mainWindow, loadRecentFiles, saveRecentFiles, enqueueImport, safeSend, activeWindow, updateController, onTempDirChanged } = deps;
 
+  // On macOS the first menu is the application menu (with `about`, `services`, `hide`,
+  // `hideOthers`, `unhide`, `quit` roles that are darwin-only). On Linux/Windows those
+  // roles are invalid; the conventional alternative is to surface About/Quit inside the
+  // File menu. Keeping the per-platform split in one place keeps the rest of the
+  // template (File / Edit / Tools / View / Window / Help) shared.
+  const IS_MAC = process.platform === "darwin";
+  const appMenu = IS_MAC
+    ? {
+        label: "IRFlow Timeline",
+        submenu: [
+          { role: "about" },
+          { type: "separator" },
+          { role: "services" },
+          { type: "separator" },
+          { role: "hide" },
+          { role: "hideOthers" },
+          { role: "unhide" },
+          { type: "separator" },
+          { role: "quit" },
+        ],
+      }
+    : null;
+
   // Build recent files submenu
   const recentFiles = loadRecentFiles();
   const recentSubmenu = recentFiles.length > 0
@@ -50,23 +73,16 @@ function buildMenu(deps) {
     : [{ label: "No Recent Files", enabled: false }];
 
   const template = [
-    {
-      label: "IRFlow Timeline",
-      submenu: [
-        { role: "about" },
-        { type: "separator" },
-        { role: "services" },
-        { type: "separator" },
-        { role: "hide" },
-        { role: "hideOthers" },
-        { role: "unhide" },
-        { type: "separator" },
-        { role: "quit" },
-      ],
-    },
+    ...(appMenu ? [appMenu] : []),
     {
       label: "File",
       submenu: [
+        ...(IS_MAC
+          ? []
+          : [
+              { role: "about" },
+              { type: "separator" },
+            ]),
         {
           label: "Open...",
           accelerator: "CmdOrCtrl+O",
@@ -111,6 +127,12 @@ function buildMenu(deps) {
         },
         { type: "separator" },
         { role: "close" },
+        ...(IS_MAC
+          ? []
+          : [
+              { type: "separator" },
+              { role: "quit" },
+            ]),
       ],
     },
     {
@@ -259,7 +281,11 @@ function buildMenu(deps) {
     },
     {
       label: "Window",
-      submenu: [{ role: "minimize" }, { role: "zoom" }, { type: "separator" }, { role: "front" }],
+      submenu: [
+        { role: "minimize" },
+        { role: "zoom" },
+        ...(IS_MAC ? [{ type: "separator" }, { role: "front" }] : []),
+      ],
     },
     {
       label: "Help",
