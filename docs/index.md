@@ -1,6 +1,6 @@
 ---
 layout: home
-description: High-performance DFIR timeline analysis tool for macOS — search, visualize, and investigate 30GB+ forensic timelines.
+description: High-performance DFIR timeline analysis for macOS, Linux, and Windows — search, visualize, and investigate 30GB+ forensic timelines.
 
 hero:
   name: IRFlow Timeline
@@ -64,11 +64,11 @@ features:
 
 ## What is IRFlow Timeline?
 
-IRFlow Timeline is a native macOS application purpose-built for digital forensics and incident response (DFIR) investigators. Inspired by Eric Zimmerman's Timeline Explorer for Windows, it brings high-performance timeline analysis to macOS with a modern interface and advanced analytics.
+IRFlow Timeline is a native desktop application for digital forensics and incident response (DFIR) investigators, available on macOS, Linux, and (planned) Windows. Inspired by Eric Zimmerman's Timeline Explorer for Windows, it brings high-performance timeline analysis to every analyst's host OS with a modern interface and advanced analytics.
 
 ### Who Is This For?
 
-- **Incident Responders** — reconstruct kill chains across endpoints on macOS, no Windows VM required
+- **Incident Responders** — reconstruct kill chains across Windows endpoints from your macOS or Linux host, no Windows VM required
 - **SOC Analysts** — triage KAPE collections and hunt through millions of event log entries at native speed
 - **Forensic Examiners** — correlate MFT, Prefetch, Amcache, and registry artifacts in a single unified timeline
 - **Threat Hunters** — detect lateral movement patterns, stack column values, and sweep IOC lists across your environment

@@ -80,7 +80,7 @@ Timeline-wide analytics that work on any imported tab (CSV, EVTX, XLSX, Plaso, e
 
 #### Platforms
 
-Platform-specific analyzers are grouped under collapsible OS sections. **Windows** is fully enabled today; **Linux**, **macOS**, and **Cloud** list upcoming analyzers as disabled menu placeholders until those platforms ship in a future release.
+Platform-specific analyzers are grouped under collapsible OS sections. **Windows** is fully enabled today with EVTX, $MFT, $J, RDP, and process-tree analyzers. The **Linux** and **macOS** groups list upcoming OS-specific analyzers as disabled menu placeholders (the app itself runs on both platforms — only the dedicated per-OS analyzers are still planned). **Cloud** likewise lists upcoming cloud-log analyzers.
 
 ![Tools Platforms section expanded showing Windows tools active and Linux, macOS, and Cloud placeholder groups](/dfir-tips/Platform-PLaceholders.png)
 
@@ -117,12 +117,12 @@ See [NTFS Analysis](/features/ntfs-analysis) for the MFT and USN Journal tools.
 
 To the right of the menu capsule, the **settings toolbar** mirrors common [Preferences](/reference/preferences):
 
-- **Datetime format** and **timezone** dropdowns (same options as macOS **Tools** menu)
-- **Theme toggle** — **☀ / 🌙** button (dark/light); also available as **Tools → Theme** on the macOS menu bar
-- **Font size** — **− / +** with live px readout; **Cmd+Plus** / **Cmd+-** via macOS **Tools → Font Size**
-- **Histogram** — bar-chart icon toggles the timeline panel (also **Tools → Toggle Histogram** on the macOS menu bar)
+- **Datetime format** and **timezone** dropdowns (same options as the native **Tools** menu)
+- **Theme toggle** — **☀ / 🌙** button (dark/light); also available as **Tools → Theme** in the native menu (top of screen on macOS, in-window on Linux/Windows)
+- **Font size** — **− / +** with live px readout; **Cmd+Plus** / **Cmd+-** via the native **Tools → Font Size**
+- **Histogram** — bar-chart icon toggles the timeline panel (also **Tools → Toggle Histogram** in the native menu)
 
-Temp storage for large imports is configured only on the macOS menu bar: **Tools → Set Temp Storage Folder…** (see [Performance Tips](/reference/performance-tips#temp-storage-folder)).
+Temp storage for large imports is configured in the native **Tools** menu: **Tools → Set Temp Storage Folder…** (see [Performance Tips](/reference/performance-tips#temp-storage-folder)).
 
 ## How It Works
 

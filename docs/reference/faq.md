@@ -1,14 +1,14 @@
 ---
-description: FAQ and troubleshooting for IRFlow Timeline — common questions about macOS compatibility, licensing, and usage.
+description: FAQ and troubleshooting for IRFlow Timeline — common questions about platform support (macOS, Linux, Windows), licensing, and usage.
 ---
 
 # FAQ & Troubleshooting
 
 ## General Questions
 
-### Why is IRFlow Timeline macOS only?
+### Which platforms does IRFlow Timeline support?
 
-IRFlow Timeline was born out of the frustration of needing to boot a Windows VM just to use Timeline Explorer for triage. It is built as a native macOS Electron app to provide first-class performance on the platform most DFIR analysts use daily. Windows and Linux support may be considered in the future — see the [Roadmap](/about/roadmap).
+IRFlow Timeline runs on **macOS** (Intel and Apple Silicon, via a universal DMG), **Linux** (AppImage + `.deb`, x86_64 and arm64), and **Windows** (planned for a future release — see the [Roadmap](/about/roadmap)). The project started on macOS and was ported to Linux by the community.
 
 ### Is IRFlow Timeline free and open source?
 
@@ -22,7 +22,7 @@ IRFlow Timeline has been tested with files exceeding **30 GB** and **150 million
 
 IRFlow Timeline is inspired by Eric Zimmerman's Timeline Explorer but adds capabilities beyond a data viewer:
 
-- Runs natively on macOS (Intel and Apple Silicon)
+- Runs natively on macOS (Intel and Apple Silicon) and Linux (x86_64 / arm64)
 - Dual-engine Sigma detection (Hayabusa + in-app JS Sigma)
 - Process Inspector with MITRE ATT&CK detection rules
 - Lateral Movement Tracker with interactive network graphs

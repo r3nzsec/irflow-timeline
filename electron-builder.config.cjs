@@ -37,6 +37,28 @@ const config = {
     entitlements: "entitlements.mac.plist",
     entitlementsInherit: "entitlements.mac.plist",
   },
+  linux: {
+    // Distribute as a portable AppImage (no install required, runs on most modern
+    // distros) plus a .deb for Debian/Ubuntu/Mint/Pop!_OS installs. The userData
+    // directory is system-standard (XDG ~/.config), and the Hayabusa binary bundled
+    // into extraResources needs +x (asarUnpack handles the native module).
+    // electron-builder's `linux.icon` only accepts a single string — the filename
+    // MUST contain the icon size (e.g. 512x512.png) so the builder can pick the
+    // right size per target (AppImage squashfs wants 256+, deb wants 256+).
+    icon: "assets/512x512.png",
+    category: "Development",
+    target: [
+      { target: "AppImage", arch: ["x64", "arm64"] },
+      { target: "deb", arch: ["x64", "arm64"] },
+    ],
+    // Make the AppImage and deb self-contained: the bundled Hayabusa binary writes
+    // its config / rule cache under userData, so it needs rwx on its own dir, not
+    // the read-only /opt tree. extraResources is unpacked by default on Linux.
+    executableName: "irflow-timeline",
+    artifactName: "IRFlow-Timeline-${version}-${arch}.${ext}",
+    synopsis: "DFIR Timeline Analysis",
+    description: "High-performance DFIR timeline viewer for CSV, TSV, XLSX, EVTX, Plaso, $MFT, and $J files.",
+  },
   afterSign: "scripts/notarize.js",
   electronUpdaterCompatibility: ">=2.16",
   dmg: {

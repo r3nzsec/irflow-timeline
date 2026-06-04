@@ -376,15 +376,17 @@ app.on("open-file", (event, filePath) => {
 });
 
 // ── Window ─────────────────────────────────────────────────────────
+// BrowserWindow options for the macOS "hiddenInset" title bar (translucent vibrancy
+// + traffic-light placement) are only valid on darwin — passing them on Linux/Windows
+// logs warnings and silently disables them. Gate them so non-mac builds get a clean
+// cross-platform window with the standard OS chrome.
+const IS_MAC = process.platform === "darwin";
 function createWindow() {
-  mainWindow = new BrowserWindow({
+  const baseOptions = {
     width: 1500,
     height: 950,
     minWidth: 900,
     minHeight: 600,
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 16, y: 16 },
-    vibrancy: "under-window",
     backgroundColor: "#0f1114",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -395,7 +397,15 @@ function createWindow() {
       allowRunningInsecureContent: false,
     },
     show: false,
-  });
+  };
+  const macOptions = IS_MAC
+    ? {
+        titleBarStyle: "hiddenInset",
+        trafficLightPosition: { x: 16, y: 16 },
+        vibrancy: "under-window",
+      }
+    : {};
+  mainWindow = new BrowserWindow({ ...baseOptions, ...macOptions });
 
   const isDev = !app.isPackaged && process.env.TLE_DEV_SERVER === "1";
 

@@ -1,9 +1,12 @@
 {
   "name": "irflow-timeline",
   "version": "1.0.6",
-  "description": "IRFlow Timeline — High-performance DFIR timeline viewer for macOS (30-50GB+ CSV/XLSX)",
+  "description": "IRFlow Timeline — High-performance DFIR timeline viewer (30-50GB+ CSV/XLSX/EVTX/Plaso/$MFT/$J) for macOS, Linux, and Windows",
   "main": "electron/main.js",
-  "author": "DFIR Community",
+  "author": {
+    "name": "DFIR Community",
+    "email": "[email protected]"
+  },
   "license": "Apache-2.0",
   "scripts": {
     "dev": "concurrently \"vite\" \"TLE_DEV_SERVER=1 wait-on http://localhost:5173 && TLE_DEV_SERVER=1 electron .\"",
@@ -17,6 +20,9 @@
     "dist:smoke": "npm run bundle:tools && npm run build:renderer && SKIP_NOTARIZE=1 CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config electron-builder.config.cjs --mac",
     "dist:dmg": "npm run bundle:tools && npm run build:renderer && electron-builder --config electron-builder.config.cjs --mac dmg",
     "dist:universal": "npm run bundle:tools && npm run build:renderer && electron-builder --config electron-builder.config.cjs --mac --universal",
+    "dist:linux": "npm run bundle:tools && npm run build:renderer && electron-builder --config electron-builder.config.cjs --linux",
+    "dist:appimage": "npm run bundle:tools && npm run build:renderer && electron-builder --config electron-builder.config.cjs --linux AppImage",
+    "dist:deb": "npm run bundle:tools && npm run build:renderer && electron-builder --config electron-builder.config.cjs --linux deb",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "postinstall": "patch-package",
     "docs:dev": "vitepress dev docs",
@@ -41,12 +47,17 @@
   "dependencies": {
     "@ts-evtx/core": "^1.1.1",
     "@ts-evtx/messages": "^1.1.1",
-    "better-sqlite3": "^11.7.0",
+    "better-sqlite3": "^12.4.1",
     "csv-parser": "^3.0.0",
     "electron-updater": "^6.6.7",
     "exceljs": "^4.4.0",
     "js-yaml": "^4.1.1",
     "xlsx": "file:vendor/xlsx-0.20.3.tgz",
     "zustand": "^5.0.12"
+  },
+  "overrides": {
+    "better-sqlite3": "^12.4.1",
+    "yargs": "17.5.1",
+    "yargs-parser": "21.1.1"
   }
 }

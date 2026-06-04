@@ -3,7 +3,7 @@
 
 https://github.com/user-attachments/assets/d0a94f52-8b2a-4735-bd01-c55e2459f7b4
 
-A high-performance native macOS application for DFIR timeline analysis. Built on Electron + SQLite to handle millions of rows from CSV, TSV, XLSX, EVTX, Plaso, raw `$MFT`, and `$J` (`$UsnJrnl`) files without breaking a sweat.
+A high-performance native DFIR timeline analysis tool, originally written for macOS and now ported to Linux (Windows builds planned). Built on Electron + SQLite to handle millions of rows from CSV, TSV, XLSX, EVTX, Plaso, raw `$MFT`, and `$J` (`$UsnJrnl`) files without breaking a sweat.
 
 Inspired by Eric Zimmerman's Timeline Explorer for Windows.
 
@@ -23,25 +23,32 @@ For the full feature list and documentation, visit the **[IRFlow Timeline Docs](
 ## Building from Source
 
 **Prerequisites (for developers only):**
-- Node.js 18+: `brew install node`
-- Xcode CLI tools: `xcode-select --install` (for native module compilation)
-- macOS 11+ (Big Sur or later)
+- Node.js 18+
+- `python3` (for `node-gyp` compiling `better-sqlite3`)
+- macOS 11+ (Big Sur or later) **or** a modern Linux distro (Ubuntu 20.04+, Debian 11+, Arch, Fedora, etc.)
+- **macOS:** Xcode CLI tools: `xcode-select --install`
+- **Linux:** standard `dpkg` / `fakeroot` (for the deb target; AppImage doesn't need them) and the usual X11/Wayland libs Electron already ships
 
 ```bash
-git clone https://github.com/r3nzsec/irflow-timeline.git
-cd irflow-timeline
+git clone https://github.com/jo3rg/irflow-timeline-multios.git   # this fork
+cd irflow-timeline-multios
 npm install
 npx electron-rebuild -f -w better-sqlite3
 
 # Development (hot-reload)
 npm run dev
 
-# Build + launch
+# Build + launch (renderer bundle + run)
 npm run start
 
-# Package as universal DMG
-npm run dist:universal
+# Platform-specific packaging:
+npm run dist:universal   # macOS: universal (Intel + Apple Silicon) DMG
+npm run dist:linux       # Linux: AppImage + deb for host arch
+npm run dist:appimage    # Linux: AppImage only
+npm run dist:deb         # Linux: deb only
 ```
+
+The interactive `build.sh` wrapper picks the right choices for your host OS (mac menus vs. Linux AppImage/deb menus).
 
 Output in `release/`.
 
