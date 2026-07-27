@@ -4,6 +4,21 @@ description: IRFlow Timeline changelog — version history, new features, perfor
 
 # Changelog
 
+## v1.0.9 — July 27, 2026
+
+### Large EVTX Imports
+
+- **Fixed issue #22** — Raw EVTX files no longer use Node's whole-file read path, eliminating the 2 GiB Buffer failure seen on large `Security.evtx` files
+- **Bounded 64 KiB parsing** — Reads the EVTX header once and processes one native EVTX chunk at a time, keeping memory use stable as the source grows
+- **Approximately 4 GiB support** — Supports the EVTX format's 65,535-chunk ceiling, including the reported 4,109,438,976-byte (~3.83 GiB) log
+- **Better progress reporting** — Large-file progress tracks physical chunk offsets
+
+### Import Reliability
+
+- Duplicate requests for the same pending file are suppressed without blocking distinct workbook-sheet or AI-history-scope imports
+- Repeated identical failures collapse into one retryable notification instead of stacking across the screen
+- Added an exact-size issue #22 regression plus real multi-gigabyte EVTX validation
+
 ## v1.0.8 — July 27, 2026
 
 ### AI Application Forensics

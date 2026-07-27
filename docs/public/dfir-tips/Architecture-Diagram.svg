@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1190" role="img" aria-labelledby="title desc">
   <title id="title">IRFlow Timeline current architecture</title>
-  <desc id="desc">IRFlow Timeline v1.0.8 architecture with a semantic color system: orange = UI/output surface, violet = secure IPC bridge, blue = orchestration and network, amber = ingestion and compute, green = data and persistence, red = forensic detection. Shows the React renderer, preload bridge, Electron main services with grouped IPC, a worker-thread pool, the SQLite data engine with analyzers (including AI history parsers and AI Secret Hunt), the dual Sigma/Hayabusa detection engine, streaming parsers, and side connectors for evidence, external tools, network, state, and outputs.</desc>
+  <desc id="desc">IRFlow Timeline v1.0.9 architecture with a semantic color system: orange = UI/output surface, violet = secure IPC bridge, blue = orchestration and network, amber = ingestion and compute, green = data and persistence, red = forensic detection. Shows the React renderer, preload bridge, Electron main services with grouped IPC, a worker-thread pool, the SQLite data engine with analyzers (including AI history parsers and AI Secret Hunt), the dual Sigma/Hayabusa detection engine, streaming parsers, and side connectors for evidence, external tools, network, state, and outputs.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#0b1016"/>
@@ -76,9 +76,9 @@
   <circle cx="140" cy="1090" r="200" fill="rgba(232,93,42,0.035)"/>
 
   <text x="220" y="56" class="title">IRFlow Timeline Architecture</text>
-  <text x="220" y="82" class="subtitle">Modular v1.0.8 codebase — focused renderer + main-process modules.</text>
+  <text x="220" y="82" class="subtitle">Modular v1.0.9 codebase — focused renderer + main-process modules.</text>
   <rect x="220" y="96" width="190" height="24" class="badge"/>
-  <text x="315" y="112" text-anchor="middle" class="tiny">v1.0.8 workspace snapshot</text>
+  <text x="315" y="112" text-anchor="middle" class="tiny">v1.0.9 workspace snapshot</text>
 
   <!-- ============ LEFT SIDE BOXES ============ -->
   <rect x="40" y="150" width="152" height="212" class="side" stroke="#d29922" stroke-opacity="0.55" filter="url(#shadow)"/>

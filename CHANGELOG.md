@@ -5,6 +5,23 @@ All notable changes to IRFlow Timeline. The macOS release workflow
 released version as the GitHub release notes — keep version headers in the form
 `## v<MAJOR.MINOR.PATCH>`.
 
+## v1.0.9
+
+IRFlow Timeline 1.0.9 is a focused reliability patch for large Windows Event Log investigations.
+
+### Large EVTX Imports
+
+- **Issue #22 fixed** — Raw EVTX files are no longer opened through Node's whole-file `readFile()` path, removing the 2 GiB Buffer ceiling that rejected large `Security.evtx` files before the first record was parsed.
+- **Bounded native chunk parsing** — Reads the 4 KiB EVTX header once, then processes one native 64 KiB EVTX chunk at a time instead of retaining the complete source file in memory.
+- **Approximately 4 GiB EVTX support** — Handles logs up to the EVTX format's 65,535-chunk limit, including the reported 4,109,438,976-byte (~3.83 GiB) file.
+- **Accurate large-file progress** — Progress now follows physical EVTX chunk offsets rather than record-local offsets.
+
+### Import Reliability
+
+- Duplicate requests for the same pending source are suppressed while preserving distinct workbook sheets and AI-history scopes.
+- Repeated identical import failures collapse into one actionable notification instead of filling the screen with duplicate toasts.
+- Regression coverage exercises the exact issue #22 file size and verifies that individual reads remain bounded to 64 KiB.
+
 ## v1.0.8
 
 IRFlow Timeline 1.0.8 significantly expands **AI application forensics**, adding deeper artifact collection and parsing across popular AI assistants.

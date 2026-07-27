@@ -17,13 +17,13 @@ export default defineConfig({
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/irflow-timeline/logo.svg' }],
     ['meta', { property: 'og:title', content: 'IRFlow Timeline' }],
-    ['meta', { property: 'og:description', content: 'IRFlow Timeline 1.0.8 expands AI application forensics with Grok Build, deeper Claude and Codex evidence, and collection-scale DFIR workflows.' }],
+    ['meta', { property: 'og:description', content: 'IRFlow Timeline 1.0.9 adds bounded native chunk parsing for large EVTX files while retaining expanded AI application forensics.' }],
     ['meta', { property: 'og:image', content: 'https://r3nzsec.github.io/irflow-timeline/IRFlow-Timeline-Home.png' }],
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:url', content: 'https://r3nzsec.github.io/irflow-timeline/' }],
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
     ['meta', { name: 'twitter:title', content: 'IRFlow Timeline' }],
-    ['meta', { name: 'twitter:description', content: 'IRFlow Timeline 1.0.8 expands AI application forensics with Grok Build, deeper Claude and Codex evidence, and collection-scale DFIR workflows.' }],
+    ['meta', { name: 'twitter:description', content: 'IRFlow Timeline 1.0.9 adds bounded native chunk parsing for large EVTX files while retaining expanded AI application forensics.' }],
     ['meta', { name: 'twitter:image', content: 'https://r3nzsec.github.io/irflow-timeline/IRFlow-Timeline-Home.png' }],
     ['script', { 'data-goatcounter': 'https://irflowtimeline.goatcounter.com/count', async: '', src: '//gc.zgo.at/count.js' }],
     ['script', { type: 'application/ld+json' }, JSON.stringify({
@@ -31,11 +31,11 @@ export default defineConfig({
       '@type': 'SoftwareApplication',
       name: 'IRFlow Timeline',
       description: 'Native macOS DFIR timeline analysis with local AI application forensics for Grok Build, Claude, Codex, ChatGPT, Copilot, Gemini, Cursor, and other assistants.',
-      softwareVersion: '1.0.8',
+      softwareVersion: '1.0.9',
       operatingSystem: 'macOS',
       applicationCategory: 'SecurityApplication',
       url: 'https://r3nzsec.github.io/irflow-timeline/',
-      downloadUrl: 'https://github.com/r3nzsec/irflow-timeline/releases/tag/v1.0.8',
+      downloadUrl: 'https://github.com/r3nzsec/irflow-timeline/releases/tag/v1.0.9',
       author: {
         '@type': 'Person',
         name: 'Renzon Cruz',
@@ -61,8 +61,9 @@ export default defineConfig({
       { text: 'Reference', link: '/reference/keyboard-shortcuts' },
       { text: 'Author', link: '/about/author' },
       {
-        text: 'v1.0.8',
+        text: 'v1.0.9',
         items: [
+          { text: 'What’s New in v1.0.9', link: '/blog/v1.0.9-large-evtx-imports' },
           { text: 'What’s New in v1.0.8', link: '/blog/v1.0.8-ai-application-forensics' },
           { text: 'Changelog', link: '/about/changelog' },
           { text: 'Roadmap', link: '/about/roadmap' },
@@ -163,6 +164,7 @@ export default defineConfig({
           text: 'IRFlow Timeline Blog',
           items: [
             { text: 'All Posts', link: '/blog/' },
+            { text: 'v1.0.9 — Large EVTX Reliability', link: '/blog/v1.0.9-large-evtx-imports' },
             { text: 'v1.0.8 — AI Application Forensics', link: '/blog/v1.0.8-ai-application-forensics' }
           ]
         }

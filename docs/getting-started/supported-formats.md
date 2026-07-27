@@ -69,6 +69,8 @@ Native binary parsing of Windows Event Log files using the `@ts-evtx` library. N
 ### Features
 
 - **Binary parsing** — reads EVTX format directly, no conversion step
+- **Bounded native reads** — validates the 4 KiB file header, then parses one 64 KiB EVTX chunk at a time instead of loading the complete log into memory
+- **Large-log support** — handles up to 65,535 declared chunks (approximately 4 GiB), including multi-gigabyte Security logs that exceed Node's 2 GiB whole-file Buffer ceiling
 - **Dynamic schema discovery** — samples the first 500 events to discover all available fields
 - **Fixed fields** extracted from every event:
 

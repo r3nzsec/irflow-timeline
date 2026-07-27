@@ -6,7 +6,7 @@ description: IRFlow Timeline architecture — React renderer, Electron main proc
 
 Technical overview of IRFlow Timeline's architecture for developers and contributors.
 
-> **v1.0.6+ modular layout (current: v1.0.8).** What was once a ~20K-line `App.jsx` and monolithic `electron/parser.js` / `electron/db.js` is now decomposed into focused modules across the renderer and main process (`parsers/`, `ipc/`, `jobs/`, `analyzers/`, and related trees). v1.0.8 extends the AI parser subsystem, triage collection orchestration, worker lifecycle controls, and multi-source analyzers. The file references below reflect that layout.
+> **v1.0.6+ modular layout (current: v1.0.9).** What was once a ~20K-line `App.jsx` and monolithic `electron/parser.js` / `electron/db.js` is now decomposed into focused modules across the renderer and main process (`parsers/`, `ipc/`, `jobs/`, `analyzers/`, and related trees). v1.0.8 extended the AI parser subsystem, triage collection orchestration, worker lifecycle controls, and multi-source analyzers; v1.0.9 adds bounded native EVTX chunk ingestion. The file references below reflect that layout.
 
 ## System Architecture
 

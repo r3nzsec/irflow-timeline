@@ -47,13 +47,13 @@ features:
     details: Bookmarks, color-coded tags, conditional formatting with KAPE-aware presets, and full session save/restore.
 ---
 
-## What's New · v1.0.8
+## What's New · v1.0.9
 
-- **Grok Build support (new)** — Parse Grok AI prompts, responses, reasoning, exact terminal commands, completion output, session metadata, and file-change hunks.
-- **Expanded AI application forensics** — Deeper Claude Desktop/Cowork transcripts and audit trails, Codex SQLite recovery with WAL/SHM, and bounded tool evidence across supported assistants.
-- **Collection-scale investigations** — Open KAPE/triage collections and pivot through the upgraded Process Inspector, Persistence Analyzer, and Lateral Movement Tracker.
+- **Multi-gigabyte EVTX imports fixed** — Raw Windows Event Logs no longer hit Node's 2 GiB whole-file Buffer ceiling.
+- **Bounded native EVTX parsing** — IRFlow reads one 64 KiB EVTX chunk at a time, supporting logs up to the format's approximately 4 GiB ceiling with stable parser memory.
+- **Cleaner import recovery** — Duplicate pending imports are suppressed and identical failures collapse into one retryable notification.
 
-[Read the v1.0.8 announcement →](/blog/v1.0.8-ai-application-forensics) · [Full changelog →](/about/changelog)
+[Read the v1.0.9 announcement →](/blog/v1.0.9-large-evtx-imports) · [AI application forensics in v1.0.8 →](/blog/v1.0.8-ai-application-forensics) · [Full changelog →](/about/changelog)
 
 ## What is IRFlow Timeline?
 
@@ -76,7 +76,7 @@ Excel row limits, Windows VM overhead, or missing AI evidence — IRFlow is the 
 |--------|-----------|-------------|
 | **CSV/TSV** | `.csv`, `.tsv`, `.txt`, `.log` | Auto-detects delimiters (comma, tab, pipe) |
 | **Excel** | `.xlsx`, `.xls`, `.xlsm` | Streaming reader (XLSX) + legacy binary parser (XLS) with sheet selection |
-| **EVTX** | `.evtx` | Windows Event Log binary format |
+| **EVTX** | `.evtx` | Windows Event Log binary format; bounded 64 KiB chunk parsing up to the format's ~4 GiB limit |
 | **Plaso** | `.plaso`, `.timeline` | Forensic timeline database (`.timeline` auto-detects; falls back to CSV) |
 | **Raw $MFT** | `.mft` | NTFS Master File Table — direct import for NTFS analysis tools |
 | **Raw $J** | `.$J`, `.usn` | NTFS USN Journal (change journal) |

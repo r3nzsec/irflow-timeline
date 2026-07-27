@@ -55,6 +55,7 @@ This page outlines the planned direction for IRFlow Timeline. Priorities may shi
 
 See the [Changelog](/about/changelog) for detailed release notes on everything shipped so far. Highlights from recent releases:
 
+- **Large EVTX reliability (v1.0.9)** — replaces whole-file EVTX reads with bounded native 64 KiB chunk parsing, supports logs up to the format's approximately 4 GiB limit, and suppresses duplicate pending imports and repeated failure notifications
 - **AI Application Forensics (v1.0.8)** — adds Grok Build; recursive Claude Desktop/Cowork transcripts and audits; Codex SQLite/WAL/SHM recovery; and exact, bounded tool-command evidence across supported assistants
 - **Collection-scale investigation (v1.0.8)** — ships Open Triage Collection, the Process Inspector Story/Graph/Raw overhaul, multi-source Persistence analysis, and stronger Lateral Movement detection and evidence triage
 - **AI Artifacts and AI Secret Hunt (v1.0.7)** — introduced the unified **AI Query History** tab and redacted-by-default secret-exposure triage

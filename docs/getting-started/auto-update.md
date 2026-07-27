@@ -67,13 +67,14 @@ For each macOS release, upload these files to the HTTPS/CDN path referenced by `
 
 - The `.zip` artifact
 - The `.dmg` artifact
+- The matching `.zip.blockmap` and `.dmg.blockmap` artifacts
 - `latest-mac.yml` for the default channel, or `<channel>-mac.yml` for a custom channel
 
 Requirements:
 
 - The app must be signed and notarized
 - The hosted files must be reachable over HTTPS
-- The `.zip` and `latest-mac.yml` must stay together at the same feed root
+- The `.zip`, its exact `.zip.blockmap`, and `latest-mac.yml` must stay together at the same feed root for differential updates
 
 ## Release Automation
 
