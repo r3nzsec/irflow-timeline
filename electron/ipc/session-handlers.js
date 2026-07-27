@@ -23,8 +23,8 @@ function enqueuePlannedImports(planned, enqueueImport) {
       });
       continue;
     }
-    enqueueImport(item.path, item.opts || {});
-    enqueued += 1;
+    const accepted = enqueueImport(item.path, item.opts || {});
+    if (accepted !== false) enqueued += 1;
   }
   return { enqueued, scopePending };
 }

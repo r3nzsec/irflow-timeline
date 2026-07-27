@@ -13,6 +13,75 @@ const { getEvtxMessageSummaryFields, getEvtxWellKnownDataFields } = require("../
 const BATCH_SIZE_DEFAULT = 100000;
 const BATCH_SIZE_MAX_BYTES = 100 * 1024 * 1024; // ~100MB target max per batch
 const FAST_MESSAGE_THRESHOLD_BYTES = 256 * 1024 * 1024;
+const EVTX_FILE_HEADER_BYTES = 0x1000;
+const EVTX_CHUNK_BYTES = 0x10000;
+
+async function readFullyAt(handle, buffer, position) {
+  let offset = 0;
+  while (offset < buffer.length) {
+    const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, position + offset);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  return offset;
+}
+
+/**
+ * Iterate EVTX records without ever materializing the complete file.
+ *
+ * @ts-evtx/core's EvtxFile.open() calls fs.promises.readFile(), which fails at
+ * Node's 2 GiB whole-file Buffer limit (and the dependency additionally rejects
+ * files over 100 MiB after reading them). EVTX is natively split into a 4 KiB
+ * file header followed by independent 64 KiB chunks, so read and parse exactly
+ * one chunk at a time instead.
+ */
+async function* iterateEvtxRecords(filePath, core, knownSize = 0) {
+  const { BinaryReader, FileHeader, ChunkHeader } = core;
+  const handle = await fs.promises.open(filePath, "r");
+
+  try {
+    const stat = knownSize > 0 ? { size: knownSize } : await handle.stat();
+    const totalBytes = Number(stat.size) || 0;
+    const headerBytes = Buffer.alloc(EVTX_FILE_HEADER_BYTES);
+    const headerRead = await readFullyAt(handle, headerBytes, 0);
+    if (headerRead !== EVTX_FILE_HEADER_BYTES) {
+      throw new Error("Invalid EVTX file: incomplete file header");
+    }
+
+    const header = new FileHeader(new BinaryReader(headerBytes), 0);
+    if (!header.verify()) {
+      throw new Error("Invalid EVTX file: header verification failed");
+    }
+
+    const declaredChunks = Math.max(0, Number(header.chunkCount()) || 0);
+    const physicalChunks = Math.max(0, Math.floor((totalBytes - EVTX_FILE_HEADER_BYTES) / EVTX_CHUNK_BYTES));
+    const chunkCount = Math.min(declaredChunks, physicalChunks);
+    dbg("EVTX", "Using bounded chunk reader", {
+      totalBytes,
+      declaredChunks,
+      physicalChunks,
+      chunkCount,
+      maxResidentReadBytes: EVTX_FILE_HEADER_BYTES + EVTX_CHUNK_BYTES,
+    });
+
+    const chunkBytes = Buffer.alloc(EVTX_CHUNK_BYTES);
+    for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
+      const position = EVTX_FILE_HEADER_BYTES + (chunkIndex * EVTX_CHUNK_BYTES);
+      const chunkRead = await readFullyAt(handle, chunkBytes, position);
+      if (chunkRead !== EVTX_CHUNK_BYTES) break;
+
+      const chunk = new ChunkHeader(new BinaryReader(chunkBytes), 0);
+      if (!chunk.checkMagic()) continue;
+
+      const bytesRead = position + chunkRead;
+      for (const record of chunk.records()) {
+        yield { record, bytesRead, chunkIndex, chunkCount };
+      }
+    }
+  } finally {
+    await handle.close();
+  }
+}
 
 // ── Cached EVTX message provider (created once, reused across all EVTX imports) ──
 let _cachedMsgProvider = null;
@@ -241,7 +310,7 @@ function buildCompactEvtxMessage(eventId, provider, dataMap) {
  * @returns {Promise<{headers, rowCount, tsColumns, numericColumns}>}
  */
 async function parseEvtxFile(filePath, tabId, db, onProgress) {
-  const { EvtxFile } = await import("@ts-evtx/core");
+  const evtxCore = await import("@ts-evtx/core");
   let totalBytes = 0;
   try { totalBytes = fs.statSync(filePath).size; } catch { /* proceed with 0 */ }
   const SAMPLE_LIMIT = 500;
@@ -417,92 +486,83 @@ async function parseEvtxFile(filePath, tabId, db, onProgress) {
     return values;
   };
 
-  const evtxFile = await EvtxFile.open(filePath);
   // Yield to event loop before starting to allow pending IPC to process
   await new Promise((r) => setImmediate(r));
 
-  try {
-    for (const record of evtxFile.records()) {
-      let parsed;
-      try {
-        parsed = parseStructuredRecord(record);
-      } catch {
-        let xml;
-        try { xml = record.renderXml(); } catch { continue; }
-        parsed = parseXmlRecord(xml, record);
-      }
-      rowCount++;
-
-      if (!schemaFinalized) {
-        for (const key of Object.keys(parsed.dataMap)) fieldSet.add(key);
-        earlyBuffer.push(parsed);
-
-        if (rowCount >= SAMPLE_LIMIT) {
-          // Union well-known fields into the discovered set so analyzers always
-          // have the columns they need even when the early sample is skewed.
-          for (const f of EVTX_WELL_KNOWN_DATA_FIELDS) fieldSet.add(f);
-          const discoveredFields = [...fieldSet].sort();
-          headers = [...EVTX_FIXED_FIELDS, ...discoveredFields];
-          colCount = headers.length;
-          db.createTab(tabId, headers);
-          batchSize = Math.max(5000, Math.min(BATCH_SIZE_DEFAULT, Math.floor(BATCH_SIZE_MAX_BYTES / (colCount * 80))));
-          schemaFinalized = true;
-
-          for (const buf of earlyBuffer) batch.push(buildRow(buf));
-          earlyBuffer = null;
-
-          if (batch.length >= batchSize) {
-            db.insertBatchArrays(tabId, batch);
-            batch = [];
-          }
-          if (onProgress) { let eo = 0; try { eo = record.offset ? Number(record.offset) : 0; } catch {} onProgress(rowCount, eo, totalBytes); }
-        }
-        continue;
-      }
-
-      batch.push(buildRow(parsed));
-      if (batch.length >= batchSize) {
-        db.insertBatchArrays(tabId, batch);
-        batch = [];
-        if (rowCount - lastProgress >= 10000) {
-          lastProgress = rowCount;
-          // Estimate bytes read from record offset when available
-          let estBytes = 0;
-          try { estBytes = record.offset ? Number(record.offset) : 0; } catch {}
-          if (onProgress) onProgress(rowCount, estBytes, totalBytes);
-          // Yield to event loop periodically so IPC remains responsive
-          await new Promise((r) => setImmediate(r));
-        }
-      }
+  for await (const { record, bytesRead } of iterateEvtxRecords(filePath, evtxCore, totalBytes)) {
+    let parsed;
+    try {
+      parsed = parseStructuredRecord(record);
+    } catch {
+      let xml;
+      try { xml = record.renderXml(); } catch { continue; }
+      parsed = parseXmlRecord(xml, record);
     }
+    rowCount++;
 
-    // Handle files with fewer than SAMPLE_LIMIT events
     if (!schemaFinalized) {
-      if (rowCount === 0) {
-        // No events at all
-        headers = [...EVTX_FIXED_FIELDS];
-        colCount = headers.length;
-        db.createTab(tabId, headers);
-      } else {
+      for (const key of Object.keys(parsed.dataMap)) fieldSet.add(key);
+      earlyBuffer.push(parsed);
+
+      if (rowCount >= SAMPLE_LIMIT) {
         // Union well-known fields into the discovered set so analyzers always
-        // have the columns they need even when the file has fewer than
-        // SAMPLE_LIMIT records (and might still be missing a key field).
+        // have the columns they need even when the early sample is skewed.
         for (const f of EVTX_WELL_KNOWN_DATA_FIELDS) fieldSet.add(f);
         const discoveredFields = [...fieldSet].sort();
         headers = [...EVTX_FIXED_FIELDS, ...discoveredFields];
         colCount = headers.length;
         db.createTab(tabId, headers);
+        batchSize = Math.max(5000, Math.min(BATCH_SIZE_DEFAULT, Math.floor(BATCH_SIZE_MAX_BYTES / (colCount * 80))));
+        schemaFinalized = true;
+
         for (const buf of earlyBuffer) batch.push(buildRow(buf));
         earlyBuffer = null;
+
+        if (batch.length >= batchSize) {
+          db.insertBatchArrays(tabId, batch);
+          batch = [];
+        }
+        if (onProgress) onProgress(rowCount, bytesRead, totalBytes);
       }
+      continue;
     }
 
-    if (batch.length > 0) {
+    batch.push(buildRow(parsed));
+    if (batch.length >= batchSize) {
       db.insertBatchArrays(tabId, batch);
+      batch = [];
+      if (rowCount - lastProgress >= 10000) {
+        lastProgress = rowCount;
+        if (onProgress) onProgress(rowCount, bytesRead, totalBytes);
+        // Yield to event loop periodically so IPC remains responsive
+        await new Promise((r) => setImmediate(r));
+      }
     }
-  } finally {
-    // Always close the EVTX file handle to release memory
-    try { if (evtxFile?.close) evtxFile.close(); } catch {}
+  }
+
+  // Handle files with fewer than SAMPLE_LIMIT events
+  if (!schemaFinalized) {
+    if (rowCount === 0) {
+      // No events at all
+      headers = [...EVTX_FIXED_FIELDS];
+      colCount = headers.length;
+      db.createTab(tabId, headers);
+    } else {
+      // Union well-known fields into the discovered set so analyzers always
+      // have the columns they need even when the file has fewer than
+      // SAMPLE_LIMIT records (and might still be missing a key field).
+      for (const f of EVTX_WELL_KNOWN_DATA_FIELDS) fieldSet.add(f);
+      const discoveredFields = [...fieldSet].sort();
+      headers = [...EVTX_FIXED_FIELDS, ...discoveredFields];
+      colCount = headers.length;
+      db.createTab(tabId, headers);
+      for (const buf of earlyBuffer) batch.push(buildRow(buf));
+      earlyBuffer = null;
+    }
+  }
+
+  if (batch.length > 0) {
+    db.insertBatchArrays(tabId, batch);
   }
   // Null out large arrays to help GC before next import
   batch = null;
@@ -526,4 +586,10 @@ async function parseEvtxFile(filePath, tabId, db, onProgress) {
   };
 }
 
-module.exports = { parseEvtxFile };
+module.exports = {
+  parseEvtxFile,
+  _iterateEvtxRecords: iterateEvtxRecords,
+  _readFullyAt: readFullyAt,
+  EVTX_FILE_HEADER_BYTES,
+  EVTX_CHUNK_BYTES,
+};

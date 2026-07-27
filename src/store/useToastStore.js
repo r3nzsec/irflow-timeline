@@ -20,25 +20,47 @@ import { create } from "zustand";
  *   error           — does NOT auto-dismiss (requires user action)
  */
 let nextId = 1;
+const ttlTimers = new Map();
 
 const DEFAULT_TTL = { info: 3500, success: 3500, warning: 6000, error: 0 };
 
 const useToastStore = create((set, get) => ({
   toasts: [],
 
-  push: ({ kind = "info", message, detail, ttl, actionLabel, onAction }) => {
-    const id = nextId++;
+  push: ({ kind = "info", message, detail, ttl, actionLabel, onAction, dedupeKey }) => {
     const effectiveTtl = ttl !== undefined ? ttl : DEFAULT_TTL[kind] ?? 3500;
-    set((s) => ({ toasts: [...s.toasts, { id, kind, message, detail, ttl: effectiveTtl, actionLabel, onAction }] }));
+    let id;
+    set((s) => {
+      const existing = dedupeKey ? s.toasts.find((item) => item.dedupeKey === dedupeKey) : null;
+      id = existing?.id ?? nextId++;
+      const item = { id, kind, message, detail, ttl: effectiveTtl, actionLabel, onAction, dedupeKey };
+      return {
+        toasts: existing
+          ? s.toasts.map((toastItem) => toastItem.id === id ? item : toastItem)
+          : [...s.toasts, item],
+      };
+    });
+
+    const priorTimer = ttlTimers.get(id);
+    if (priorTimer) clearTimeout(priorTimer);
     if (effectiveTtl > 0) {
-      setTimeout(() => get().dismiss(id), effectiveTtl);
+      ttlTimers.set(id, setTimeout(() => get().dismiss(id), effectiveTtl));
     }
     return id;
   },
 
-  dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+  dismiss: (id) => {
+    const timer = ttlTimers.get(id);
+    if (timer) clearTimeout(timer);
+    ttlTimers.delete(id);
+    set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+  },
 
-  clear: () => set({ toasts: [] }),
+  clear: () => {
+    for (const timer of ttlTimers.values()) clearTimeout(timer);
+    ttlTimers.clear();
+    set({ toasts: [] });
+  },
 }));
 
 export default useToastStore;

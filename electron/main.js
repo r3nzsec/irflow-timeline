@@ -17,6 +17,7 @@ const { getXLSXSheets, extractResidentData } = require("./parsers");
 const { createUpdateController } = require("./updater");
 const { JobManager } = require("./jobs/job-manager");
 const { resolveTempDir } = require("./utils/temp-dir");
+const { makeImportQueueKey, isDuplicatePendingImport } = require("./utils/import-queue");
 const { buildMenu: _buildMenu } = require("./menu");
 const packageMeta = require("../package.json");
 
@@ -140,6 +141,7 @@ const updateController = createUpdateController({
 // ── Import queue — serialize file imports to prevent concurrent memory exhaustion ──
 const _importQueue = [];
 let _importRunning = false;
+let _activeImportKey = null;
 const _pendingIndexTabs = []; // tabs waiting for index/FTS build (deferred until queue drains)
 const _indexBuildQueue = [];
 const _queuedIndexTabs = new Set();
@@ -166,14 +168,21 @@ function _cleanupDbFiles(dbPath) {
 }
 
 function enqueueImport(filePath, opts) {
+  const queueKey = makeImportQueueKey(filePath, opts);
+  if (isDuplicatePendingImport(_importQueue, _activeImportKey, queueKey)) {
+    dbg("QUEUE", "Skipped duplicate pending import", { filePath, sheetName: opts?.sheetName });
+    return false;
+  }
+
   let fileName;
   if (opts?.displayName) { fileName = opts.displayName; }
   else { try { fileName = decodeURIComponent(path.basename(filePath)); } catch { fileName = path.basename(filePath); } }
   let fileSize = 0; try { fileSize = fs.statSync(filePath).size; } catch {}
-  _importQueue.push({ filePath, fileName, fileSize, ...opts });
+  _importQueue.push({ filePath, fileName, fileSize, ...opts, queueKey });
   if (!opts?.skipRecent) addRecentFile(filePath);
   _broadcastQueue();
   _processQueue();
+  return true;
 }
 
 /**
@@ -205,6 +214,7 @@ async function _processQueue() {
 
   while (_importQueue.length > 0) {
     const item = _importQueue.shift();
+    _activeImportKey = item.queueKey;
     _broadcastQueue();
 
     // Log memory before import
@@ -222,6 +232,7 @@ async function _processQueue() {
         error: err?.message || "Import failed",
       });
     }
+    _activeImportKey = null;
     _broadcastQueue();
 
     if (_importQueue.length > 0) {

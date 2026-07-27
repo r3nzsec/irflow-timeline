@@ -1302,6 +1302,7 @@ export default function App() {
       delete importPathsRef.current[tabId];
       toast.error("Import failed", {
         detail: errText,
+        dedupeKey: failedPath ? `import-error:${failedPath}` : `import-error:${errText}`,
         ...(failedPath ? { actionLabel: "Retry import", onAction: () => tle?.importFiles([failedPath]) } : {}),
       });
     });
