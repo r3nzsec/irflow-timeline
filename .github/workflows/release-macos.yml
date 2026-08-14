@@ -53,7 +53,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22.12.0
+          node-version: 22.17.0
           cache: npm
 
       - name: Ensure release tools
@@ -108,11 +108,27 @@ jobs:
       - name: Smoke Electron and native SQLite runtime
         run: npm run smoke:electron
 
-      # The project postinstall prepares better-sqlite3 for local Electron use.
-      # Restore the Node ABI explicitly so SQLite-backed tests execute instead
-      # of being skipped. Packaging rebuilds the universal Electron module below.
-      - name: Rebuild SQLite for Node tests
-        run: npm rebuild better-sqlite3
+      # better-sqlite3 13 ships prebuildify prebuilds and has no install script, so
+      # `npm rebuild better-sqlite3` is a no-op for it — the Node binding comes from
+      # node_modules/better-sqlite3/prebuilds/. Packaging rebuilds the universal Electron
+      # module below.
+      #
+      # That prebuild segfaults on Node 22.12/22.13 (crash on Database construction, not a
+      # clean ABI error), which surfaced as 21 unexplained SIGSEGVs across every
+      # SQLite-backed test file. Assert it loads before running the suite so a future
+      # runtime break fails here with one clear message instead of inside the tests.
+      - name: Verify native SQLite under the test runtime
+        run: |
+          set -euo pipefail
+          node -e "
+            const Database = require('better-sqlite3');
+            const db = new Database(':memory:');
+            db.exec('CREATE TABLE probe (v INTEGER)');
+            db.prepare('INSERT INTO probe VALUES (?)').run(1);
+            if (db.prepare('SELECT v FROM probe').get().v !== 1) throw new Error('probe query failed');
+            db.close();
+            console.log('better-sqlite3 OK under Node ' + process.versions.node);
+          "
 
       - name: Run test suite
         timeout-minutes: 10
@@ -342,7 +358,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22.12.0
+          node-version: 22.17.0
           cache: npm
 
       - name: Ensure repair tools

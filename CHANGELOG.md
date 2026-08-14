@@ -85,7 +85,7 @@ crash-resilience update for long-running investigations.
 ### Supported Runtime
 
 - Upgraded Electron from 33 to 43, `better-sqlite3` from 11 to 13, Electron Builder to 26, Electron Rebuild to 4, and Electron Updater to 6.8.
-- Development and release automation now require Node.js 22.12 or newer. The EVTX message provider is pinned to the same SQLite 13 native addon so every SQLite call uses the Electron 43 ABI.
+- Development and release automation now require **Node.js 22.14 or newer**. The `better-sqlite3` 13 prebuilt binding segfaults when a database is opened under Node 22.12 and 22.13, so those two releases are not usable for building or testing even though they satisfy the package's own `>=22` floor. The EVTX message provider is pinned to the same SQLite 13 native addon so every SQLite call uses the Electron 43 ABI.
 - The packaged minimum is now explicit at macOS 12 (Monterey), matching Electron 43's supported platform floor.
 
 ## v1.0.9

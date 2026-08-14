@@ -6,7 +6,7 @@
   "author": "DFIR Community",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.14.0"
   },
   "scripts": {
     "dev": "concurrently \"vite\" \"TLE_DEV_SERVER=1 wait-on http://localhost:5173 && TLE_DEV_SERVER=1 electron .\"",
