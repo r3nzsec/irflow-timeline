@@ -108,6 +108,50 @@ Results are **redacted by default** (cleartext is never written to disk). Analys
 | **SourceFile** | Original artifact path used to produce the row. |
 | **AlsoInTools** | Other AI apps where the same prompt appeared after dedupe. |
 
+## ChatGPT Computer History
+
+Computer History is a separate, opt-in macOS feature of the ChatGPT desktop app. It is **not**
+conversation history: it records an interaction-event stream from the host — app focus changes,
+clicks, keystrokes, shortcuts, selections, drags, and the window and URL context macOS exposes
+through its accessibility system — and periodically distils it into natural-language activity
+summaries. It is off by default and is not available in the EEA, Switzerland, or the UK.
+
+Because these are OS-level activity events rather than prompt/response turns, they open in their own
+tab with a dedicated column set rather than the AI Query History columns.
+
+| Artifact | Location | Retention |
+|----------|----------|-----------|
+| Raw event stream | `~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/Library/Caches/ComputerUse/Skysight/segments/<bucket>/{events.jsonl,metadata.json}` | ~48 hours, then purged |
+| Activity summaries | `~/.codex/memories/extensions/skysight/resources/<ts>-<id>-(10min\|6h)-*.md` | Until the user clears them |
+| Feature state | `~/.codex/config.toml`, `ComputerUseAppApprovals.json` | Persistent |
+
+What the parser adds beyond the raw events:
+
+- **Credential entry.** Targets carrying the `AXSecureTextField` subrole are labelled as credential
+  entry. macOS withholds the field's value, but keystrokes are captured at hardware level, so typed
+  characters can still reach the stream.
+- **File and menu selection.** Finder row selections and menu commands are captured; these events
+  carry no selected text and would otherwise appear as empty rows.
+- **Capture fidelity.** Everything flows through the macOS Accessibility API, so depth varies by
+  app. `FidelityTier` is resolved once per application. In Tier 3 messaging apps, outbound typed
+  text is captured while inbound message content is not — such a capture is one side of a
+  conversation and must not be presented as a conversation record.
+- **Screen text is qualified.** `ScreenText` is only a screen snapshot when `AxMode` is `fullTree`;
+  most events are `diffFromPrevious` and carry only what changed.
+- **Deletion detection.** Closed segments are reconciled against their own metadata event count. A
+  shortfall is reported as a derived lead consistent with the app's "clear last 10 minutes / hour /
+  day" control. Summaries cleared through that control are recovered read-only from the Codex
+  memories git history, with the time they were removed.
+- **Gap interpretation.** A missing segment bucket is only flagged when the event-id chain is
+  actually broken across it; an unbroken chain means the host was idle, not that data was deleted.
+- **Attribution.** Identity rows collect the ChatGPT account, signed-in identity, and per-app device
+  identifiers, each labelled with how strongly it identifies an account rather than a device. Codex
+  conversations are dated from their identifiers and joined to the timeline, with deleted
+  conversations flagged — the prompt typed into a deleted conversation is often still recorded in
+  the event stream. No token material is stored or exported.
+- **Coverage.** Feature-state rows record which apps the recorder was permitted to observe, so an
+  absence of events for an app is not misread as inactivity.
+
 ## Performance and Safeguards
 
 - Large scans run through the background extraction pipeline so the UI stays responsive.
@@ -127,6 +171,9 @@ Results are **redacted by default** (cleartext is never written to disk). Analys
 - Gemini macOS desktop app history is not parsed; Gemini CLI local sessions are supported.
 - Proprietary Windsurf Cascade protobuf bundles are preserved as inventory unless decoders are available.
 - Secret detection is intentionally conservative and should be reviewed by an analyst before reporting.
+- Computer History raw events are purged after about 48 hours, so on a stale image the derived summaries are often the only surviving record — and they are model-generated interpretation, not primary evidence.
+- Computer History activity summaries can be self-redacting; the generator omits content it judges sensitive, so a summary may understate what the raw events showed.
+- The local ChatGPT analytics event store is uploaded and cleared, with freed pages zeroed. Expect it empty on anything but a fast live acquisition, and treat its absence as normal rather than as evidence the feature was unused.
 
 ## See Also
 
