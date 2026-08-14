@@ -73,6 +73,21 @@ export function OpenAiMenuIcon() {
   );
 }
 
+/**
+ * Codex Computer History (Skysight) — a display with an activity pulse: this artifact is recorded
+ * screen/input activity, not a conversation transcript. Codex azure keeps it in the Codex family.
+ */
+export function ComputerHistoryMenuIcon() {
+  const { a, soft } = tones(BRAND.codex);
+  return (
+    <MenuSvg>
+      <rect x="2.5" y="4" width="19" height="13" rx="2" fill={soft} stroke={a} strokeWidth="1.15" />
+      <path fill="none" stroke={a} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" d="M5.5 11.5h2.6l1.5-3 2 5.4 1.6-3.6 1.2 1.2h3.1" />
+      <path stroke={a} strokeWidth="1.5" strokeLinecap="round" d="M9 20h6" />
+    </MenuSvg>
+  );
+}
+
 /** Grok Build — compact black-and-white Grok mark. */
 export function GrokMenuIcon() {
   return (

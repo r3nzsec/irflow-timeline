@@ -1,0 +1,3 @@
+{"app":{"bundleIdentifier":"com.apple.finder","name":"Finder"},"id":40,"keyboard":{"target":{"role":"AXTextField","value":"Skysight"},"text":"Skysight"},"kind":"keyboard.text_input","timestamp":"2026-08-14T05:40:06Z","window":{"title":"Searching “This Mac”"}}
+{"app":{"bundleIdentifier":"com.googlecode.iterm2","name":"iTerm2"},"id":41,"kind":"mouse.click","mouse":{"button":"left","clickCount":1,"target":{"role":"AXMenuItem","title":"Lock Screen"}},"timestamp":"2026-08-14T05:40:09Z"}
+{"app":{"bundleIdentifier":"com.apple.loginwindow","name":"loginwindow"},"ax":{"mode":"fullTree","text":"0 standard window"},"id":42,"kind":"window.changed","timestamp":"2026-08-14T05:40:10Z","window":{"title":""}}

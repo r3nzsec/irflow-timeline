@@ -20,6 +20,16 @@ const { dbg } = require("../logger");
 const { openDialogOptions } = require("../utils/open-dialog");
 const { defaultDecodeAiHistoryDialogPath } = require("../parsers/ai-history/open-dialog-paths");
 const {
+  TOOL_COMPUTER_HISTORY,
+  COMPUTER_HISTORY_TOOL_ID,
+} = require("../parsers/ai-history/computer-history-schema");
+const {
+  defaultComputerHistoryRoots,
+  isComputerHistoryDir,
+  isSkysightEventsFile,
+  isSkysightSummaryFile,
+} = require("../parsers/ai-history/computer-history");
+const {
   extractAiHistory,
   extractClaudeDir,
   extractCodexDir,
@@ -80,9 +90,33 @@ const AI_HISTORY_IPC_QUERY_OPTS = {
 
 const AI_HISTORY_EMPTY_COL_OMIT = ["FullText", "Description", "Transcript"];
 
-function finishAiHistoryWorkerImport(ctx, tabId, result, { fileName, sourceFormat, importNotice, sendProgress }) {
+/**
+ * Computer History rows carry two potentially huge payloads: ScreenText (a full accessibility-tree
+ * screen scrape, observed >100K chars for a single event) and Content (terminal scrollback). Both
+ * must be truncated for the grid window or the initial payload dwarfs the rest of the tab; the full
+ * values stay in SQLite for row detail, search and export.
+ */
+const COMPUTER_HISTORY_IPC_QUERY_OPTS = {
+  truncateColumns: {
+    ScreenText: 2048,
+    Content: 2048,
+    Description: 480,
+    WindowTitle: 300,
+    TargetLabel: 300,
+  },
+};
+
+const COMPUTER_HISTORY_EMPTY_COL_OMIT = ["ScreenText", "Content", "Description"];
+
+function finishAiHistoryWorkerImport(ctx, tabId, result, {
+  fileName, sourceFormat, importNotice, sendProgress, queryOpts, emptyColOmit,
+}) {
   const { db, _tabMeta, scheduleIndexBuild, safeSend } = ctx;
   const isAiHistory = typeof sourceFormat === "string" && sourceFormat.startsWith("ai-history");
+  // Explicit per-family overrides let a non-ai-history schema (Computer History) reuse this
+  // finisher without inheriting AI-history column assumptions such as omitting FullText.
+  const effectiveQueryOpts = queryOpts || (isAiHistory ? AI_HISTORY_IPC_QUERY_OPTS : null);
+  const effectiveEmptyColOmit = emptyColOmit || (isAiHistory ? AI_HISTORY_EMPTY_COL_OMIT : null);
   if (typeof sendProgress === "function") {
     sendProgress({
       phase: "loading",
@@ -120,11 +154,11 @@ function finishAiHistoryWorkerImport(ctx, tabId, result, { fileName, sourceForma
       limit: initialLimit,
       sortCol: null,
       sortDir: "asc",
-      ...(isAiHistory ? AI_HISTORY_IPC_QUERY_OPTS : {}),
+      ...(effectiveQueryOpts || {}),
     })
     : { rows: [], totalFiltered: rowCount };
-  const emptyColumns = isAiHistory
-    ? db.getEmptyColumns(tabId, { omitHeaders: AI_HISTORY_EMPTY_COL_OMIT, forceSample: true })
+  const emptyColumns = effectiveEmptyColOmit
+    ? db.getEmptyColumns(tabId, { omitHeaders: effectiveEmptyColOmit, forceSample: true })
     : db.getEmptyColumns(tabId);
 
   safeSend("import-progress", {
@@ -209,6 +243,7 @@ async function runAiHistoryProfileExtractWorker(ctx, roots, opts = {}) {
     },
     channels: { progress: "ai-history-profile-progress" },
     metadata: { tabId, sourceCount: roots.length },
+    resourceClass: "heavy",
   });
 
   let result;
@@ -491,6 +526,133 @@ module.exports = function registerAiHistoryHandlers(safeHandle, safeSend, ctx) {
     }
   });
 
+  /**
+   * ChatGPT Computer History (Skysight) — OS activity telemetry, not conversation history.
+   * Kept off the shared ai-history extract path: it emits COMPUTER_HISTORY_COLUMNS and must not go
+   * through the ai-history dedupe/sink, which keys on fields this schema does not have.
+   */
+  safeHandle("decode-computer-history", async (event, { path: inputPath, ...options } = {}) => {
+    const label = TOOL_COMPUTER_HISTORY;
+
+    let target = inputPath;
+    if (!target) {
+      const win = typeof _activeWindow === "function" ? _activeWindow() : null;
+      const { segmentsDir } = defaultComputerHistoryRoots();
+      const hinted = fs.existsSync(segmentsDir) ? segmentsDir : os.homedir();
+      const res = await dialog.showOpenDialog(win, openDialogOptions({
+        title: "Select ChatGPT Computer History artifacts",
+        message: "Choose the Skysight segments folder, a segment bucket, an events.jsonl, a .codex "
+          + "folder (derived summaries), or a triage folder containing them",
+        properties: ["openFile", "openDirectory"],
+        filters: [{ name: "Skysight events / summaries", extensions: ["jsonl", "json", "md"] }],
+        buttonLabel: "Extract",
+        defaultPath: hinted,
+      }));
+      if (res.canceled || !res.filePaths || !res.filePaths[0]) return { canceled: true };
+      target = res.filePaths[0];
+      authorizeAiArtifactPick(target, { label });
+    }
+
+    try {
+      assertAiReadablePath(target);
+    } catch (e) {
+      return { error: e.message || "Path is not authorized for AI extraction." };
+    }
+
+    if (!isComputerHistoryDir(target) && !isSkysightEventsFile(target) && !isSkysightSummaryFile(target)) {
+      return {
+        error: "No ChatGPT Computer History (Skysight) artifacts found at this path. Expected a "
+          + "segments folder, an events.jsonl, or a *-10min-*.md / *-6h-*.md summary.",
+      };
+    }
+
+    if (options?.prepareOnly) {
+      return { prepared: true, tool: COMPUTER_HISTORY_TOOL_ID, target, extractTarget: target, label };
+    }
+
+    const user = deriveUser(target);
+    const sourceFormat = "computer-history";
+    const baseName = "Codex Computer History";
+
+    if (!(jobManager && db && nextTabId && _newTempDbPath)) {
+      return { error: "Computer History extraction requires the worker runtime." };
+    }
+
+    const tabId = nextTabId();
+    const dbPath = _newTempDbPath(tabId);
+    const sendProgress = (patch) => safeSend("ai-history-profile-progress", patch);
+
+    const { promise } = jobManager.startWorkerJob({
+      type: "computer-history",
+      worker: "computer-history-worker.js",
+      workerData: {
+        target,
+        tabId,
+        dbPath,
+        user,
+        host: "",
+        includeScreenText: options?.includeScreenText !== false,
+        screenTextMaxChars: options?.screenTextMaxChars || 0,
+      },
+      channels: { progress: "ai-history-profile-progress" },
+      metadata: { tabId, target },
+      resourceClass: "heavy",
+    });
+
+    let result;
+    try {
+      result = await promise;
+    } catch (e) {
+      if (e?.cancelled || e?.canceled) return { canceled: true };
+      safeSend("import-error", { tabId, fileName: baseName, error: e?.message || "Computer History extract failed" });
+      return { error: e?.message || "Computer History extract failed" };
+    }
+    if (result?.error) {
+      safeSend("import-error", { tabId, fileName: baseName, error: result.error });
+      return { error: result.error };
+    }
+
+    safeSend("import-start", { tabId, fileName: baseName, filePath: "", fileSize: 0 });
+    sendProgress({
+      phase: "loading", percent: 99, statusDetail: "Opening timeline tab…", rowsSoFar: result.rowCount,
+    });
+
+    finishAiHistoryWorkerImport(
+      { db, _tabMeta, scheduleIndexBuild, safeSend },
+      tabId,
+      result,
+      {
+        fileName: baseName,
+        sourceFormat,
+        importNotice: result.importNotice || null,
+        sendProgress,
+        queryOpts: COMPUTER_HISTORY_IPC_QUERY_OPTS,
+        emptyColOmit: COMPUTER_HISTORY_EMPTY_COL_OMIT,
+      },
+    );
+
+    sendProgress({
+      phase: "complete",
+      percent: 100,
+      statusDetail: `Extracted ${(result.rowCount || 0).toLocaleString()} activity events`,
+      logLine: "Done — timeline tab ready",
+      rowsSoFar: result.rowCount,
+    });
+
+    dbg("EXEC", "decode-computer-history", { target, count: result.rowCount, tabId });
+
+    return {
+      tabId,
+      openedTab: true,
+      name: baseName,
+      count: result.rowCount,
+      tool: COMPUTER_HISTORY_TOOL_ID,
+      sourceFormat,
+      importNotice: result.importNotice || null,
+      computerHistoryStats: result.computerHistoryStats || null,
+    };
+  });
+
   async function runAiHistoryProfileDiscover(sendProgress, { scanRoot, scanMode } = {}) {
     const mode = scanMode === "folder" && scanRoot ? "folder" : "local";
     if (mode === "folder") {
@@ -711,7 +873,8 @@ module.exports = function registerAiHistoryHandlers(safeHandle, safeSend, ctx) {
   safeHandle("cancel-ai-history-extract", async () => {
     requestAiHistoryExtractAbort();
     if (jobManager) {
-      jobManager.cancelWhere((job) => job.type === "ai-history-profile");
+      // Computer History runs its own worker type but shares this modal's Cancel button.
+      jobManager.cancelWhere((job) => job.type === "ai-history-profile" || job.type === "computer-history");
     }
     return { ok: true };
   });

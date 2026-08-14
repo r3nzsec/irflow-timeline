@@ -17,6 +17,7 @@ const os = require("os");
 const path = require("path");
 
 const { defaultCodexHome, isCodexDir } = require("./codex");
+const { defaultComputerHistoryRoots, isComputerHistoryDir } = require("./computer-history");
 const { defaultGrokHome, isGrokBuildRoot } = require("./grok-build");
 const { isChatgptAppDir } = require("./chatgpt");
 const { isCursorUserDataDir } = require("./cursor-composer");
@@ -242,6 +243,13 @@ function getLocalAiHistoryCandidates() {
     out.push({ tool: "chatgpt", path: p });
   }
 
+  // ChatGPT Computer History (Skysight) — raw event stream + derived activity summaries.
+  {
+    const { segmentsDir, resourcesDir } = defaultComputerHistoryRoots();
+    out.push({ tool: "computer-history", path: segmentsDir });
+    out.push({ tool: "computer-history", path: resourcesDir });
+  }
+
   out.push({ tool: "copilot", path: defaultCopilotCliHome() });
   for (const p of listCopilotWorkspaceStorageCandidates()) {
     out.push({ tool: "copilot", path: p });
@@ -384,6 +392,8 @@ const FORENSIC_AI_PATH_HINTS = {
     "Users/<user>/Library/Application Support/Claude/claude-code-sessions/",
     "Users/<user>/Library/Application Support/Claude/local-agent-mode-sessions/",
     "Users/<user>/Library/Application Support/com.openai.chat/",
+    "Users/<user>/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/Library/Caches/ComputerUse/Skysight/segments/",
+    "Users/<user>/.codex/memories/extensions/skysight/resources/",
     "Users/<user>/Library/Application Support/Code/User/workspaceStorage/",
     "Users/<user>/Library/Application Support/Cursor/User/globalStorage/conversation-search.db",
     "Users/<user>/Library/Application Support/Windsurf/User/workspaceStorage/",
@@ -406,6 +416,20 @@ const ARTIFACT_PATH_REFERENCES = {
     paths: [
       { platform: "all", path: "$CODEX_HOME or ~/.codex/ (history.jsonl, sessions/**/rollout-*.jsonl, archived_sessions/, state*.sqlite + WAL/SHM)" },
     ],
+  },
+  "computer-history": {
+    label: "ChatGPT Computer History",
+    paths: [
+      { platform: "macOS", path: "~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/Library/Caches/ComputerUse/Skysight/segments/<YYYY-MM-DDTHH-MM-SSZ>/{events.jsonl,metadata.json}" },
+      { platform: "macOS", path: "~/.codex/memories/extensions/skysight/resources/*-(10min|6h)-*.md (derived activity summaries)" },
+      { platform: "macOS", path: "~/.codex/config.toml → [plugins.\"computer-history@openai-bundled\"] enabled (feature on/off state)" },
+      { platform: "macOS", path: "~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/Library/Application Support/Software/ComputerUseAppApprovals.json (app coverage gaps)" },
+    ],
+    notes: "Opt-in, off by default. Raw events are retained ~48h under Library/Caches (commonly excluded "
+      + "from backup/EDR collection and purgeable under disk pressure); the derived summaries persist until "
+      + "deleted and are often the only survivor on a stale image. Capture depth varies by app: browsers, "
+      + "Electron apps and terminal emulators yield full text, while hardened native apps (Telegram, Slack) "
+      + "yield window metadata only — in those, typed OUTBOUND text is captured but received content is not.",
   },
   "grok-build": {
     label: "Grok Build",
@@ -492,4 +516,6 @@ module.exports = {
   isGeminiCliRoot,
   isCopilotWorkspaceStorageRoot,
   isCopilotCliRoot,
+  defaultComputerHistoryRoots,
+  isComputerHistoryDir,
 };

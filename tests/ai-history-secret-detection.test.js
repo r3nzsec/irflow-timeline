@@ -10,6 +10,7 @@ const {
   findMatchesInText,
   compileRules,
   COMPILED_RULES,
+  SCAN_CHUNK_LEN,
 } = require("../electron/analyzers/ai-history/index");
 const {
   luhnValid,
@@ -86,7 +87,8 @@ test("reports multiple same-rule secrets in one row", () => {
   const { findings, summary } = analyzeAiHistoryRows([row(`first ${first} then ${second}`)], { mode: "quick", salt: "fixed" });
   const gh = findings.filter((f) => f.ruleId === "github-pat");
   assert.equal(gh.length, 2);
-  assert.deepEqual(new Set(gh.map((f) => f.match)), new Set([first, second]));
+  assert.deepEqual(new Set(gh.map((f) => `first ${first} then ${second}`.slice(f.startOffset, f.endOffset))), new Set([first, second]));
+  assert.ok(gh.every((f) => !Object.prototype.hasOwnProperty.call(f, "match")));
   assert.equal(summary.uniqueSecrets, 2);
 });
 
@@ -100,9 +102,10 @@ test("private-key detection captures full PEM blocks for multiline reveal", () =
   const { findings } = analyzeAiHistoryRows([row(`stored private_key: ${pem}`)], { mode: "quick", salt: "fixed" });
   const hit = findings.find((f) => f.ruleId === "pem-private-key");
   assert.ok(hit);
-  assert.ok(hit.match.includes(pemMarker("RSA")));
-  assert.ok(hit.match.includes(pemMarker("RSA", true)));
-  assert.ok(hit.match.includes("\n"));
+  const revealed = `stored private_key: ${pem}`.slice(hit.startOffset, hit.endOffset);
+  assert.ok(revealed.includes(pemMarker("RSA")));
+  assert.ok(revealed.includes(pemMarker("RSA", true)));
+  assert.ok(revealed.includes("\n"));
 });
 
 test("private-key detection captures escaped newline PEM blocks", () => {
@@ -110,8 +113,9 @@ test("private-key detection captures escaped newline PEM blocks", () => {
   const { findings } = analyzeAiHistoryRows([row(escapedPem)], { mode: "quick", salt: "fixed" });
   const hit = findings.find((f) => f.ruleId === "pem-private-key");
   assert.ok(hit);
-  assert.ok(hit.match.includes(pemMarker("")));
-  assert.ok(hit.match.includes(pemMarker("", true)));
+  const revealed = escapedPem.slice(hit.startOffset, hit.endOffset);
+  assert.ok(revealed.includes(pemMarker("")));
+  assert.ok(revealed.includes(pemMarker("", true)));
 });
 
 test("private-key detection expands JSON-escaped partial PEM bodies", () => {
@@ -119,11 +123,12 @@ test("private-key detection expands JSON-escaped partial PEM bodies", () => {
   const { findings } = analyzeAiHistoryRows([row(partialPem)], { mode: "quick", salt: "fixed" });
   const hit = findings.find((f) => f.ruleId === "pem-private-key");
   assert.ok(hit);
-  assert.ok(hit.match.includes(pemMarker("")));
-  assert.ok(hit.match.includes("MIIEvgIBADANBgkqhkiG9w0BAQEFAASC"));
-  assert.ok(hit.match.includes("MIICWwIBAAKBgQC9c1exampleBodyLine=="));
-  assert.ok(!hit.match.includes("private_key_id"));
-  assert.ok(hit.match.length > pemMarker("").length);
+  const revealed = partialPem.slice(hit.startOffset, hit.endOffset);
+  assert.ok(revealed.includes(pemMarker("")));
+  assert.ok(revealed.includes("MIIEvgIBADANBgkqhkiG9w0BAQEFAASC"));
+  assert.ok(revealed.includes("MIICWwIBAAKBgQC9c1exampleBodyLine=="));
+  assert.ok(!revealed.includes("private_key_id"));
+  assert.ok(revealed.length > pemMarker("").length);
 });
 
 test("private-key detection expands double-escaped partial PEM bodies", () => {
@@ -131,9 +136,10 @@ test("private-key detection expands double-escaped partial PEM bodies", () => {
   const { findings } = analyzeAiHistoryRows([row(partialPem)], { mode: "quick", salt: "fixed" });
   const hit = findings.find((f) => f.ruleId === "pem-private-key");
   assert.ok(hit);
-  assert.ok(hit.match.includes("MIIEvgIBADANBgkqhkiG9w0BAQEFAASC"));
-  assert.ok(hit.match.includes("MIICWwIBAAKBgQC9c1exampleBodyLine=="));
-  assert.ok(!hit.match.includes("private_key_id"));
+  const revealed = partialPem.slice(hit.startOffset, hit.endOffset);
+  assert.ok(revealed.includes("MIIEvgIBADANBgkqhkiG9w0BAQEFAASC"));
+  assert.ok(revealed.includes("MIICWwIBAAKBgQC9c1exampleBodyLine=="));
+  assert.ok(!revealed.includes("private_key_id"));
 });
 
 test("private-key detection ignores tiny PEM example fragments", () => {
@@ -272,14 +278,15 @@ test("Stripe test keys and public test cards are downgraded", () => {
 });
 
 // ───────────────────────── Redaction / fingerprint / direction ───────────
-test("findings redact by default, expose match in-memory, and tag leak direction", () => {
+test("findings are permanently redacted and contain source coordinates for one-at-a-time reveal", () => {
   const { findings } = analyzeAiHistoryRows([row(GITHUB_KEY)], { mode: "quick", salt: "t" });
   assert.equal(findings.length, 1);
   const f = findings[0];
   assert.equal(f.ruleId, "github-pat");
   assert.match(f.redacted, /ghp_.*•.*\(\d+ chars\)/);
   assert.ok(!f.snippet.includes(GITHUB_KEY), "snippet must mask the secret");
-  assert.equal(f.match, GITHUB_KEY); // cleartext for per-row reveal
+  assert.equal(Object.prototype.hasOwnProperty.call(f, "match"), false);
+  assert.equal(GITHUB_KEY.slice(f.startOffset, f.endOffset), GITHUB_KEY);
   assert.equal(f.leakDirection, "user→service");
   assert.equal(f.fingerprint, fingerprint(GITHUB_KEY, "t"));
 });
@@ -324,6 +331,9 @@ function fakeAiMeta(records) {
       SourceFile: "c7",
       Workspace: "c8",
       MessageId: "c9",
+      ToolInput: "c10",
+      ToolCommand: "c11",
+      ToolDescription: "c12",
     },
     db: {
       prepare(sql) {
@@ -363,4 +373,48 @@ test("analyzeAiHistory streams rows and scans FullText before Summary", () => {
   assert.equal(result.rowsSummaryOnly, 1);
   assert.deepEqual(result.findings.map((f) => f.recordId).sort(), ["7", "8"]);
   assert.deepEqual(progress.at(-1), { phase: "ai-secrets", processed: 2, total: 2 });
+});
+
+test("complete chunk scanning detects a boundary-spanning secret and an end-of-value secret exactly once", () => {
+  const boundaryText = `${" ".repeat(SCAN_CHUNK_LEN - 10)}${GITHUB_KEY}${" ".repeat(1_000_000 - SCAN_CHUNK_LEN - GITHUB_KEY.length + 10)}`;
+  const endText = `${" ".repeat(1_000_000 - GITHUB_KEY.length)}${GITHUB_KEY}`;
+  for (const text of [GITHUB_KEY + " trailing", boundaryText, endText]) {
+    const result = analyzeAiHistoryRows([row(text)], { mode: "quick", salt: "fixed" });
+    const hits = result.findings.filter((f) => f.ruleId === "github-pat");
+    assert.equal(hits.length, 1);
+    assert.equal(text.slice(hits[0].startOffset, hits[0].endOffset), GITHUB_KEY);
+  }
+});
+
+test("ToolInput, ToolCommand, and ToolDescription are scanned with field provenance", () => {
+  const meta = fakeAiMeta([{
+    _rowid: 1, c0: "summary", c1: "full text without credentials", c2: "tool-row", c3: "user",
+    c4: "Grok Build", c5: "2026-01-01 00:00:00", c10: GITHUB_KEY, c11: GITHUB_KEY,
+    c12: GITHUB_KEY,
+  }]);
+  const result = analyzeAiHistory(meta, { mode: "quick", salt: "fixed" });
+  assert.deepEqual(new Set(result.findings.map((f) => f.evidenceField)), new Set(["ToolInput", "ToolCommand", "ToolDescription"]));
+  assert.equal(result.findings.length, 3);
+  assert.equal(result.summary.uniqueSecrets, 1);
+  assert.equal(result.coverage.fields.ToolInput.rows, 1);
+  assert.equal(result.coverage.fields.ToolCommand.rows, 1);
+  assert.equal(result.coverage.fields.ToolDescription.rows, 1);
+});
+
+test("in-memory results are capped while aggregates continue and serialized findings remain redacted", () => {
+  const rows = Array.from({ length: 25 }, (_, i) => row(GITHUB_KEY, { recordId: String(i + 1) }));
+  const result = analyzeAiHistoryRows(rows, { mode: "quick", salt: "fixed", maxFindings: 3 });
+  assert.equal(result.summary.total, 25);
+  assert.equal(result.findings.length, 3);
+  assert.equal(result.resultsTruncated, true);
+  const serialized = JSON.stringify(result.findings);
+  assert.equal(serialized.includes(GITHUB_KEY), false);
+  assert.equal(result.findings.every((f) => !Object.prototype.hasOwnProperty.call(f, "match")), true);
+});
+
+test("coverage is explicitly incomplete when only Summary is available", () => {
+  const meta = fakeAiMeta([{ _rowid: 1, c0: "preview only", c1: "", c2: "1", c3: "user", c4: "ChatGPT" }]);
+  const result = analyzeAiHistory(meta, { mode: "quick", salt: "fixed" });
+  assert.equal(result.coverage.complete, false);
+  assert.match(result.coverage.limitations[0], /lacked FullText/);
 });

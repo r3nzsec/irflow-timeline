@@ -183,7 +183,13 @@ function createHayabusaProgressParser({ onProgress, evtxFiles, totalBytes, start
     emit("Starting Hayabusa...");
   };
 
-  const startTicker = () => setInterval(() => emit("Hayabusa running..."), 1000);
+  const startTicker = (onError) => setInterval(() => {
+    try {
+      emit("Hayabusa running...");
+    } catch (err) {
+      onError?.(err);
+    }
+  }, 1000);
 
   return {
     handleChunk,

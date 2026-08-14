@@ -62,6 +62,7 @@ module.exports = function registerQueryHandlers(safeHandle, safeSend, { db, runA
       metadata: { method, tabId: payload?.tabId, tabIds: [...tabIds] },
       concurrencyKey: "query",
       maxConcurrent: QUERY_WORKER_CONCURRENCY,
+      resourceClass: "light",
       // Row windows can contain tens of MB. The IPC caller owns the result after resolution;
       // retaining it in JobManager history caused completed scroll queries to exhaust V8 heap.
       retainResult: false,
@@ -100,7 +101,9 @@ module.exports = function registerQueryHandlers(safeHandle, safeSend, { db, runA
   });
 
   safeHandle("get-bookmarked-ids", (event, { tabId }) => {
-    return runQueryJob("getBookmarkedIds", { tabId }, () => db.getBookmarkedIds(tabId));
+    // This is a small indexed lookup used by the 30-second session autosave.
+    // Running it in a fresh V8 isolate per tab creates needless worker churn.
+    return db.getBookmarkedIds(tabId);
   });
 
   safeHandle("get-column-stats", (event, { tabId, colName, options }) => {

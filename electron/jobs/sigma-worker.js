@@ -13,6 +13,7 @@ if (workerData?.resourcesPath) {
 const TimelineDB = require("../db");
 const { scanSigmaRules } = require("../analyzers/sigma");
 const { createTempResultPath } = require("../analyzers/sigma/result-store");
+const { sendWorkerResult } = require("./worker-result");
 
 let cancelled = false;
 
@@ -54,7 +55,7 @@ function assertNotCancelled() {
     assertNotCancelled();
     db.releaseTab(tabId);
     db.closeAll();
-    parentPort.postMessage({ type: "result", result });
+    sendWorkerResult(parentPort, result);
   } catch (err) {
     try { db.releaseTab(tabId); } catch {}
     try { db.closeAll(); } catch {}
@@ -62,9 +63,11 @@ function assertNotCancelled() {
       process.exit(1);
       return;
     }
-    parentPort.postMessage({
-      type: "result",
-      result: { matches: [], eventRows: [], stats: {}, errors: [err?.message || "Sigma scan failed"] },
+    sendWorkerResult(parentPort, {
+      matches: [],
+      eventRows: [],
+      stats: {},
+      errors: [err?.message || "Sigma scan failed"],
     });
   }
 })();

@@ -1,14 +1,30 @@
 const path = require("path");
 const { Worker } = require("worker_threads");
 const { workerResourceLimits } = require("../utils/worker-heap");
+const { deriveWorkerBudget } = require("../utils/worker-budget");
 
 class JobManager {
-  constructor({ safeSend, dbg }) {
+  constructor({ safeSend, dbg, maxWorkers, maxHeavyWorkers } = {}) {
     this.safeSend = safeSend || (() => {});
     this.dbg = dbg || (() => {});
     this.jobs = new Map();
-    this.queues = new Map();
+    this.pending = [];
     this.counter = 0;
+    this._pruneTimer = null;
+    const derived = deriveWorkerBudget();
+    this.maxWorkers = Number.isFinite(maxWorkers) && maxWorkers > 0
+      ? Math.floor(maxWorkers)
+      : derived.maxWorkers;
+    this.maxHeavyWorkers = Math.min(
+      Number.isFinite(maxHeavyWorkers) && maxHeavyWorkers > 0
+        ? Math.floor(maxHeavyWorkers)
+        : derived.maxHeavyWorkers,
+      this.maxWorkers,
+    );
+    this.budgetSource = Number.isFinite(maxWorkers) || Number.isFinite(maxHeavyWorkers)
+      ? "constructor"
+      : derived.source;
+    this.dbg("JOB", "Worker budget initialized", this.metrics());
   }
 
   startWorkerJob({
@@ -20,12 +36,15 @@ class JobManager {
     concurrencyKey = null,
     maxConcurrent = 0,
     retainResult = true,
+    resourceClass = "heavy",
   }) {
     const jobId = workerData.jobId || `${type || "job"}_${++this.counter}_${Date.now()}`;
     const startedAt = Date.now();
     const workerPath = path.isAbsolute(worker) ? worker : path.join(__dirname, worker);
     const limit = Number.isFinite(maxConcurrent) && maxConcurrent > 0 ? Math.floor(maxConcurrent) : 0;
     const queueKey = limit > 0 ? (concurrencyKey || type || workerPath) : null;
+    const cancelBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+    const cancelView = new Int32Array(cancelBuffer);
 
     const job = {
       id: jobId,
@@ -36,15 +55,20 @@ class JobManager {
       metadata,
       worker: null,
       workerPath,
-      workerData: { ...workerData, jobId, type },
+      workerData: { ...workerData, jobId, type, cancelBuffer },
+      cancelView,
       channels,
       concurrencyKey: queueKey,
       maxConcurrent: limit,
+      resourceClass: resourceClass === "light" ? "light" : "heavy",
       retainResult: retainResult !== false,
       result: null,
       error: null,
       _resolve: null,
       _reject: null,
+      _settled: false,
+      _cancelTimer: null,
+      _retireTimer: null,
     };
     this.jobs.set(jobId, job);
 
@@ -53,7 +77,7 @@ class JobManager {
       job._reject = reject;
       this._schedule(job);
     }).finally(() => {
-      setTimeout(() => this._prune(), 10 * 60 * 1000).unref?.();
+      if (job.retainResult) this._schedulePrune();
     });
 
     job.promise = promise;
@@ -68,23 +92,26 @@ class JobManager {
       job.status = "cancelled";
       job.updatedAt = Date.now();
       this._emitJob(job, { phase: "cancelled", done: true });
-      const err = new Error("Job cancelled");
-      err.cancelled = true;
-      const reject = job._reject;
-      reject?.(err);
+      this._settleJob(job, "reject", this._cancelError());
       this._releaseTransientJob(job);
       return { ok: true };
     }
     if (!job.worker || job.status !== "running") return { ok: false, status: job.status };
     job.status = "cancelling";
     job.updatedAt = Date.now();
+    try { Atomics.store(job.cancelView, 0, 1); } catch {}
     this._emitJob(job, { phase: "cancelling" });
     try { job.worker.postMessage({ type: "cancel" }); } catch {}
-    setTimeout(() => {
+    job._cancelTimer = setTimeout(() => {
+      job._cancelTimer = null;
       if (job.worker && job.status === "cancelling") {
-        try { job.worker.terminate(); } catch {}
+        try {
+          const termination = job.worker.terminate();
+          termination?.catch?.(() => {});
+        } catch {}
       }
-    }, 250).unref?.();
+    }, 250);
+    job._cancelTimer.unref?.();
     return { ok: true };
   }
 
@@ -100,15 +127,33 @@ class JobManager {
 
   terminateAll() {
     for (const job of this.jobs.values()) {
-      if (!job.worker) continue;
+      if (job.status === "queued") this._removeQueued(job);
+      if (!job.worker && job.status !== "queued") continue;
       job.status = "cancelled";
       job.updatedAt = Date.now();
-      try { job.worker.terminate(); } catch {}
+      try { job.worker?.terminate(); } catch {}
     }
   }
 
   list() {
     return [...this.jobs.values()].map((job) => this._serialize(job));
+  }
+
+  metrics() {
+    const jobs = [...this.jobs.values()];
+    const live = jobs.filter((job) => job.worker);
+    const queued = jobs.filter((job) => job.status === "queued");
+    return {
+      limits: {
+        maxWorkers: this.maxWorkers,
+        maxHeavyWorkers: this.maxHeavyWorkers,
+        source: this.budgetSource,
+      },
+      liveWorkers: live.length,
+      liveHeavyWorkers: live.filter((job) => job.resourceClass === "heavy").length,
+      queuedWorkers: queued.length,
+      queuedHeavyWorkers: queued.filter((job) => job.resourceClass === "heavy").length,
+    };
   }
 
   _emitJob(job, progress = {}) {
@@ -125,27 +170,50 @@ class JobManager {
   }
 
   _schedule(job) {
-    if (!job.concurrencyKey || this._runningCount(job.concurrencyKey) < job.maxConcurrent) {
+    if (this._canStart(job)) {
       this._startThread(job);
       return;
     }
 
-    const queue = this.queues.get(job.concurrencyKey) || [];
-    queue.push(job);
-    this.queues.set(job.concurrencyKey, queue);
+    this.pending.push(job);
     this._emitJob(job, { phase: "queued", progress: 0 });
+    this.dbg("JOB", "Worker queued by resource budget", {
+      jobId: job.id,
+      type: job.type,
+      resourceClass: job.resourceClass,
+      ...this.metrics(),
+    });
   }
 
   _startThread(job) {
     job.status = "running";
     job.updatedAt = Date.now();
-    const thread = new Worker(job.workerPath, {
-      workerData: job.workerData,
-      resourceLimits: workerResourceLimits(),
-    });
+    let thread;
+    try {
+      thread = new Worker(job.workerPath, {
+        workerData: job.workerData,
+        resourceLimits: workerResourceLimits(),
+      });
+    } catch (err) {
+      job.status = "failed";
+      job.updatedAt = Date.now();
+      job.error = err?.message || String(err);
+      this.dbg("JOB", "Worker failed to start", { jobId: job.id, type: job.type, error: job.error });
+      this._emitJob(job, { phase: "failed", error: job.error, done: true });
+      this._settleJob(job, "reject", err);
+      this._releaseTransientJob(job);
+      queueMicrotask(() => this._drainQueues());
+      return;
+    }
     job.worker = thread;
 
     this._emitJob(job, { phase: "started", progress: 0 });
+    this.dbg("JOB", "Worker started", {
+      jobId: job.id,
+      type: job.type,
+      resourceClass: job.resourceClass,
+      ...this.metrics(),
+    });
 
     thread.on("message", (message = {}) => {
       if (message.type === "progress") {
@@ -162,59 +230,89 @@ class JobManager {
       }
 
       if (message.type === "result") {
+        if (job._settled) return;
+        if (job.status === "cancelling") {
+          // Once cancellation is acknowledged by the manager, a racing result cannot
+          // turn the job back into a success. Retire the worker and let exit settle it.
+          this._scheduleWorkerRetirement(job, thread);
+          return;
+        }
         job.status = "completed";
         job.updatedAt = Date.now();
         if (job.retainResult) job.result = message.result;
         this._emitJob(job, { phase: "completed", progress: 100, done: true });
         if (job.channels.complete) this.safeSend(job.channels.complete, message.result);
-        const resolve = job._resolve;
-        resolve?.(message.result);
+        this._settleJob(job, "resolve", message.result);
         this._releaseTransientJob(job);
+        this._scheduleWorkerRetirement(job, thread);
       }
     });
 
     thread.on("error", (err) => {
+      this._clearWorkerRetirement(job);
+      if (job._settled) {
+        this.dbg("JOB", "Worker emitted an error after settlement", {
+          jobId: job.id,
+          type: job.type,
+          status: job.status,
+          error: err?.message || String(err),
+        });
+        return;
+      }
       job.status = job.status === "cancelling" ? "cancelled" : "failed";
       job.updatedAt = Date.now();
       job.error = err?.message || String(err);
       this._emitJob(job, { phase: job.status, error: job.error, done: true });
-      const reject = job._reject;
-      reject?.(err);
+      const rejection = job.status === "cancelled" ? this._cancelError() : err;
+      this._settleJob(job, "reject", rejection);
       this._releaseTransientJob(job);
     });
 
     thread.on("exit", (code) => {
+      this._clearWorkerRetirement(job);
+      this._clearCancelTimer(job);
       job.worker = null;
-      const key = job.concurrencyKey;
-      const done = job.status === "completed" || job.status === "failed" || job.status === "cancelled";
-      if (!done) {
-        if (job.status === "cancelling" || code === 1) {
+      if (!job._settled) {
+        if (job.status === "cancelling" || job.status === "cancelled") {
           job.status = "cancelled";
           job.updatedAt = Date.now();
           this._emitJob(job, { phase: "cancelled", done: true });
-          const err = new Error("Job cancelled");
-          err.cancelled = true;
-          const reject = job._reject;
-          reject?.(err);
-          this._releaseTransientJob(job);
-        } else if (code !== 0) {
+          this._settleJob(job, "reject", this._cancelError());
+        } else {
           job.status = "failed";
           job.updatedAt = Date.now();
-          job.error = `Worker exited with code ${code}`;
+          job.error = `Worker exited before sending a terminal result (code ${code})`;
           this._emitJob(job, { phase: "failed", error: job.error, done: true });
-          const reject = job._reject;
-          reject?.(new Error(job.error));
-          this._releaseTransientJob(job);
+          this._settleJob(job, "reject", new Error(job.error));
         }
+      } else if (job.status === "completed" && code !== 0) {
+        this.dbg("JOB", "Worker exited non-zero after delivering its result", {
+          jobId: job.id,
+          type: job.type,
+          code,
+        });
       }
-      if (key) this._drainQueue(key);
+      this._releaseTransientJob(job);
+      this.dbg("JOB", "Worker exited", { jobId: job.id, type: job.type, code, ...this.metrics() });
+      this._drainQueues();
     });
+  }
+
+  _canStart(job) {
+    const metrics = this.metrics();
+    if (metrics.liveWorkers >= this.maxWorkers) return false;
+    if (job.resourceClass === "heavy" && metrics.liveHeavyWorkers >= this.maxHeavyWorkers) return false;
+    if (job.concurrencyKey && this._runningCount(job.concurrencyKey) >= job.maxConcurrent) return false;
+    return true;
   }
 
   _runningCount(key) {
     let count = 0;
     for (const job of this.jobs.values()) {
-      if (job.concurrencyKey === key && job.worker && (job.status === "running" || job.status === "cancelling")) {
+      // A worker still consumes an OS thread and a V8 isolate until its exit event,
+      // even after it has posted a terminal result. Count the live Worker object so
+      // the concurrency limit cannot be bypassed during retirement.
+      if (job.concurrencyKey === key && job.worker) {
         count++;
       }
     }
@@ -222,25 +320,19 @@ class JobManager {
   }
 
   _removeQueued(job) {
-    const key = job.concurrencyKey;
-    if (!key) return;
-    const queue = this.queues.get(key);
-    if (!queue) return;
-    const next = queue.filter((queued) => queued.id !== job.id);
-    if (next.length) this.queues.set(key, next);
-    else this.queues.delete(key);
+    this.pending = this.pending.filter((queued) => queued.id !== job.id);
   }
 
-  _drainQueue(key) {
-    const queue = this.queues.get(key);
-    if (!queue?.length) return;
-    while (queue.length > 0) {
-      const next = queue[0];
-      if (this._runningCount(key) >= next.maxConcurrent) break;
-      queue.shift();
-      if (next.status === "queued") this._startThread(next);
+  _drainQueues() {
+    let started = true;
+    while (started) {
+      started = false;
+      const index = this.pending.findIndex((job) => job.status === "queued" && this._canStart(job));
+      if (index < 0) break;
+      const [next] = this.pending.splice(index, 1);
+      this._startThread(next);
+      started = true;
     }
-    if (!queue.length) this.queues.delete(key);
   }
 
   /**
@@ -254,7 +346,64 @@ class JobManager {
     job.promise = null;
     job._resolve = null;
     job._reject = null;
-    this.jobs.delete(job.id);
+    // Keep the lightweight job record until the Worker actually exits. Removing it
+    // on the result message made completed-but-live workers invisible to concurrency
+    // accounting and allowed hundreds of V8 isolates to accumulate.
+    if (!job.worker) this.jobs.delete(job.id);
+  }
+
+  _scheduleWorkerRetirement(job, thread) {
+    if (!job || !thread || job.worker !== thread || job._retireTimer) return;
+    // Workers should close parentPort after their terminal result. This fallback
+    // enforces the one-shot job contract if a current or future worker forgets.
+    job._retireTimer = setTimeout(() => {
+      job._retireTimer = null;
+      if (job.worker !== thread) return;
+      try {
+        const termination = thread.terminate();
+        termination?.catch?.(() => {});
+      } catch {}
+    }, 250);
+    job._retireTimer.unref?.();
+  }
+
+  _clearWorkerRetirement(job) {
+    if (!job?._retireTimer) return;
+    clearTimeout(job._retireTimer);
+    job._retireTimer = null;
+  }
+
+  _clearCancelTimer(job) {
+    if (!job?._cancelTimer) return;
+    clearTimeout(job._cancelTimer);
+    job._cancelTimer = null;
+  }
+
+  _cancelError() {
+    const err = new Error("Job cancelled");
+    err.cancelled = true;
+    return err;
+  }
+
+  _settleJob(job, outcome, value) {
+    if (!job || job._settled) return false;
+    job._settled = true;
+    const resolve = job._resolve;
+    const reject = job._reject;
+    job._resolve = null;
+    job._reject = null;
+    if (outcome === "resolve") resolve?.(value);
+    else reject?.(value);
+    return true;
+  }
+
+  _schedulePrune() {
+    if (this._pruneTimer) return;
+    this._pruneTimer = setTimeout(() => {
+      this._pruneTimer = null;
+      this._prune();
+    }, 10 * 60 * 1000);
+    this._pruneTimer.unref?.();
   }
 
   _normalizeProgress(job, progress = {}) {
@@ -274,6 +423,7 @@ class JobManager {
       startedAt: job.startedAt,
       updatedAt: job.updatedAt,
       metadata: job.metadata,
+      resourceClass: job.resourceClass,
       error: job.error,
     };
   }

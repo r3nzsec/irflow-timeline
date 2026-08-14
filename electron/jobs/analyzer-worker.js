@@ -1,7 +1,9 @@
 const { parentPort, workerData } = require("worker_threads");
 const TimelineDB = require("../db");
+const { sendWorkerResult } = require("./worker-result");
 
 let cancelled = false;
+const cancelView = workerData.cancelBuffer ? new Int32Array(workerData.cancelBuffer) : null;
 
 parentPort.on("message", (message = {}) => {
   if (message.type === "cancel") cancelled = true;
@@ -12,7 +14,43 @@ function progress(payload) {
 }
 
 function assertNotCancelled() {
-  if (cancelled) throw Object.assign(new Error("Job cancelled"), { cancelled: true });
+  if (cancelled || (cancelView && Atomics.load(cancelView, 0) === 1)) {
+    throw Object.assign(new Error("Job cancelled"), { cancelled: true });
+  }
+}
+
+function analyzeAiHistoryWithStore(db, tabId, options) {
+  const { AiSecretResultWriter } = require("../analyzers/ai-history/result-store");
+  const writer = new AiSecretResultWriter(workerData.jobId);
+  try {
+    const result = db.analyzeAiHistory(tabId, {
+      ...options,
+      maxFindings: 0,
+      findingSink: (finding) => writer.add(finding),
+      checkAbort: assertNotCancelled,
+      progressCb: (p) => progress({ phase: "ai-secrets", tabId, ...p }),
+    });
+    assertNotCancelled();
+    const stored = writer.finish();
+    return {
+      ...result,
+      findings: undefined,
+      storedFindings: stored.storedFindings,
+      totalFindings: stored.totalFindings,
+      resultsTruncated: stored.resultsTruncated,
+      resultStorePath: stored.resultStorePath,
+      summary: {
+        ...(result.summary || {}),
+        uniqueSecrets: stored.uniqueSecrets,
+        uniqueSecretsExact: stored.uniqueSecretsExact,
+        flaggedRows: stored.flaggedRows,
+        flaggedRowsExact: stored.flaggedRowsExact,
+      },
+    };
+  } catch (err) {
+    writer.abort();
+    throw err;
+  }
 }
 
 function callAnalyzer(db, method, payload = {}) {
@@ -69,10 +107,7 @@ function callAnalyzer(db, method, payload = {}) {
     case "analyzeADS":
       return db.analyzeADS(tabId, { ...options });
     case "analyzeAiHistory":
-      return db.analyzeAiHistory(tabId, {
-        ...options,
-        progressCb: (p) => progress({ phase: "ai-secrets", tabId, ...p }),
-      });
+      return analyzeAiHistoryWithStore(db, tabId, options);
     case "analyzeUsnJournal":
       return db.analyzeUsnJournal(tabId, options);
     case "matchIocs":
@@ -100,7 +135,7 @@ function callAnalyzer(db, method, payload = {}) {
       try { db.releaseTab(descriptor.tabId); } catch {}
     }
     db.closeAll();
-    parentPort.postMessage({ type: "result", result });
+    sendWorkerResult(parentPort, result);
   } catch (err) {
     for (const descriptor of tabs) {
       try { db.releaseTab(descriptor.tabId); } catch {}
@@ -110,9 +145,6 @@ function callAnalyzer(db, method, payload = {}) {
       process.exit(1);
       return;
     }
-    parentPort.postMessage({
-      type: "result",
-      result: { error: err?.message || "Analyzer failed", stack: err?.stack },
-    });
+    sendWorkerResult(parentPort, { error: err?.message || "Analyzer failed", stack: err?.stack });
   }
 })();

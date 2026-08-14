@@ -6,7 +6,7 @@ description: IRFlow Timeline architecture — React renderer, Electron main proc
 
 Technical overview of IRFlow Timeline's architecture for developers and contributors.
 
-> **v1.0.6+ modular layout (current: v1.0.9).** What was once a ~20K-line `App.jsx` and monolithic `electron/parser.js` / `electron/db.js` is now decomposed into focused modules across the renderer and main process (`parsers/`, `ipc/`, `jobs/`, `analyzers/`, and related trees). v1.0.8 extended the AI parser subsystem, triage collection orchestration, worker lifecycle controls, and multi-source analyzers; v1.0.9 adds bounded native EVTX chunk ingestion. The file references below reflect that layout.
+> **v1.0.6+ modular layout (current: v1.0.10).** What was once a ~20K-line `App.jsx` and monolithic `electron/parser.js` / `electron/db.js` is now decomposed into focused modules across the renderer and main process (`parsers/`, `ipc/`, `jobs/`, `analyzers/`, and related trees). v1.0.8 extended the AI parser subsystem, triage collection orchestration, worker lifecycle controls, and multi-source analyzers; v1.0.9 added bounded native EVTX chunk ingestion; and v1.0.10 hardens worker retirement, crash-safe session recovery, global resource budgeting, fatal recovery, and macOS window ownership. The file references below reflect that layout.
 
 ## System Architecture
 
@@ -66,7 +66,7 @@ Progress for profile extract streams on `ai-history-profile-progress`.
 
 The main process runs with full Node.js access and acts as the orchestrator:
 
-- **`main.js`** — creates the `BrowserWindow`, wires crash guards, defines the `safeHandle` / `safeSend` IPC primitives, owns the serialized import queue and the deferred index/FTS build queue, and delegates IPC registration to `ipc/index.js`, menus to `menu.js`, and updates to `updater.js`. Raises the V8 heap to **16 GB** for large imports.
+- **`main.js`** — creates and owns the `BrowserWindow`, defines the `safeHandle` / `safeSend` IPC primitives, owns the serialized import queue and the deferred index/FTS build queue, and delegates IPC registration to `ipc/index.js`, menus to `menu.js`, and updates to `updater.js`. On macOS, close hides the live window and Dock activation restores it. Fatal main/renderer failures synchronously close workers and databases, flush diagnostics, and relaunch once behind a crash-loop guard. Raises the V8 heap to **16 GB** for large imports.
 - **`import.js`** — import pipeline: validation, XLSX sheet selection, large-file warnings, USN↔MFT path resolution, and index scheduling.
 - **`ipc/`** — one registration module per domain (`query-`, `tag-`, `analysis-`, `export-`, `session-`, `vt-`, `sigma-`, `job-`, `rdp-bitmap-cache-`, `triage-handlers`, and release-specific modules such as AI history when enabled), all registered by `ipc/index.js`. Each handler is wrapped by `safeHandle()`.
 - **`updater.js`** — auto-update lifecycle (check → download → install) via `electron-updater`.
@@ -87,6 +87,8 @@ CPU-heavy work runs off the main thread in `worker_threads`, coordinated by `job
 - **`sigma-worker`** — runs Sigma / Hayabusa scans
 
 Workers parse/scan into their own temp SQLite files that the main process then **adopts** (`db.adoptTabFromFile()`). Progress streams over IPC; cancellation is `postMessage('cancel')` → 250 ms grace → `terminate()`.
+
+`JobManager` applies one global budget across every worker type, then a second ceiling to memory-heavy imports/indexes/analyzers/scans. Defaults scale from 1 worker on systems below 16 GiB to 4 workers on systems with at least 64 GiB, while heavy work is capped at 1 or 2. `TLE_MAX_WORKERS` and `TLE_MAX_HEAVY_WORKERS` provide bounded operational overrides. Workers remain counted until their `exit` event, and `jobs-metrics` exposes current limits plus live/queued totals.
 
 ### Data Engine (SQLite)
 
@@ -192,18 +194,18 @@ UI action → IPC → db.queryRows() → SQL (filters/sort) → LIMIT/OFFSET win
 
 | Technology | Version | Purpose |
 |-----------|---------|---------|
-| **Electron** | ^33.2.1 | Native app container |
+| **Electron** | ^43.3.0 | Native app container |
 | **React** | ^18.3.1 | UI framework |
 | **Zustand** | ^5.0.12 | Renderer state stores |
 | **Vite** | ^6.0.7 | Build tooling |
-| **better-sqlite3** | ^11.7.0 | SQLite bindings (zero-copy) |
+| **better-sqlite3** | ^13.0.3 | SQLite bindings (zero-copy) |
 | **ExcelJS** | ^4.4.0 | XLSX streaming |
-| **SheetJS (xlsx)** | ^0.18.5 | Legacy XLS parsing |
+| **SheetJS (xlsx)** | 0.20.3 | Legacy XLS parsing |
 | **@ts-evtx/core** | ^1.1.1 | EVTX binary parsing |
 | **csv-parser** | ^3.0.0 | CSV parsing |
 | **js-yaml** | ^4.1.1 | Sigma rule parsing |
-| **electron-updater** | ^6.6.7 | Auto-update framework |
-| **electron-builder** | ^25.1.8 | App packaging |
+| **electron-updater** | ^6.8.9 | Auto-update framework |
+| **electron-builder** | ^26.15.3 | App packaging |
 
 External binaries bundled as `extraResources`: **Hayabusa** (Sigma over raw EVTX) and **bmc-tools** (RDP bitmap cache).
 
@@ -217,6 +219,7 @@ External binaries bundled as `extraResources`: **Hayabusa** (Sigma over raw EVTX
 | **DMG** | `npm run dist:dmg` | macOS installer |
 | **Universal** | `npm run dist:universal` | Intel + Apple Silicon |
 | **Smoke build** | `npm run dist:smoke` | Unsigned local build (`SKIP_NOTARIZE=1`) |
+| **Runtime smoke** | `npm run smoke:electron` | Electron + SQLite + EVTX-message ABI check |
 | **Tests** | `npm test` | `node --test tests/*.test.js` |
 
 `npm run dist*` runs `bundle:tools` first. After `npm install`, run `npm run rebuild` to rebuild `better-sqlite3` against Electron's ABI.

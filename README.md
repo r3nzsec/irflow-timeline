@@ -25,7 +25,7 @@ For the full feature list and documentation, visit the **[IRFlow Timeline Docs](
 **Prerequisites (for developers only):**
 - Node.js 18+: `brew install node`
 - Xcode CLI tools: `xcode-select --install` (for native module compilation)
-- macOS 11+ (Big Sur or later)
+- macOS 12+ (Monterey or later)
 
 ```bash
 git clone https://github.com/r3nzsec/irflow-timeline.git

@@ -1,5 +1,6 @@
 const { parentPort, workerData } = require("worker_threads");
 const TimelineDB = require("../db");
+const { sendWorkerResult } = require("./worker-result");
 
 let cancelled = false;
 
@@ -35,7 +36,7 @@ function progress(payload) {
     };
     db.releaseTab(tabId);
     db.closeAll();
-    parentPort.postMessage({ type: "result", result: out });
+    sendWorkerResult(parentPort, out);
   } catch (err) {
     try { db.releaseTab(tabId); } catch {}
     try { db.closeAll(); } catch {}
@@ -43,9 +44,6 @@ function progress(payload) {
       process.exit(1);
       return;
     }
-    parentPort.postMessage({
-      type: "result",
-      result: { task, tabId, error: err?.message || "Index job failed" },
-    });
+    sendWorkerResult(parentPort, { task, tabId, error: err?.message || "Index job failed" });
   }
 })();

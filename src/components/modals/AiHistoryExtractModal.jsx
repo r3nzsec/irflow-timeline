@@ -67,6 +67,10 @@ export default function AiHistoryExtractModal() {
       progress: startProgress = {},
     } = modal;
 
+    // Computer History rows are activity events, not conversation turns — keep the copy honest.
+    const noun = tool === "computer-history" ? "activity event" : "message";
+    const plural = (n) => `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
+
     const finishSuccess = (r) => {
       const rowCount = r?.count ?? r?.rows?.length ?? 0;
       if (r?.openedTab && r.tabId) {
@@ -78,7 +82,7 @@ export default function AiHistoryExtractModal() {
         }).then(() => rowCount);
       }
       if (!rowCount) {
-        patch({ phase: "error", scanning: false, error: "No messages found at this path." });
+        patch({ phase: "error", scanning: false, error: `No ${noun}s found at this path.` });
         return Promise.resolve();
       }
       patch({
@@ -89,11 +93,11 @@ export default function AiHistoryExtractModal() {
           phase: "complete",
           statusDetail: "Timeline tab ready",
           rowsSoFar: rowCount,
-          log: appendLog(startProgress.log || [], `Opened tab with ${rowCount.toLocaleString()} message(s)`),
+          log: appendLog(startProgress.log || [], `Opened tab with ${plural(rowCount)}`),
         },
       });
-      if (r.importNotice) toast.info("AI history import", { detail: r.importNotice });
-      toast.success(label, { detail: `Loaded ${rowCount.toLocaleString()} messages.` });
+      if (r.importNotice) toast.info(`${label} import`, { detail: r.importNotice });
+      toast.success(label, { detail: `Loaded ${plural(rowCount)}.` });
       setTimeout(() => setModal(null), 400);
       return Promise.resolve();
     };
@@ -102,7 +106,12 @@ export default function AiHistoryExtractModal() {
 
     (async () => {
       try {
-        const r = await tle.decodeAiHistory(target, tool, { includeSubagents });
+        // Computer History is a different artifact family with its own column schema and its own
+        // extractor; it shares this progress UI (same progress channel) but not the ai-history
+        // extract path, whose dedupe/sink assumes conversation-shaped rows.
+        const r = tool === "computer-history"
+          ? await tle.decodeComputerHistory(target, {})
+          : await tle.decodeAiHistory(target, tool, { includeSubagents });
         clearIpcSubscription("ai-history-profile-progress");
         if (isStaleRun()) return;
 

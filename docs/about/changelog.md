@@ -4,6 +4,53 @@ description: IRFlow Timeline changelog — version history, new features, perfor
 
 # Changelog
 
+## v1.0.10 — August 11, 2026
+
+### ChatGPT Computer History
+
+- Added ChatGPT "Computer History" (Skysight) as a new macOS artifact family: the raw interaction-event stream retained for about 48 hours, plus the derived activity summaries that persist until cleared
+- Dedicated 54-column schema for user-activity telemetry — app, window and URL context, accessibility target role and subrole, typed content, cross-app drag origin and destination, capture fidelity, and segment provenance
+- Password-field entry is identified and labelled, with the caveat that the field value is withheld by macOS while the keystrokes are still recorded
+- Finder file selections and menu commands are captured instead of landing as empty rows
+- Typed input is collapsed into completed prompts, while terminal scrollback is preserved as a command timeline
+- Segments are reconciled against their own metadata so that records removed after the fact — the effect of the "clear last 10 minutes / hour / day" control — are surfaced as a deletion lead
+- Activity summaries the user cleared are recovered read-only from the Codex memories git history, with the time they were removed
+- Attribution rows collect the ChatGPT account, the signed-in identity, and the per-app device identifiers, each labelled with how strongly it identifies an account; no token material is stored or exported
+- Codex conversations are dated from their identifiers and joined to the timeline, with deleted conversations flagged — the prompt typed into a deleted conversation is often still recorded
+
+### Crash and Worker Reliability
+
+- Fixed a one-shot worker lifecycle leak that could accumulate hundreds of worker threads during long sessions
+- Moved recurring autosave bookmark snapshots onto the main SQLite connection instead of creating a worker for every loaded tab
+- Added exactly-once job settlement for clean exits without results, abnormal exits, startup failures, cancellation races, and duplicate terminal events
+- Kept live worker accounting active until the operating-system thread actually exits, with bounded forced retirement for stragglers
+
+### Crash-Safe Session Recovery
+
+- Serialized autosaves and prevented overlapping snapshots
+- Replaced direct autosave overwrites with synced temporary files and atomic rename
+- Retained the previous valid snapshot as a backup and automatically falls back to it when the primary is missing or corrupt
+- Validated session structure before writing or restoring recovery data
+
+### Application and Resource Resilience
+
+- Closing the last macOS window hides and preserves the live workspace; Dock activation restores it without orphaning workers or SQLite tabs
+- Fatal main-process errors, unhandled rejections, and unexpected renderer exits now clean up runtime resources and relaunch once, with a 30-second crash-loop guard
+- Enabled local-only Electron crash dumps and child-process exit logging
+- Added a memory-aware global worker ceiling plus a separate heavy-work ceiling across every worker-backed feature; live and queued usage is available through job diagnostics
+
+### Hayabusa Process Reliability
+
+- EVTX scan cancellation now waits for Hayabusa to close and escalates from `SIGTERM` to `SIGKILL` when required
+- Temporary scan output is removed only after the child process stops, and scan registration is cleared on every terminal path
+- Hayabusa diagnostic capture is capped at 256 KiB, with progress-parser errors contained safely in the scan promise
+
+### Runtime Modernization
+
+- Upgraded to Electron 43, `better-sqlite3` 13, Electron Builder 26, Electron Rebuild 4, and Electron Updater 6.8
+- Aligned local and CI builds on Node.js 22.12+ and deduplicated the EVTX message provider onto the Electron-compatible SQLite 13 addon
+- Set the packaged operating-system floor to macOS 12 (Monterey), matching Electron 43 support
+
 ## v1.0.9 — July 27, 2026
 
 ### Large EVTX Imports

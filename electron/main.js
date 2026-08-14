@@ -6,7 +6,7 @@
  * in the main process, with results sent to renderer via IPC.
  */
 
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, crashReporter, dialog, ipcMain, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const fsp = require("fs/promises");
@@ -18,6 +18,8 @@ const { createUpdateController } = require("./updater");
 const { JobManager } = require("./jobs/job-manager");
 const { resolveTempDir } = require("./utils/temp-dir");
 const { makeImportQueueKey, isDuplicatePendingImport } = require("./utils/import-queue");
+const { shouldHideWindowOnClose, restoreOrCreateWindow } = require("./utils/app-lifecycle");
+const { createFatalRecovery } = require("./utils/fatal-recovery");
 const { buildMenu: _buildMenu } = require("./menu");
 const packageMeta = require("../package.json");
 
@@ -29,6 +31,7 @@ v8.setFlagsFromString("--max-old-space-size=16384");
 app.commandLine.appendSwitch("js-flags", "--max-old-space-size=16384");
 
 let mainWindow;
+let isQuitting = false;
 const db = new TimelineDB();
 let tabCounter = 0;
 const _tabMeta = new Map(); // tabId -> { filePath, sourceFormat }
@@ -61,23 +64,15 @@ function addRecentFile(filePath) {
 }
 
 // ── Debug trace logger (shared singleton — see logger.js) ─────
-const { dbg, debugLogPath } = require("./logger");
+const { dbg, debugLogPath, flushLogSync } = require("./logger");
 dbg("INIT", `IRFlow Timeline starting, debug log: ${debugLogPath}`);
 
-// ── Global crash guards ──────────────────────────────────────────
-process.on("uncaughtException", (err) => {
-  dbg("CRASH", "Uncaught exception", { message: err?.message, stack: err?.stack });
-  try {
-    dialog.showErrorBox(
-      "IRFlow Timeline Error",
-      `An unexpected error occurred:\n\n${err.message}\n\nThe application will attempt to continue.`
-    );
-  } catch (_) {}
-});
-
-process.on("unhandledRejection", (reason) => {
-  dbg("CRASH", "Unhandled rejection", { message: reason?.message || String(reason), stack: reason?.stack });
-});
+try {
+  crashReporter.start({ uploadToServer: false, compress: true });
+  dbg("INIT", "Local crash reporter enabled", { uploadToServer: false });
+} catch (err) {
+  dbg("INIT", "Local crash reporter unavailable", { message: err?.message });
+}
 
 // ── Safe IPC helpers ─────────────────────────────────────────────
 function safeHandle(channel, handler) {
@@ -132,6 +127,25 @@ safeHandle("open-external", (_event, { url } = {}) => {
 });
 
 const jobManager = new JobManager({ safeSend, dbg });
+const fatalRecovery = createFatalRecovery({
+  app,
+  dialog,
+  jobManager,
+  db,
+  dbg,
+  flushLogSync,
+  debugLogPath,
+});
+
+// Continuing after an uncaught exception leaves Node/Electron in an undefined state.
+// Perform synchronous cleanup, relaunch at most once, and then exit immediately.
+process.on("uncaughtException", (err) => {
+  fatalRecovery.handleFatal(err, "uncaughtException", { allowRelaunch: !isQuitting });
+});
+
+process.on("unhandledRejection", (reason) => {
+  fatalRecovery.handleFatal(reason, "unhandledRejection", { allowRelaunch: !isQuitting });
+});
 
 const updateController = createUpdateController({
   getWindow: _activeWindow,
@@ -302,6 +316,7 @@ async function _runIndexWorker(tabId, task) {
     workerData: { tabId, descriptor, task },
     channels: { progress: task === "indexes" ? "index-progress" : "fts-progress" },
     metadata: { tabId, task },
+    resourceClass: "heavy",
   });
   return promise;
 }
@@ -360,6 +375,7 @@ async function runImportJob(filePath, tabId, sheetName, fileSize) {
     workerData: { filePath, tabId, sheetName, fileSize, dbPath },
     channels: { progress: "import-progress" },
     metadata: { tabId, filePath, fileName: path.basename(filePath), sheetName },
+    resourceClass: "heavy",
   });
 
   try {
@@ -390,13 +406,24 @@ app.on("window-all-closed", () => {
 });
 
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  restoreOrCreateWindow({ window: mainWindow, createWindow });
 });
 
 app.on("before-quit", () => {
+  isQuitting = true;
   jobManager.terminateAll();
   db.closeAll();
   // VT cache DB cleanup is handled by vt-handlers module
+});
+
+app.on("child-process-gone", (_event, details) => {
+  dbg("CRASH", "Electron child process gone", {
+    type: details?.type,
+    reason: details?.reason,
+    exitCode: details?.exitCode,
+    serviceName: details?.serviceName,
+    name: details?.name,
+  });
 });
 
 app.on("open-file", (event, filePath) => {
@@ -460,12 +487,9 @@ function createWindow() {
   const wc = mainWindow.webContents;
   wc.on("render-process-gone", (_event, details) => {
     dbg("CRASH", "Renderer process gone", { reason: details?.reason, exitCode: details?.exitCode });
-    try {
-      dialog.showErrorBox(
-        "IRFlow Timeline — Display Error",
-        `The timeline view stopped unexpectedly (${details?.reason || "unknown"}).\n\nIf this happened after a large import, quit and restart IRFlow, then reopen the file. Debug log: ${debugLogPath}`
-      );
-    } catch (_) {}
+    if (isQuitting && ["clean-exit", "killed"].includes(details?.reason)) return;
+    const err = new Error(`Renderer process stopped (${details?.reason || "unknown"}, code ${details?.exitCode ?? "unknown"})`);
+    fatalRecovery.handleFatal(err, "render-process-gone", { allowRelaunch: !isQuitting });
   });
   wc.on("unresponsive", () => {
     dbg("CRASH", "Renderer became unresponsive");
@@ -476,11 +500,18 @@ function createWindow() {
 
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
+    fatalRecovery.markStableStartup();
     if (app.pendingFilePath) {
       enqueueImport(app.pendingFilePath);
       delete app.pendingFilePath;
     }
     updateController.scheduleStartupCheck();
+  });
+
+  mainWindow.on("close", (event) => {
+    if (!shouldHideWindowOnClose({ isQuitting })) return;
+    event.preventDefault();
+    mainWindow.hide();
   });
 
   mainWindow.on("closed", () => { mainWindow = null; });
@@ -528,6 +559,10 @@ function startAnalyzerJob(method, payload = {}, overrides = {}) {
     workerData: { method, payload, tabs },
     channels: { progress: legacyProgressChannel, ...(overrides.channels || {}) },
     metadata: { method, tabId: payload.tabId, tabIds: payload.tabIds, ...(overrides.metadata || {}) },
+    resourceClass: "heavy",
+    concurrencyKey: overrides.concurrencyKey || null,
+    maxConcurrent: overrides.maxConcurrent || 0,
+    retainResult: overrides.retainResult !== false,
   });
 }
 

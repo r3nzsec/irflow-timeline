@@ -13,7 +13,7 @@ on:
       to_tag:
         description: "Current release tag whose ZIP blockmap must be published"
         required: true
-        default: "v1.0.9"
+        default: "v1.0.10"
 
 permissions:
   contents: write
@@ -25,9 +25,8 @@ concurrency:
 jobs:
   release:
     if: github.event_name == 'push'
-    # macos-14 (ARM64). The "Build universal better-sqlite3" step below explicitly
-    # rebuilds better-sqlite3 for both x64 and arm64 and lipo-merges them, so
-    # electron-builder receives a ready-made fat binary and npmRebuild is disabled.
+    # macos-14 (ARM64). Electron Builder 26 rebuilds better-sqlite3 13 for both
+    # x64 and arm64 sub-builds before merging the universal application.
     runs-on: macos-14
     env:
       IRFLOW_UPDATE_BASE_URL: ${{ vars.IRFLOW_UPDATE_BASE_URL }}
@@ -54,7 +53,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22.12.0
           cache: npm
 
       - name: Ensure release tools
@@ -106,6 +105,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Smoke Electron and native SQLite runtime
+        run: npm run smoke:electron
+
       # The project postinstall prepares better-sqlite3 for local Electron use.
       # Restore the Node ABI explicitly so SQLite-backed tests execute instead
       # of being skipped. Packaging rebuilds the universal Electron module below.
@@ -121,27 +123,6 @@ jobs:
 
       - name: Build documentation
         run: npm run docs:build
-
-      - name: Build universal better-sqlite3 native module
-        shell: bash
-        run: |
-          set -euo pipefail
-          electron_version="$(node -p "require('./node_modules/electron/package.json').version")"
-
-          # Build for x86_64 (native on this Intel runner)
-          npx @electron/rebuild -f -w better-sqlite3 -v "${electron_version}" --arch x64
-          cp node_modules/better-sqlite3/build/Release/better_sqlite3.node /tmp/bs3_x64.node
-
-          # Build for arm64 (cross-compile from Intel)
-          npx @electron/rebuild -f -w better-sqlite3 -v "${electron_version}" --arch arm64
-          cp node_modules/better-sqlite3/build/Release/better_sqlite3.node /tmp/bs3_arm64.node
-
-          # Merge into a universal fat binary
-          lipo -create /tmp/bs3_x64.node /tmp/bs3_arm64.node \
-               -output node_modules/better-sqlite3/build/Release/better_sqlite3.node
-
-          echo "Universal binary verified:"
-          lipo -info node_modules/better-sqlite3/build/Release/better_sqlite3.node
 
       - name: Bundle external tools (Hayabusa + bmc-tools)
         env:
@@ -181,10 +162,9 @@ jobs:
           export IRFLOW_UPDATE_CHANNEL="${IRFLOW_UPDATE_CHANNEL:-latest}"
           # Clean any stale artifacts from prior runs before building.
           rm -rf release
-          # --config.npmRebuild=false: skip electron-builder's built-in native module
-          # rebuild since we already pre-built the universal fat binary above. The
-          # renderer was built and validated before the native-module rebuild.
-          npx electron-builder --config electron-builder.config.cjs --mac --config.npmRebuild=false
+          # Electron Builder rebuilds the native SQLite addon independently for the
+          # x64 and arm64 sub-builds, then merges the universal application.
+          npx electron-builder --config electron-builder.config.cjs --mac
 
       - name: Collect release artifacts
         id: artifacts
@@ -362,7 +342,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22.12.0
           cache: npm
 
       - name: Ensure repair tools

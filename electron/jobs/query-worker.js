@@ -1,5 +1,6 @@
 const { parentPort, workerData } = require("worker_threads");
 const TimelineDB = require("../db");
+const { sendWorkerResult } = require("./worker-result");
 
 let cancelled = false;
 
@@ -68,7 +69,7 @@ function runQuery(db, method, payload = {}) {
     }
     db.closeAll();
 
-    parentPort.postMessage({ type: "result", result: { result, descriptors } });
+    sendWorkerResult(parentPort, { result, descriptors });
   } catch (err) {
     for (const descriptor of tabs) {
       try { db.releaseTab(descriptor.tabId); } catch {}
@@ -78,9 +79,6 @@ function runQuery(db, method, payload = {}) {
       process.exit(1);
       return;
     }
-    parentPort.postMessage({
-      type: "result",
-      result: { error: err?.message || "Query failed", stack: err?.stack },
-    });
+    sendWorkerResult(parentPort, { error: err?.message || "Query failed", stack: err?.stack });
   }
 })();

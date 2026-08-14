@@ -4,6 +4,7 @@ import useTabStore from "../../store/useTabStore.js";
 import { toast } from "../../store/useToastStore.js";
 import { confirm } from "../../store/useConfirmStore.js";
 import { isIpcError, ipcErrorMessage } from "../../utils/ipc-result.js";
+import { cleanupAiSecretLifecycle } from "../../utils/ai-secret-lifecycle.js";
 import DraggableResizableModal from "../primitives/DraggableResizableModal.jsx";
 
 /**
@@ -93,7 +94,7 @@ const csvCell = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
 const htmlEsc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const plural = (n, one, many = `${one}s`) => `${Number(n || 0).toLocaleString()} ${Number(n || 0) === 1 ? one : many}`;
 const withoutCleartext = (f) => {
-  const { match, ...rest } = f || {};
+  const { match, value, ...rest } = f || {};
   return rest;
 };
 const basename = (p) => (p ? String(p).split(/[\\/]/).pop() : "");
@@ -226,6 +227,7 @@ export default function AiSecretsModal({ th }) {
   const tle = typeof window !== "undefined" ? window.tle : null;
   const [progress, setProgress] = useState(null);
   const autoStartedRef = useRef(false);
+  const lifecycleRef = useRef({});
 
   useEffect(() => {
     if (!tle?.onAnalysisProgress) return undefined;
@@ -233,11 +235,38 @@ export default function AiSecretsModal({ th }) {
     return typeof unsub === "function" ? unsub : undefined;
   }, [tle]);
 
+  useEffect(() => {
+    if (!tle?.onAiSecretScanComplete) return undefined;
+    return tle.onAiSecretScanComplete((payload) => {
+      setModal((prev) => {
+        if (!prev || prev.type !== "aiSecrets" || prev.jobId !== payload?.jobId) {
+          if (payload?.result?.scanId) tle.releaseAiSecretScan?.(payload.result.scanId);
+          return prev;
+        }
+        if (payload?.error) {
+          return { ...prev, phase: "input", jobId: null, error: payload.cancelled ? "Scan cancelled." : payload.error };
+        }
+        return {
+          ...prev,
+          phase: "results", jobId: null, data: payload?.result || null, error: null, reveal: null,
+          secretTags: useTabStore.getState().tabs.find((t) => t.id === prev.tabId)?.aiSecretTags || {},
+          tagDraft: "", tagMenuGroup: null, expandedGroup: null,
+          fSev: "all", fCat: "all", fConf: "all", fTool: "all", fRole: "all", fSession: "all",
+          fWorkspace: "all", fSource: "all", fTag: "all", q: "", showFilters: false, collapsedBuckets: {},
+        };
+      });
+    });
+  }, [tle, setModal]);
+
+  useEffect(() => () => {
+    cleanupAiSecretLifecycle(tle, lifecycleRef.current);
+  }, [tle]);
+
   const isOpen = modal?.type === "aiSecrets";
 
   useEffect(() => {
     if (!isOpen) { autoStartedRef.current = false; return; }
-    if (modal.phase === "input" && modal.autoStart && !autoStartedRef.current && tle?.analyzeAiHistory && modal.tabId) {
+    if (modal.phase === "input" && modal.autoStart && !autoStartedRef.current && (tle?.startAiSecretScan || tle?.analyzeAiHistory) && modal.tabId) {
       autoStartedRef.current = true;
       runScan(modal.scanMode || "quick");
     }
@@ -247,7 +276,7 @@ export default function AiSecretsModal({ th }) {
   if (!isOpen) return null;
 
   const {
-    phase = "input", tabName, scanMode = "quick", redact = true, data, error, reveal = {},
+    phase = "input", tabName, scanMode = "quick", data, error, reveal = null, jobId = null, loadingMore = false,
     fSev = "all", fCat = "all", fConf = "all", fTool = "all", fRole = "all",
     fSession = "all", fWorkspace = "all", fSource = "all", fTag = "all",
     q = "", expandedGroup = null, secretTags = {}, tagDraft = "", tagMenuGroup = null, showFilters = false,
@@ -262,7 +291,12 @@ export default function AiSecretsModal({ th }) {
     const p = typeof updater === "function" ? updater(prev) : updater;
     return p ? { ...prev, ...p } : prev;
   });
-  const close = () => setModal(null);
+  lifecycleRef.current = { jobId: phase === "loading" ? jobId : null, scanId: data?.scanId || null };
+  const close = () => {
+    cleanupAiSecretLifecycle(tle, { jobId: phase === "loading" ? jobId : null, scanId: data?.scanId });
+    lifecycleRef.current = {};
+    setModal(null);
+  };
 
   // ── Unit 42 / threat-report severity palette + liquid-glass style helpers ──
   const sev = th.sev || { critical: th.danger, high: th.warning, med: th.accent, low: th.textMuted, clean: th.success, info: "#58a6ff" };
@@ -297,17 +331,25 @@ export default function AiSecretsModal({ th }) {
 
   // ── handlers ──
   const runScan = async (mode = scanMode) => {
-    if (!tle?.analyzeAiHistory || !modal.tabId) { toast.error("No AI history tab to scan"); return; }
-    patch({ phase: "loading", scanMode: mode, error: null, autoStart: false });
+    if (!(tle?.startAiSecretScan || tle?.analyzeAiHistory) || !modal.tabId) { toast.error("No AI history tab to scan"); return; }
+    if (data?.scanId) await tle.releaseAiSecretScan?.(data.scanId);
+    patch({ phase: "loading", scanMode: mode, error: null, autoStart: false, data: null, reveal: null, jobId: null });
     setProgress(null);
     try {
       const salt = tab?.aiSecretSalt || makeAiSecretSalt(modal.tabId);
       if (!tab?.aiSecretSalt) updateTab(modal.tabId, { aiSecretSalt: salt });
-      const r = await tle.analyzeAiHistory(modal.tabId, { mode, redact, salt });
+      const r = tle.startAiSecretScan
+        ? await tle.startAiSecretScan(modal.tabId, { mode, salt })
+        : { result: await tle.analyzeAiHistory(modal.tabId, { mode, salt }) };
       if (isIpcError(r)) { patch({ phase: "input", error: ipcErrorMessage(r) }); return; }
       if (r?.error) { patch({ phase: "input", error: r.error }); return; }
+      if (r?.jobId) {
+        patch({ jobId: r.jobId });
+        return;
+      }
+      const result = r?.result;
       patch({
-        phase: "results", data: r, error: null, reveal: {}, secretTags: tabSecretTags, tagDraft: "", tagMenuGroup: null, expandedGroup: null,
+        phase: "results", data: result, jobId: null, error: null, reveal: null, secretTags: tabSecretTags, tagDraft: "", tagMenuGroup: null, expandedGroup: null,
         fSev: "all", fCat: "all", fConf: "all", fTool: "all", fRole: "all", fSession: "all",
         fWorkspace: "all", fSource: "all", fTag: "all", q: "", showFilters: false, collapsedBuckets: {},
       });
@@ -327,19 +369,42 @@ export default function AiSecretsModal({ th }) {
     try { await navigator.clipboard?.writeText?.(String(text || "")); toast.success(label); }
     catch (e) { toast.error("Copy failed", { detail: String(e?.message || e) }); }
   };
-  const confirmReveal = async (key) => {
-    if (!reveal[key]) {
-      const approved = await confirm({
-        title: "Reveal cleartext secret?",
-        message: "This displays sensitive evidence in the application window. Continue only if screen exposure is acceptable.",
-        confirmLabel: "Reveal",
-        destructive: true,
-      });
-      if (!approved) return;
+  const confirmReveal = async (finding) => {
+    if (!finding?.findingId || !data?.scanId || !tle?.revealAiSecret) return;
+    if (reveal?.findingId === finding.findingId) {
+      patch({ reveal: null });
+      return;
     }
-    patch((prev) => ({
-      reveal: { ...(prev.reveal || {}), [key]: !(prev.reveal || {})[key] },
-    }));
+    const approved = await confirm({
+      title: "Reveal cleartext secret?",
+      message: "This reads and displays one sensitive value from source evidence. Continue only if screen exposure is acceptable.",
+      confirmLabel: "Reveal",
+      destructive: true,
+    });
+    if (!approved) return;
+    const result = await tle.revealAiSecret(data.scanId, finding.findingId);
+    if (isIpcError(result) || result?.error) {
+      toast.error("Reveal failed", { detail: isIpcError(result) ? ipcErrorMessage(result) : result.error });
+      return;
+    }
+    patch({ reveal: { findingId: result.findingId, value: result.value } });
+  };
+
+  const loadMoreFindings = async () => {
+    if (!data?.scanId || !data?.page?.hasMore || loadingMore || !tle?.getAiSecretResultsPage) return;
+    patch({ loadingMore: true });
+    try {
+      const offset = Number(data.page.offset || 0) + Number(data.page.returned || data.findings?.length || 0);
+      const next = await tle.getAiSecretResultsPage(data.scanId, offset, 1000);
+      if (isIpcError(next) || next?.error) throw new Error(isIpcError(next) ? ipcErrorMessage(next) : next.error);
+      patch((prev) => ({
+        loadingMore: false,
+        data: { ...prev.data, findings: [...(prev.data?.findings || []), ...(next.findings || [])], page: next },
+      }));
+    } catch (err) {
+      patch({ loadingMore: false });
+      toast.error("Could not load more findings", { detail: String(err?.message || err) });
+    }
   };
   const openSource = async (f) => {
     if (!f?.sourceFile || !tle?.openAiSource) { toast.error("No source file recorded for this evidence row"); return; }
@@ -432,10 +497,9 @@ export default function AiSecretsModal({ th }) {
               {card(scanMode === "quick", "Quick", "Validated API keys, tokens, private keys & hardcoded credentials. Precision-first.", () => patch({ scanMode: "quick" }))}
               {card(scanMode === "deep", "Deep", "Adds PII (email, SSN, cards) & high-entropy unknown secrets. More to review.", () => patch({ scanMode: "deep" }))}
             </div>
-            <label style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 12, color: th.textDim, cursor: "pointer", marginTop: 18 }}>
-              <input type="checkbox" checked={redact} onChange={(e) => patch({ redact: e.target.checked })} style={{ accentColor: th.accent }} />
-              Redact matched secrets&nbsp;<span style={{ color: th.textMuted, fontSize: 10.5 }}>· reveal individually in results</span>
-            </label>
+            <div style={{ fontSize: 11.5, color: th.textDim, marginTop: 18, ...glass({ padding: "9px 11px", borderRadius: 9 }) }}>
+              🔒 Results and exports are always redacted. Reveal reads one verified value from source evidence at a time.
+            </div>
             {error && <div style={{ fontSize: 11.5, color: sev.critical, marginTop: 14, ...glass({ padding: "8px 10px", borderColor: `${sev.critical}55`, background: `${sev.critical}14` }) }}>{error}</div>}
             <div style={{ marginTop: "auto", paddingTop: 18, display: "flex", justifyContent: "flex-end", gap: 10 }}>
               <button type="button" onClick={close} style={ghostBtn}>Cancel</button>
@@ -462,6 +526,7 @@ export default function AiSecretsModal({ th }) {
             <div style={{ width: "80%", height: 5, background: th.glassBg, border: `1px solid ${th.glassBorder}`, borderRadius: 3, overflow: "hidden", marginTop: 16 }}>
               <div style={{ width: pct != null ? `${pct}%` : "42%", height: "100%", background: `linear-gradient(90deg, ${th.accent}, ${th.accentHover || th.accent})`, borderRadius: 3, transition: "width .25s", animation: pct == null ? "tle-pulse 1.2s ease-in-out infinite" : "none" }} />
             </div>
+            <button type="button" onMouseDown={(e) => e.stopPropagation()} onClick={close} style={{ ...ghostBtn, marginTop: 18 }}>Cancel scan</button>
           </div>
         )}
       </AiSecretsShell>
@@ -472,10 +537,14 @@ export default function AiSecretsModal({ th }) {
   const summary = data?.summary || { total: 0, bySeverity: {}, byCategory: {}, byConfidence: {}, mitre: [], flaggedRows: 0, uniqueSecrets: 0, severity: "info" };
   const all = data?.findings || [];
   const summaryOnlyRows = Number(data?.rowsSummaryOnly || 0);
-  const fullTextLimited = !!data && (data.fullTextAvailable === false || summaryOnlyRows > 0);
+  const coverageComplete = data?.coverage?.complete !== false;
+  const fullTextLimited = !!data && (!coverageComplete || data.fullTextAvailable === false || summaryOnlyRows > 0);
   const fullTextWarning = data?.fullTextAvailable === false
     ? "This tab stores only a 500-char preview per message — secrets beyond the preview may be missed. Re-import the collection to scan full content."
     : `${summaryOnlyRows.toLocaleString()} message${summaryOnlyRows === 1 ? "" : "s"} only had the 500-char preview; secrets beyond those may be missed.`;
+  const totalStored = Number(data?.page?.totalStored ?? data?.storedFindings ?? all.length);
+  const pageHasMore = !!data?.page?.hasMore;
+  const resultCapReached = !!data?.resultsTruncated;
   const groups = buildIncidentGroups(all, effectiveTags);
   const ql = q.trim().toLowerCase();
   const groupTextOf = (g) => [
@@ -521,7 +590,7 @@ export default function AiSecretsModal({ th }) {
   const headline = crit ? `${crit} critical secret${crit === 1 ? "" : "s"} exposed`
     : high ? `${high} high-severity secret${high === 1 ? "" : "s"} found`
       : summary.total ? `${summary.total} potential secret${summary.total === 1 ? "" : "s"} found`
-        : "No leaked secrets detected";
+        : coverageComplete ? "No leaked secrets detected" : "No secrets detected in covered evidence";
   const sevTotal = SEV_ORDER.reduce((n, s) => n + (summary.bySeverity[s] || 0), 0) || 1;
 
   const exportRowsForGroups = (groupsToExport) => groupsToExport.flatMap((g) => g.findings.map((f) => ({ incidentId: g.id, tags: (g.tags || []).join("; "), ...withoutCleartext(f) })));
@@ -533,13 +602,14 @@ export default function AiSecretsModal({ th }) {
     const headers = ["IncidentId", "Tags", "Severity", "Confidence", "Category", "RuleId", "Title", "Redacted", "Fingerprint", "RecordId", "Timestamp", "Tool", "Role", "SessionId", "Workspace", "SourceFile", "LineNumber", "LeakDirection", "Snippet"];
     const lines = exportRows.map((r) => [r.incidentId, r.tags, r.severity, r.confidence, r.category, r.ruleId, r.title, r.redacted, r.fingerprint, r.recordId, r.timestamp, r.tool, r.role, r.sessionId, r.workspace, r.sourceFile, r.lineNumber, r.leakDirection, r.snippet].map(csvCell).join(","));
     const suffix = tagOnly && fTag !== "all" ? `tag-${safeName(fTag)}` : "filtered";
-    const res = await tle?.saveTextFile?.([headers.join(","), ...lines].join("\n"), `${safeName(tabName)}-ai-secret-scan-${suffix}-redacted.csv`, [{ name: "CSV", extensions: ["csv"] }]);
+    const res = await tle?.saveAiSecretExport?.([headers.join(","), ...lines].join("\n"), `${safeName(tabName)}-ai-secret-scan-${suffix}-redacted.csv`, [{ name: "CSV", extensions: ["csv"] }]);
     if (res?.filePath) toast.success(tagOnly && fTag !== "all" ? `Exported ${fTag} CSV` : "Exported redacted CSV", { detail: res.filePath });
   };
   const exportJson = async () => {
     const payload = {
       tabName, scanMode, exportedAt: new Date().toISOString(),
-      coverage: { fullTextAvailable: data?.fullTextAvailable, rowsWithFullText: data?.rowsWithFullText || 0, rowsSummaryOnly: data?.rowsSummaryOnly || 0 },
+      coverage: data?.coverage || { fullTextAvailable: data?.fullTextAvailable, rowsWithFullText: data?.rowsWithFullText || 0, rowsSummaryOnly: data?.rowsSummaryOnly || 0 },
+      exportScope: { loadedFindings: all.length, storedFindings: totalStored, totalFindings: summary.total, resultCapReached },
       summary,
       incidents: filteredGroups.map((g) => ({
         incidentId: g.id, fingerprint: g.fingerprint, redacted: g.redacted, severity: g.severity, title: g.title,
@@ -549,7 +619,7 @@ export default function AiSecretsModal({ th }) {
         evidence: g.findings.map(withoutCleartext),
       })),
     };
-    const res = await tle?.saveTextFile?.(JSON.stringify(payload, null, 2), `${safeName(tabName)}-ai-secret-scan-redacted.json`, [{ name: "JSON", extensions: ["json"] }]);
+    const res = await tle?.saveAiSecretExport?.(JSON.stringify(payload, null, 2), `${safeName(tabName)}-ai-secret-scan-redacted.json`, [{ name: "JSON", extensions: ["json"] }]);
     if (res?.filePath) toast.success("Exported redacted JSON", { detail: res.filePath });
   };
 
@@ -638,7 +708,7 @@ code{font-family:"SF Mono",Menlo,monospace;font-size:10.5px;background:#f4f1ee;p
       if (isIpcError(res)) { toast.error("PDF export failed", { detail: ipcErrorMessage(res) }); return; }
       if (res?.filePath) toast.success("Exposure brief (PDF) saved", { detail: res.filePath });
     } else {
-      const res = await tle?.saveTextFile?.(html, `${safeName(tabName)}-ai-secret-hunt-exposure-brief.html`, [{ name: "HTML", extensions: ["html"] }]);
+      const res = await tle?.saveAiSecretExport?.(html, `${safeName(tabName)}-ai-secret-hunt-exposure-brief.html`, [{ name: "HTML", extensions: ["html"] }]);
       if (res?.filePath) toast.success("Exposure brief (HTML) saved", { detail: res.filePath });
     }
   };
@@ -659,9 +729,9 @@ code{font-family:"SF Mono",Menlo,monospace;font-size:10.5px;background:#f4f1ee;p
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 7, minWidth: 0, maxWidth: "100%" }}>
         {rows.map((f, i) => {
-          const rowKey = `${g.id}:${f.recordId}:${i}`;
-          const rowReveal = !!reveal[rowKey];
-          const secretText = normalizeDisplayText(rowReveal && f.match ? f.match : f.redacted);
+          const rowKey = f.findingId || `${g.id}:${f.recordId}:${i}`;
+          const rowReveal = reveal?.findingId === f.findingId;
+          const secretText = normalizeDisplayText(rowReveal ? reveal.value : f.redacted);
           const snippetText = normalizeDisplayText(f.snippet);
           const multiline = isMultilineSecret(secretText, f.category, f.title) || isMultilineSecret(snippetText, f.category, f.title);
           return (
@@ -671,6 +741,7 @@ code{font-family:"SF Mono",Menlo,monospace;font-size:10.5px;background:#f4f1ee;p
                 {f.tool && <span style={pill(th.textDim, true)}>{f.tool}</span>}
                 {f.role && <span>· {f.role}</span>}
                 {f.leakDirection && <span style={{ color: sev.high }}>· {f.leakDirection}</span>}
+                {f.evidenceField && <span>· {f.evidenceField}</span>}
                 <span style={{ marginLeft: "auto" }}>RecordId {f.recordId || "—"}</span>
               </div>
               <div style={{ fontFamily: "'SF Mono',Menlo,monospace", fontSize: 11, color: rowReveal ? sev.critical : th.text, whiteSpace: multiline ? "pre-wrap" : "normal", wordBreak: "break-word", overflowWrap: "anywhere", lineHeight: 1.45, maxWidth: "100%", minWidth: 0 }}>
@@ -678,7 +749,7 @@ code{font-family:"SF Mono",Menlo,monospace;font-size:10.5px;background:#f4f1ee;p
               </div>
               {f.snippet && <div style={{ fontSize: 10.5, color: th.textMuted, lineHeight: 1.45, whiteSpace: multiline ? "pre-wrap" : "normal", overflowWrap: "anywhere", wordBreak: "break-word", maxWidth: "100%", minWidth: 0 }}>{snippetText}</div>}
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", minWidth: 0, maxWidth: "100%" }}>
-                {f.match && <button type="button" onClick={() => confirmReveal(rowKey)} style={{ ...tinyBtn, color: rowReveal ? sev.critical : th.textDim, borderColor: rowReveal ? `${sev.critical}66` : th.glassBorder }}>{rowReveal ? "Hide" : "Reveal"}</button>}
+                {f.findingId && <button type="button" onClick={() => confirmReveal(f)} style={{ ...tinyBtn, color: rowReveal ? sev.critical : th.textDim, borderColor: rowReveal ? `${sev.critical}66` : th.glassBorder }}>{rowReveal ? "Hide" : "Reveal"}</button>}
                 <button type="button" onClick={() => showInGrid(f)} disabled={!f.recordId} style={{ ...tinyBtn, opacity: f.recordId ? 1 : 0.4 }}>Show in grid</button>
                 {f.sourceFile && <button type="button" onClick={() => openSource(f)} title={`${f.sourceFile}${f.lineNumber ? `:${f.lineNumber}` : ""}`} style={{ ...tinyBtn, maxWidth: "100%", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "break-word", textAlign: "left" }}>Source · {f.sourceFile}{f.lineNumber ? `:${f.lineNumber}` : ""}</button>}
               </div>
@@ -692,9 +763,8 @@ code{font-family:"SF Mono",Menlo,monospace;font-size:10.5px;background:#f4f1ee;p
 
   const renderIncidentCard = (g) => {
     const isOpen = expandedGroup === g.id;
-    const revealKey = `group:${g.id}`;
-    const revealed = !!reveal[revealKey];
-    const displayValue = revealed && g.representative?.match ? g.representative.match : g.redacted;
+    const revealed = reveal?.findingId === g.representative?.findingId;
+    const displayValue = revealed ? reveal.value : g.redacted;
     const displayText = normalizeDisplayText(displayValue);
     const c = sevColor(g.severity);
     const primaryCategory = [...g.categories][0] || "";
@@ -730,7 +800,7 @@ code{font-family:"SF Mono",Menlo,monospace;font-size:10.5px;background:#f4f1ee;p
               <div style={glass({ flex: "1 1 100%", minWidth: 0, maxWidth: "100%", padding: "8px 11px", borderRadius: 9, fontFamily: "'SF Mono',Menlo,monospace", fontSize: 11.5, color: revealed ? sev.critical : th.text, whiteSpace: multiline ? "pre-wrap" : "normal", wordBreak: "break-word", overflowWrap: "anywhere", lineHeight: 1.45, boxSizing: "border-box", overflow: "hidden" })}>
                 {displayText}
               </div>
-              {g.representative?.match && <button type="button" onClick={() => confirmReveal(revealKey)} style={{ ...tinyBtn, color: revealed ? sev.critical : th.textDim, borderColor: revealed ? `${sev.critical}66` : th.glassBorder }}>{revealed ? "Hide" : "Reveal"}</button>}
+              {g.representative?.findingId && <button type="button" onClick={() => confirmReveal(g.representative)} style={{ ...tinyBtn, color: revealed ? sev.critical : th.textDim, borderColor: revealed ? `${sev.critical}66` : th.glassBorder }}>{revealed ? "Hide" : "Reveal"}</button>}
               <button type="button" onClick={() => g.representative && showInGrid(g.representative)} style={tinyBtn}>Show in grid</button>
               <button type="button" onClick={() => bookmarkRows(g.findings)} style={tinyBtn}>Bookmark</button>
               {(g.tags || []).map((tag) => (
@@ -920,9 +990,11 @@ code{font-family:"SF Mono",Menlo,monospace;font-size:10.5px;background:#f4f1ee;p
             {all.length === 0 ? (
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", textAlign: "center", gap: 10 }}>
                 <ShieldGlyph color={sev.clean} size={48} />
-                <div style={{ fontSize: 15, fontWeight: 600, color: th.text }}>No leaked secrets detected</div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: th.text }}>{coverageComplete ? "No leaked secrets detected" : "No secrets detected in covered evidence"}</div>
                 <div style={{ fontSize: 12, color: th.textMuted, maxWidth: 380 }}>
-                  {scanMode === "quick" ? "Quick scan covers validated keys, tokens and private keys. Run a Deep scan to also check PII and high-entropy strings." : "Deep scan found no credentials, PII or high-entropy secrets in this collection."}
+                  {!coverageComplete
+                    ? "This is not an unqualified clean verdict because some messages only contained a preview. Re-import full content before relying on absence of findings."
+                    : scanMode === "quick" ? "Quick scan covers validated keys, tokens and private keys. Run a Deep scan to also check PII and high-entropy strings." : "Deep scan found no credentials, PII or high-entropy secrets in this collection."}
                 </div>
                 {scanMode === "quick" && <button type="button" onClick={() => runScan("deep")} style={{ ...primaryBtn, marginTop: 6 }}>Run Deep scan</button>}
               </div>
@@ -936,15 +1008,27 @@ code{font-family:"SF Mono",Menlo,monospace;font-size:10.5px;background:#f4f1ee;p
                 )}
               </div>
             ) : renderBuckets()}
+            {pageHasMore && (
+              <div style={{ display: "flex", justifyContent: "center", padding: "14px 0 4px" }}>
+                <button type="button" disabled={loadingMore} onClick={loadMoreFindings} style={{ ...ghostBtn, opacity: loadingMore ? 0.6 : 1 }}>
+                  {loadingMore ? "Loading…" : `Load next page · ${all.length.toLocaleString()} of ${totalStored.toLocaleString()} stored`}
+                </button>
+              </div>
+            )}
+            {resultCapReached && (
+              <div style={{ marginTop: 10, fontSize: 10.5, color: sev.high, ...glass({ padding: "7px 10px", borderRadius: 9, background: `${sev.high}12`, borderColor: `${sev.high}40` }) }}>
+                The safety cap retained {totalStored.toLocaleString()} of {summary.total.toLocaleString()} findings. Occurrence and severity totals remain complete; narrow the evidence scope for occurrence-level review.
+              </div>
+            )}
           </div>
 
           {/* ── FOOTER ── */}
           <div style={{ flexShrink: 0, padding: "12px 20px", borderTop: `1px solid ${th.glassBorder}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
             <span style={{ fontSize: 10.5, color: th.textMuted }}>
-              {redact ? "🔒 Secrets redacted — cleartext stays in memory only" : "⚠ Showing cleartext"} · {filteredGroups.length.toLocaleString()}/{groups.length.toLocaleString()} incidents
+              🔒 Findings and exports are permanently redacted · {all.length.toLocaleString()}/{totalStored.toLocaleString()} stored findings loaded · {filteredGroups.length.toLocaleString()}/{groups.length.toLocaleString()} loaded incidents
             </span>
             <div style={{ display: "flex", gap: 10 }}>
-              <button type="button" onClick={() => patch({ phase: "input", data: null, autoStart: false })} style={ghostBtn}>↻ New scan</button>
+              <button type="button" onClick={async () => { if (data?.scanId) await tle?.releaseAiSecretScan?.(data.scanId); patch({ phase: "input", data: null, reveal: null, autoStart: false }); }} style={ghostBtn}>↻ New scan</button>
               <button type="button" onClick={close} style={primaryBtn}>Done</button>
             </div>
           </div>

@@ -4,6 +4,7 @@
  */
 
 const { parentPort, workerData } = require("worker_threads");
+const { sendWorkerResult } = require("./worker-result");
 const fs = require("fs");
 const TimelineDB = require("../db");
 const { AI_HISTORY_COLUMNS } = require("../parsers/ai-history/schema");
@@ -79,16 +80,13 @@ async function runExtract() {
       cleanupDb(db, tabId);
       unlinkTempDb(dbPath);
       const copilotDetail = buildCopilotEmptyExtractError(importMeta?.copilot);
-      parentPort.postMessage({
-        type: "result",
-        result: {
-          error: copilotDetail
-            || (failures?.length
-              ? failures.map((f) => `${f.label}: ${f.error}`).join("; ")
-              : "Sources were found but contained no message rows."),
-          failures: failures || [],
-          importMeta: importMeta || null,
-        },
+      sendWorkerResult(parentPort, {
+        error: copilotDetail
+          || (failures?.length
+            ? failures.map((f) => `${f.label}: ${f.error}`).join("; ")
+            : "Sources were found but contained no message rows."),
+        failures: failures || [],
+        importMeta: importMeta || null,
       });
       return;
     }
@@ -110,19 +108,16 @@ async function runExtract() {
     const descriptor = db.getTabWorkerDescriptor(tabId);
     cleanupDb(db, tabId);
 
-    parentPort.postMessage({
-      type: "result",
-      result: {
-        ...finalized,
-        dbPath: descriptor.dbPath,
-        isLargeFile: descriptor.isLargeFile,
-        ftsReady: descriptor.ftsReady,
-        indexesReady: descriptor.indexesReady,
-        indexedCols: descriptor.indexedCols,
-        importNotice: importNotice || null,
-        failures: failures || [],
-        rowObjects: null,
-      },
+    sendWorkerResult(parentPort, {
+      ...finalized,
+      dbPath: descriptor.dbPath,
+      isLargeFile: descriptor.isLargeFile,
+      ftsReady: descriptor.ftsReady,
+      indexesReady: descriptor.indexesReady,
+      indexedCols: descriptor.indexedCols,
+      importNotice: importNotice || null,
+      failures: failures || [],
+      rowObjects: null,
     });
   } catch (err) {
     cleanupDb(db, tabId);
@@ -132,10 +127,7 @@ async function runExtract() {
       process.exit(1);
       return;
     }
-    parentPort.postMessage({
-      type: "result",
-      result: { error: err?.message || "AI history profile extract failed", stack: err?.stack },
-    });
+    sendWorkerResult(parentPort, { error: err?.message || "AI history profile extract failed", stack: err?.stack });
   }
 }
 

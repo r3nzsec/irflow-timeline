@@ -14,9 +14,11 @@ const {
   TOOL_COPILOT,
   AI_HISTORY_TOOLS,
 } = require("./schema");
+const computerHistorySchema = require("./computer-history-schema");
 const rowUtils = require("./row-utils");
 const claudeCode = require("./claude-code");
 const chatgpt = require("./chatgpt");
+const computerHistory = require("./computer-history");
 const geminiCli = require("./gemini-cli");
 const codex = require("./codex");
 const grokBuild = require("./grok-build");
@@ -35,6 +37,8 @@ const EXTRACTORS = {
   copilot: copilot.extractCopilotPath,
   windsurf: windsurf.extractWindsurfPath,
   continue: continueCli.extractContinuePath,
+  // Activity telemetry, not conversation history — emits COMPUTER_HISTORY_COLUMNS, not AI_HISTORY_COLUMNS.
+  "computer-history": computerHistory.extractComputerHistoryPath,
 };
 
 async function extractAiHistory(tool, targetPath, attribution = {}, options = {}) {
@@ -45,6 +49,7 @@ async function extractAiHistory(tool, targetPath, attribution = {}, options = {}
 
 module.exports = {
   AI_HISTORY_COLUMNS,
+  ...computerHistorySchema,
   SUMMARY_MAX_LEN,
   TOOL_CLAUDE_CODE,
   TOOL_CHATGPT,
@@ -65,4 +70,5 @@ module.exports = {
   ...copilot,
   ...windsurf,
   ...continueCli,
+  ...computerHistory,
 };

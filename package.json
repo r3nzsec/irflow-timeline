@@ -1,10 +1,13 @@
 {
   "name": "irflow-timeline",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "IRFlow Timeline is a high-performance, SQLite-backed DFIR investigation workspace for macOS that turns large forensic datasets, native artifacts, and AI application histories into searchable timelines with source provenance.",
   "main": "electron/main.js",
   "author": "DFIR Community",
   "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "concurrently \"vite\" \"TLE_DEV_SERVER=1 wait-on http://localhost:5173 && TLE_DEV_SERVER=1 electron .\"",
     "build:renderer": "vite build",
@@ -19,6 +22,7 @@
     "dist:universal": "npm run bundle:tools && npm run build:renderer && electron-builder --config electron-builder.config.cjs --mac --universal",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "postinstall": "patch-package && electron-rebuild -f -w better-sqlite3",
+    "smoke:electron": "electron scripts/smoke-electron-runtime.js",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
@@ -27,11 +31,11 @@
   },
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
-    "@electron/rebuild": "^3.6.0",
+    "@electron/rebuild": "^4.2.0",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.0",
-    "electron": "^33.2.1",
-    "electron-builder": "^25.1.8",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
     "patch-package": "^8.0.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -42,12 +46,17 @@
   "dependencies": {
     "@ts-evtx/core": "^1.1.1",
     "@ts-evtx/messages": "^1.1.1",
-    "better-sqlite3": "^11.7.0",
+    "better-sqlite3": "^13.0.3",
     "csv-parser": "^3.0.0",
-    "electron-updater": "^6.6.7",
+    "electron-updater": "^6.8.9",
     "exceljs": "^4.4.0",
-    "js-yaml": "^4.1.1",
+    "js-yaml": "^4.3.1",
     "xlsx": "file:vendor/xlsx-0.20.3.tgz",
     "zustand": "^5.0.12"
+  },
+  "overrides": {
+    "@ts-evtx/messages": {
+      "better-sqlite3": "$better-sqlite3"
+    }
   }
 }

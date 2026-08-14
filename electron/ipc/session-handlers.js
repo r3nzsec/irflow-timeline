@@ -9,6 +9,12 @@ const {
 } = require("../parsers/ai-history/open-dialog-paths");
 const { openDialogOptions } = require("../utils/open-dialog");
 const { authorizeAiArtifactPick, assertAiReadablePath } = require("../parsers/ai-history/path-auth");
+const { dbg } = require("../logger");
+const {
+  assertValidSessionPayload,
+  writeSessionAtomic,
+  readSessionWithBackup,
+} = require("../utils/session-persistence");
 
 function enqueuePlannedImports(planned, enqueueImport) {
   const scopePending = [];
@@ -337,7 +343,7 @@ function registerSessionHandlers(safeHandle, safeSend, ctx) {
       filters: [{ name: "TLE Session", extensions: ["tle"] }],
     });
     if (result.canceled) return null;
-    await fsp.writeFile(result.filePath, JSON.stringify(sessionData, null, 2), "utf-8");
+    await writeSessionAtomic(result.filePath, sessionData, { pretty: true });
     return result.filePath;
   });
 
@@ -350,7 +356,7 @@ function registerSessionHandlers(safeHandle, safeSend, ctx) {
     if (result.canceled || !result.filePaths.length) return null;
     try {
       const raw = fs.readFileSync(result.filePaths[0], "utf-8");
-      return JSON.parse(raw);
+      return assertValidSessionPayload(JSON.parse(raw));
     } catch (e) {
       return { error: e.message };
     }
@@ -360,11 +366,19 @@ function registerSessionHandlers(safeHandle, safeSend, ctx) {
   // renderer's debounced auto-save effect to capture in-flight investigation
   // state so it survives crashes.
   const _autoSavePath = path.join(app.getPath("userData"), "autosave.tle");
+  const _autoSaveBackupPath = `${_autoSavePath}.bak`;
+  let _autoSaveWriteChain = Promise.resolve();
   safeHandle("auto-save-session", async (event, { sessionData }) => {
     try {
-      await fsp.writeFile(_autoSavePath, JSON.stringify(sessionData), "utf-8");
-      return { ok: true, path: _autoSavePath };
+      assertValidSessionPayload(sessionData);
+      const write = _autoSaveWriteChain
+        .catch(() => {})
+        .then(() => writeSessionAtomic(_autoSavePath, sessionData, { backupPath: _autoSaveBackupPath }));
+      _autoSaveWriteChain = write;
+      const saved = await write;
+      return { ok: true, path: _autoSavePath, bytes: saved.bytes };
     } catch (e) {
+      dbg("SESSION", "Autosave failed", { error: e?.message || String(e) });
       return { ok: false, error: e.message };
     }
   });
@@ -373,10 +387,13 @@ function registerSessionHandlers(safeHandle, safeSend, ctx) {
   // so the renderer can decide whether to offer restore.
   safeHandle("load-auto-save", async () => {
     try {
-      if (!fs.existsSync(_autoSavePath)) return null;
-      const raw = await fsp.readFile(_autoSavePath, "utf-8");
-      return JSON.parse(raw);
+      const loaded = await readSessionWithBackup(_autoSavePath, _autoSaveBackupPath);
+      if (loaded?.recoveredFromBackup) {
+        dbg("SESSION", "Recovered autosave from backup", { sourcePath: loaded.sourcePath });
+      }
+      return loaded?.session || null;
     } catch (e) {
+      dbg("SESSION", "Autosave recovery failed", { error: e?.message || String(e) });
       return { error: e.message };
     }
   });
@@ -384,7 +401,10 @@ function registerSessionHandlers(safeHandle, safeSend, ctx) {
   // Delete the auto-save file (after a successful restore or explicit dismiss).
   safeHandle("clear-auto-save", async () => {
     try {
-      if (fs.existsSync(_autoSavePath)) await fsp.unlink(_autoSavePath);
+      await Promise.all([
+        fsp.rm(_autoSavePath, { force: true }),
+        fsp.rm(_autoSaveBackupPath, { force: true }),
+      ]);
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e.message };

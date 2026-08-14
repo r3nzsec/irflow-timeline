@@ -21,6 +21,7 @@ import {
   GeminiMenuIcon,
   GrokMenuIcon,
   OpenAiMenuIcon,
+  ComputerHistoryMenuIcon,
   WindsurfMenuIcon,
   ContinueMenuIcon,
 } from "./ai-artifact-icons.jsx";
@@ -162,6 +163,27 @@ export default function MenuBar({
         extractTarget: r.extractTarget,
         label: r.label || label,
         includeSubagents: false,
+      }));
+    }
+  };
+
+  /**
+   * Codex Computer History (Skysight) — OS activity telemetry with its own column schema.
+   * Prepared like the AI-history tools (pick a path, then hand off to the verbose extract modal),
+   * but there is no subagent scope choice: activity events have no sidechains.
+   */
+  const decodeComputerHistory = async () => {
+    const label = "Codex Computer History";
+    const r = await tle.decodeComputerHistory(null, { prepareOnly: true });
+    if (r?.canceled) return;
+    if (isIpcError(r)) { toast.error(`${label} extraction failed`, { detail: ipcErrorMessage(r) }); return; }
+    if (r?.error) { toast.warning(label, { detail: r.error }); return; }
+    if (r?.prepared) {
+      setModal(openAiHistoryExtractModal({
+        tool: "computer-history",
+        target: r.target,
+        extractTarget: r.extractTarget,
+        label,
       }));
     }
   };
@@ -325,7 +347,13 @@ export default function MenuBar({
         { label: "Collect AI Artifacts", icon: ic(<><path d="M4 13v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5" fill={(th.accent) + "14"} /><path d="M12 3.5v9.5" /><polyline points="8.5 9.5 12 13 15.5 9.5" /></>, th.accent), action: scanAiHistoryProfile },
         { group: "AI Apps", icon: <AiAppsGroupIcon th={th} />, items: [
           { label: "Claude Code", icon: <ClaudeCodeMenuIcon th={th} />, action: () => decodeAiHistory("claude-code", "Claude Code AI History") },
-          { label: "OpenAI Codex", icon: <OpenAiMenuIcon th={th} />, action: () => decodeAiHistory("codex", "OpenAI Codex AI History") },
+          // Codex ships two distinct artifact families: conversation transcripts (~/.codex sessions)
+          // and Computer History activity telemetry (Skysight). Different schemas, different
+          // extractors — nested so the split is visible rather than implied.
+          { group: "OpenAI Codex", icon: <OpenAiMenuIcon th={th} />, items: [
+            { label: "Codex AI History", icon: <OpenAiMenuIcon th={th} />, action: () => decodeAiHistory("codex", "OpenAI Codex AI History") },
+            { label: "Codex Computer History", icon: <ComputerHistoryMenuIcon th={th} />, action: () => decodeComputerHistory() },
+          ] },
           { label: "Grok Build", icon: <GrokMenuIcon th={th} />, action: () => decodeAiHistory("grok-build", "Grok Build AI History") },
           { label: "ChatGPT Desktop", icon: <ChatGptMenuIcon th={th} />, action: () => decodeAiHistory("chatgpt", "ChatGPT AI History") },
           { label: "Gemini CLI", icon: <GeminiMenuIcon th={th} />, action: () => decodeAiHistory("gemini-cli", "Gemini CLI AI History") },

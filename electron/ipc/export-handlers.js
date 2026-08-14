@@ -2,6 +2,7 @@ const path = require("path");
 const fs = require("fs");
 const fsp = require("fs/promises");
 const os = require("os");
+const crypto = require("crypto");
 const { dialog, BrowserWindow } = require("electron");
 const { openDialogOptions } = require("../utils/open-dialog");
 const { dbg } = require("../logger");
@@ -13,6 +14,53 @@ const {
   buildSourcesOnlyManifest,
   buildSourcesOnlyReadmeText,
 } = require("../parsers/ai-history/export-package");
+const { findMatchesInText, COMPILED_RULES } = require("../analyzers/ai-history");
+const { redactValue } = require("../analyzers/ai-history/validators");
+
+const MAX_AI_SECRET_EXPORT_BYTES = 128 * 1024 * 1024;
+
+/** Defense-in-depth boundary for AI Secret exports, independent of renderer reveal state. */
+function redactAiSecretExportText(input) {
+  let text = String(input ?? "");
+  const candidates = findMatchesInText(text, "", COMPILED_RULES)
+    .map((hit) => ({ start: hit.index, end: hit.index + hit.value.length, replacement: redactValue(hit.value) }))
+    .filter((span) => span.start >= 0 && span.end > span.start && span.end <= text.length)
+    .sort((a, b) => a.start - b.start || b.end - a.end);
+  const selected = [];
+  for (const span of candidates) {
+    const previous = selected[selected.length - 1];
+    if (previous && span.start < previous.end) continue;
+    selected.push(span);
+  }
+  for (let i = selected.length - 1; i >= 0; i--) {
+    const span = selected[i];
+    text = `${text.slice(0, span.start)}${span.replacement}${text.slice(span.end)}`;
+  }
+  return text;
+}
+
+function buildAiSecretPrintDocument(html) {
+  const csp = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; font-src data:; base-uri \'none\'; form-action \'none\'; frame-src \'none\'">';
+  const redacted = redactAiSecretExportText(html);
+  if (/<head(?:\s[^>]*)?>/i.test(redacted)) {
+    return redacted.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${csp}`);
+  }
+  return `<!DOCTYPE html><html><head>${csp}</head><body>${redacted}</body></html>`;
+}
+
+function hardenAiSecretPdfWindow(win, expectedUrl) {
+  const contents = win.webContents;
+  contents.setWindowOpenHandler?.(() => ({ action: "deny" }));
+  contents.on?.("will-attach-webview", (event) => event.preventDefault());
+  contents.on?.("will-redirect", (event) => event.preventDefault());
+  contents.on?.("will-navigate", (event, url) => {
+    if (url !== expectedUrl) event.preventDefault();
+  });
+  contents.session?.webRequest?.onBeforeRequest?.(
+    { urls: ["http://*/*", "https://*/*", "file://*/*", "ftp://*/*", "ws://*/*", "wss://*/*"] },
+    (_details, callback) => callback({ cancel: true }),
+  );
+}
 
 async function writeDelimitedExportToPath(exportData, filePath, safeSend) {
   const ext = path.extname(filePath).toLowerCase();
@@ -468,6 +516,20 @@ module.exports = function registerExportHandlers(safeHandle, safeSend, { db, _ac
     return { filePath: result.filePath };
   });
 
+  // AI Secret Hunt exports have a separate main-process redaction boundary. Even if a future UI
+  // regression accidentally serializes a revealed value, known secret formats are masked before
+  // bytes reach disk.
+  safeHandle("save-ai-secret-export", async (event, { content, defaultPath, filters }) => {
+    const text = String(content ?? "");
+    if (Buffer.byteLength(text, "utf8") > MAX_AI_SECRET_EXPORT_BYTES) {
+      return { error: "AI Secret export exceeds the 128 MiB safety limit." };
+    }
+    const result = await dialog.showSaveDialog(_activeWindow(), { defaultPath, filters });
+    if (result.canceled) return null;
+    await fsp.writeFile(result.filePath, redactAiSecretExportText(text), "utf-8");
+    return { filePath: result.filePath };
+  });
+
   // Export ransomware report as PDF
   safeHandle("export-ransomware-pdf", async (event, { html, defaultName }) => {
     const result = await dialog.showSaveDialog(_activeWindow(), {
@@ -495,9 +557,28 @@ module.exports = function registerExportHandlers(safeHandle, safeSend, { db, _ac
       filters: [{ name: "PDF Document", extensions: ["pdf"] }],
     });
     if (result.canceled) return null;
-    const win = new BrowserWindow({ show: false, width: 900, height: 1200, webPreferences: { offscreen: true, nodeIntegration: false, contextIsolation: true, sandbox: true } });
+    const document = buildAiSecretPrintDocument(html);
+    if (Buffer.byteLength(document, "utf8") > MAX_AI_SECRET_EXPORT_BYTES) {
+      return { error: "AI Secret report exceeds the 128 MiB safety limit." };
+    }
+    const url = "data:text/html;charset=utf-8," + encodeURIComponent(document);
+    const win = new BrowserWindow({
+      show: false,
+      width: 900,
+      height: 1200,
+      webPreferences: {
+        offscreen: true,
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        javascript: false,
+        webSecurity: true,
+        partition: `ai-secret-pdf-${crypto.randomUUID()}`,
+      },
+    });
+    hardenAiSecretPdfWindow(win, url);
     try {
-      await win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+      await win.loadURL(url);
       await new Promise((r) => setTimeout(r, 500));
       const pdfBuf = await win.webContents.printToPDF({ printBackground: true, preferCSSPageSize: true, margins: { top: 0, bottom: 0, left: 0, right: 0 } });
       await fsp.writeFile(result.filePath, pdfBuf);
@@ -527,3 +608,6 @@ module.exports = function registerExportHandlers(safeHandle, safeSend, { db, _ac
 // Exposed for unit tests (HTML escaping / tag-color sanitization). The default export
 // stays the IPC registration function; this is an additive property on it.
 module.exports.buildReportHtml = buildReportHtml;
+module.exports.redactAiSecretExportText = redactAiSecretExportText;
+module.exports.buildAiSecretPrintDocument = buildAiSecretPrintDocument;
+module.exports.hardenAiSecretPdfWindow = hardenAiSecretPdfWindow;

@@ -382,6 +382,8 @@ export default function App() {
   // Auto-restore: null = not yet checked; false = no autosave found; object = autosave available
   const [autoRestorable, setAutoRestorable] = useState(null);
   const pendingRestoresRef = useRef({});
+  const autoSaveInFlightRef = useRef(false);
+  const autoSaveQueuedRef = useRef(false);
   // Home-screen capability intent: set when the user clicks an analyzer tile, consumed
   // at import-complete to auto-open that analyzer. A ref (not state) so the import-complete
   // listener always reads the current value without re-registering.
@@ -1911,13 +1913,32 @@ export default function App() {
     if (!tle?.autoSaveSession || tabs.length === 0) return;
     const dataReadyTabs = tabs.filter((t) => t.dataReady);
     if (dataReadyTabs.length === 0) return;
-    const id = setInterval(async () => {
+    let disposed = false;
+    const runAutoSave = async () => {
+      if (autoSaveInFlightRef.current) {
+        autoSaveQueuedRef.current = true;
+        return;
+      }
+      autoSaveInFlightRef.current = true;
       try {
         const payload = await buildSessionPayload();
         if (payload.tabs.length > 0) await tle.autoSaveSession(payload);
       } catch { /* swallow — autosave failures must never disrupt analysis */ }
-    }, 30000);
-    return () => clearInterval(id);
+      finally {
+        autoSaveInFlightRef.current = false;
+        const runQueuedSave = autoSaveQueuedRef.current;
+        autoSaveQueuedRef.current = false;
+        if (!disposed && runQueuedSave) {
+          void runAutoSave();
+        }
+      }
+    };
+    const id = setInterval(() => { void runAutoSave(); }, 30000);
+    return () => {
+      disposed = true;
+      autoSaveQueuedRef.current = false;
+      clearInterval(id);
+    };
   }, [tle, tabs, buildSessionPayload]);
 
   // ── Auto-restore prompt on launch ──

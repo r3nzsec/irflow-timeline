@@ -46,4 +46,4 @@ function _flushLogSync() {
 setInterval(_flushLog, 2000).unref();
 process.on("exit", _flushLogSync);
 
-module.exports = { dbg, debugLogPath };
+module.exports = { dbg, debugLogPath, flushLogSync: _flushLogSync };

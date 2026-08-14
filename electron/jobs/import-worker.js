@@ -1,6 +1,7 @@
 const { parentPort, workerData } = require("worker_threads");
 const TimelineDB = require("../db");
 const { parseFile } = require("../parsers");
+const { sendWorkerResult } = require("./worker-result");
 
 let cancelled = false;
 
@@ -53,17 +54,14 @@ function cleanupAndExit(db, tabId) {
     const descriptor = db.getTabWorkerDescriptor(tabId);
     cleanupAndExit(db, tabId);
 
-    parentPort.postMessage({
-      type: "result",
-      result: {
-        ...parsed,
-        ...finalized,
-        dbPath: descriptor.dbPath,
-        isLargeFile: descriptor.isLargeFile,
-        ftsReady: descriptor.ftsReady,
-        indexesReady: descriptor.indexesReady,
-        indexedCols: descriptor.indexedCols,
-      },
+    sendWorkerResult(parentPort, {
+      ...parsed,
+      ...finalized,
+      dbPath: descriptor.dbPath,
+      isLargeFile: descriptor.isLargeFile,
+      ftsReady: descriptor.ftsReady,
+      indexesReady: descriptor.indexesReady,
+      indexedCols: descriptor.indexedCols,
     });
   } catch (err) {
     cleanupAndExit(db, tabId);
@@ -72,9 +70,6 @@ function cleanupAndExit(db, tabId) {
       process.exit(1);
       return;
     }
-    parentPort.postMessage({
-      type: "result",
-      result: { error: err?.message || "Import failed", stack: err?.stack },
-    });
+    sendWorkerResult(parentPort, { error: err?.message || "Import failed", stack: err?.stack });
   }
 })();

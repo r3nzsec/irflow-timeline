@@ -46,3 +46,26 @@ test("query handlers run worker-backed query jobs with bounded concurrency", asy
     tabs: [{ tabId: "tab-1", dbPath: "/tmp/test.sqlite", headers: ["Time"], indexedCols: [] }],
   });
 });
+
+test("bookmark snapshots stay on the main database path", async () => {
+  const handlers = {};
+  const db = {
+    getBookmarkedIds(tabId) {
+      assert.equal(tabId, "tab-1");
+      return [4, 9];
+    },
+  };
+  const jobManager = {
+    startWorkerJob() {
+      throw new Error("bookmark snapshots must not start a worker");
+    },
+  };
+
+  registerQueryHandlers(
+    (channel, handler) => { handlers[channel] = handler; },
+    () => {},
+    { db, jobManager },
+  );
+
+  assert.deepEqual(await handlers["get-bookmarked-ids"](null, { tabId: "tab-1" }), [4, 9]);
+});

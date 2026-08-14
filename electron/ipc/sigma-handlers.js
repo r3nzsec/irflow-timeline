@@ -650,6 +650,7 @@ module.exports = function registerSigmaHandlers(safeHandle, safeSend, ctx) {
           workerData: { jobId: scanJobId, tabId, descriptor, userDataPath: app?.getPath?.("userData"), resourcesPath: process.resourcesPath, options: { ...opts, scanJobId } },
           channels: { progress: "sigma-progress" },
           metadata: { tabId, scanJobId },
+          resourceClass: "heavy",
         });
         result = await promise;
       } else {
@@ -998,10 +999,10 @@ module.exports = function registerSigmaHandlers(safeHandle, safeSend, ctx) {
   });
 
   // Cancel an in-flight directory scan. Idempotent.
-  safeHandle("sigma-cancel-scan", (event, { scanJobId } = {}) => {
+  safeHandle("sigma-cancel-scan", async (event, { scanJobId } = {}) => {
     if (!scanJobId) return { cancelled: false, reason: "no scanJobId" };
     _cancelledJsScans.add(scanJobId);
-    const hayabusaCancel = cancelScan(scanJobId);
+    const hayabusaCancel = await cancelScan(scanJobId);
     if (hayabusaCancel.cancelled) return hayabusaCancel;
     if (jobManager) {
       const result = jobManager.cancel(scanJobId);
