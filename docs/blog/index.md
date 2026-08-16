@@ -12,7 +12,7 @@ Release announcements and focused notes about new forensic workflows.
 
 **August 16, 2026**
 
-Four claims IRFlow made about Computer History were wrong, and only fell over against a live capture: credential rows do not recover passwords, capture fidelity follows the UI toolkit rather than the app category, and a continuity check was clearing gaps it never assessed. Plus the consolidated memory store that outlives both the 48-hour purge and a cleared history.
+Four claims IRFlow made about Computer History were wrong, and only fell over against a live capture: credential rows do not recover passwords, capture fidelity follows the UI toolkit rather than the app category, and a continuity check was clearing gaps it never assessed. Plus nine stores nobody was reading — the consolidated memory that outlives a cleared history, Claude Desktop deletion tombstones and staged uploads, and the Grok session index that survives deleting the session.
 
 ## Previous Releases
 

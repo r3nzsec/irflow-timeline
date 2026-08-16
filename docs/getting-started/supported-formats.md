@@ -216,9 +216,9 @@ Supported AI app families include:
 
 | App | Common artifacts |
 |-----|------------------|
-| **Claude Code / Desktop** | `~/.claude/history.jsonl`, `~/.claude/projects/**/*.jsonl`, Desktop `claude-code-sessions/`, Cowork `local-agent-mode-sessions/**/{.claude/projects,audit*.jsonl}` |
+| **Claude Code / Desktop** | `~/.claude/history.jsonl`, `~/.claude/projects/**/*.jsonl`, Desktop `claude-code-sessions/`, Cowork `local-agent-mode-sessions/**/{.claude/projects,audit*.jsonl}`, plus `deleted_<uuid>` tombstones, `pending-uploads/`, `plan-usage-history.json`, `git-worktrees.json` |
 | **OpenAI Codex** | `$CODEX_HOME` or `~/.codex/`, `sessions/**/rollout-*.jsonl`, `history.jsonl`, versioned `state*.sqlite` metadata with WAL/SHM |
-| **Grok Build** | `$GROK_HOME` or `~/.grok/`, workspace `prompt_history.jsonl`, session `summary.json`, `updates.jsonl`, `chat_history.jsonl`, and `hunk_records.jsonl` |
+| **Grok Build** | `$GROK_HOME` or `~/.grok/`, workspace `prompt_history.jsonl`, session `summary.json`, `updates.jsonl`, `chat_history.jsonl`, `hunk_records.jsonl`, plus `sessions/session_search.sqlite`, `logs/unified.jsonl`, and `active_sessions.json` |
 | **ChatGPT Desktop** | Local LevelDB / SQLite stores plus inventory of `conversations-v2-*` and `conversations-v3-*/*.data` bundles |
 | **Gemini CLI** | `~/.gemini/tmp/<project_hash>/chats/**/*.jsonl`, `~/.gemini/shell_history`, plus legacy session/checkpoint/log JSON |
 | **Cursor** | `~/.cursor/projects/**/agent-transcripts/`, composer `store.db`, VS Code-family `state.vscdb`, and Cursor `User/globalStorage/conversation-search.db` |

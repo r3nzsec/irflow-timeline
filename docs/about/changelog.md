@@ -22,6 +22,20 @@ Computer History correctness release. Every claim in the 1.0.10 analysis was re-
 - **Mouse modifiers.** `mouse.modifiers` was dropped entirely. A command-click on a link opens it in a background tab — deliberate non-navigation, the bulk-open pattern — and now reaches the `KeyChord` column alongside keyboard chords
 - **Secure Input as a second credential signal.** `app.secureInput` fires on any system-wide password prompt, including those exposing no secure-field subrole, and surfaces as `Password Prompt`
 
+### Grok Build and Claude Desktop — stores that outlive the conversation
+
+Six stores sitting outside the session trees were unread. All of them survive deletion of the conversation, which is what makes them worth having.
+
+- **Grok `sessions/session_search.sqlite`** — the FTS5 index over session transcripts (`session_id`, `cwd`, `title`, `updated_at`, indexed body). The same artifact class as Cursor's `conversation-search.db`; it mirrors the transcript and survives deleting the session directory
+- **Grok `logs/unified.jsonl`** — tool executions with outcome and duration, plus turn boundaries, written independently of the session tree. Records *that* a tool ran, never the command string
+- **Grok `active_sessions.json`** — sessions open at acquisition, with pid and working directory
+- **Claude Desktop `deleted_<session-uuid>` tombstones** — a 13-byte file whose content is the epoch-ms deletion time and whose filename is the deleted session id. Dated proof a conversation existed and was removed
+- **Claude Desktop `pending-uploads/`** — files staged for upload, inventoried by path, size and staging time. File content is never read
+- **Claude Desktop `plan-usage-history.json`** — usage samples collapsed into contiguous "application in use" windows, labelled as derived rather than as recorded session boundaries
+- **Claude Desktop `scheduled-tasks.json` and `git-worktrees.json`** — agent runs configured to fire without user interaction, and workspaces with last-seen timestamps
+- Discovery now prefers `~/Library/Application Support/Claude` over its `claude-code-sessions` child, because three of those stores are siblings of that directory. It replaces the child roots rather than adding to them, so no transcript is parsed twice, and nothing walks up out of a folder you selected
+- `~/.grok/memtrace/` is **deliberately not parsed**: despite the name it is a memory profiler trace, not agent memory, and carries no conversation content
+
 ### Grid quality
 
 - Click multiplicity is named by meaning — `Click`, `Double-Click`, `Triple-Click`, `Multi-Click` — instead of ten numeric `Click (xN)` values. The exact count remains in the `ClickCount` column, where a numeric dimension belongs

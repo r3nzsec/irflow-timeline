@@ -8,6 +8,10 @@ IRFlow Timeline includes a native **AI Query History** extractor for investigati
 
 For the feature-level overview, see [AI Artifacts](/features/ai-artifacts). This guide is the deeper artifact inventory and investigation workflow.
 
+::: tip v1.0.11 coverage
+v1.0.11 adds the **Grok Build** and **Claude Desktop** stores that live outside the session trees and outlive the conversations in them: the [Grok session search index, app log and open-session record](#runtime-stores-outside-the-session-tree), and [Claude Desktop deletion tombstones, staged uploads and usage windows](#claude-desktop-state-artifacts). It also corrects four Computer History claims that did not survive testing against a live capture.
+:::
+
 ::: tip v1.0.10 coverage
 v1.0.10 adds **[ChatGPT Computer History (Skysight)](#chatgpt-computer-history-skysight)** — a separate artifact class covering OS-level interaction telemetry rather than conversation history, with deletion detection, recovery of cleared summaries, and host attribution.
 :::
@@ -26,9 +30,9 @@ Supported today:
 
 | Tool | Status |
 |------|--------|
-| **Claude Code** | CLI `~/.claude/` + Claude Desktop/Cowork session stores |
+| **Claude Code** | CLI `~/.claude/` + Claude Desktop/Cowork session stores, deletion tombstones, staged uploads, and usage windows |
 | **OpenAI Codex** | `$CODEX_HOME` or `~/.codex/` — `history.jsonl`, `sessions/**/rollout-*.jsonl`, `archived_sessions/` |
-| **Grok Build** | `$GROK_HOME` or `~/.grok/` — workspace prompt history plus timestamped session updates, normalized chat fallback, and file-hunk records |
+| **Grok Build** | `$GROK_HOME` or `~/.grok/` — workspace prompt history, timestamped session updates, normalized chat fallback, file-hunk records, plus the session search index, app log, and open-session record |
 | **ChatGPT Desktop** | LevelDB + SQLite under app data dirs (see paths below); `conversations-v2-*` and `conversations-v3-*` bundles are inventoried but not decoded |
 | **Gemini CLI** | `~/.gemini/tmp/<hash>/chats/**/*.jsonl`, `~/.gemini/shell_history`, plus legacy `session-*.json`, `logs.json`, and checkpoints |
 | **Cursor** | `$CURSOR_AGENT_HOME` or `~/.cursor/projects/.../agent-transcripts/*.jsonl`, composer databases, and Cursor `User/globalStorage/conversation-search.db` |
@@ -44,11 +48,11 @@ IRFlow’s **Collect AI Artifacts**, triage detection, and **File → Open** def
 | Tool | Platform | Path |
 |------|----------|------|
 | **Claude Code (CLI)** | all | `~/.claude/history.jsonl`, `~/.claude/projects/**/*.jsonl` |
-| **Claude Desktop** | macOS | `~/Library/Application Support/Claude/claude-code-sessions/` (`local_*.json` index linked to `~/.claude/projects/<slug>/<cliSessionId>.jsonl`) |
-| **Claude Desktop** | Windows | `%APPDATA%\Claude\claude-code-sessions\` |
+| **Claude Desktop** | macOS | `~/Library/Application Support/Claude/` — `claude-code-sessions/` (`local_*.json` index linked to `~/.claude/projects/<slug>/<cliSessionId>.jsonl`), plus sibling state stores `pending-uploads/`, `plan-usage-history.json`, `git-worktrees.json` |
+| **Claude Desktop** | Windows | `%APPDATA%\Claude\` (same layout as macOS) |
 | **Claude Desktop / Cowork** | all | `.../Claude/local-agent-mode-sessions/` (`local_*.json`, isolated `.claude/projects/**/*.jsonl`, `audit*.jsonl`, `.audit-key`) |
 | **OpenAI Codex** | all | `$CODEX_HOME` or `~/.codex/` |
-| **Grok Build** | all | `$GROK_HOME` or `~/.grok/` |
+| **Grok Build** | all | `$GROK_HOME` or `~/.grok/` — `sessions/`, plus `sessions/session_search.sqlite`, `logs/unified.jsonl`, `active_sessions.json` |
 | **ChatGPT** | macOS | `~/Library/Application Support/com.openai.chat/`, `~/Library/Application Support/OpenAI/Atlas/` |
 | **ChatGPT** | Windows | `%APPDATA%\OpenAI\ChatGPT\`, MS Store `%LOCALAPPDATA%\Packages\OpenAI.ChatGPT-*\LocalCache\Roaming\ChatGPT\` |
 | **ChatGPT** | Linux | `~/.config/com.openai.chat/` (and related variants) |
@@ -58,6 +62,8 @@ IRFlow’s **Collect AI Artifacts**, triage detection, and **File → Open** def
 | **GitHub Copilot (VS Code)** | all | `%APPDATA%` or `~/Library/Application Support` → `Code`, `Code - Insiders`, `VSCodium` (+ Insiders) → `User/workspaceStorage/<hash>/chatSessions/` |
 | **Windsurf** | all | `~/Library/Application Support/Windsurf/User/` (or `~/.config/Windsurf/User/`) — `workspaceStorage/*/state.vscdb` |
 | **Continue** | all | `~/.continue/sessions/*.json` |
+
+> **Stores that outlive the conversation:** several artifacts persist after the chat they belong to is deleted, which makes them the highest-value collection targets on a stale host. Claude Desktop `deleted_<session-uuid>` tombstones date the removal of a conversation; `pending-uploads/` retains what was attached to it; `plan-usage-history.json` shows the app was in use. Grok Build `sessions/session_search.sqlite` mirrors transcript text and `logs/unified.jsonl` timestamps tool executions independently of the session tree. Collect these even when the session directories look empty.
 
 > **SQLite and sensitive stores:** IRFlow reads Cursor `conversation-search.db`, `globalStorage/state.vscdb`, workspace `state.vscdb`, and `~/.cursor/chats/**/store.db` using snapshots that preserve available WAL/SHM companions. Copilot CLI `config.json`, MCP OAuth/secret stores, tracked-file contents, and process-log contents are not copied into timeline text; tracked files and logs are inventory-only. **ChatGPT** `conversations-v2-*` and `conversations-v3-*` bundles appear as inventory rows; their message bodies are not decoded. **Codex** versioned `state*.sqlite` stores are snapshotted with their WAL/SHM companions and contribute thread, spawn-edge, and dynamic-tool metadata (full transcripts remain in rollout JSONL). **Grok Build** credentials (`auth.json`, `mcp_credentials.json`) are never added to timeline rows. **Windsurf** Cascade `.pb` files are inventoried but protobuf bodies are not decoded. **Browser-only** AI usage may only appear under Chrome, Edge, Firefox, and Safari profiles — profile scan empty reports list likely browser paths when found.
 
@@ -81,6 +87,14 @@ IRFlow separates AI evidence into three categories:
 | **Grok Build** | `sessions/<encoded-cwd>/prompt_history.jsonl` | Parsed | Provides timestamped user prompts and direct shell entries (`is_bash`), including the exact command in **ToolCommand**. |
 | **Grok Build** | `<session-id>/summary.json`, `updates.jsonl`, `chat_history.jsonl`, `hunk_records.jsonl` | Parsed | Reconstructs sessions, responses/reasoning, tool calls and completion output, token usage, model/workspace context, and files changed by the agent. |
 | **Grok Build** | `<session-id>/terminal/call-*.log` | Preserved source artifact | Captured terminal output is normally present in `updates.jsonl`; `rawOutput.output_file` records the corresponding terminal-log path for provenance. |
+| **Grok Build** | `sessions/session_search.sqlite` | Parsed when SQLite support is available | FTS5 index over session transcripts — `session_id`, `cwd`, `title`, `updated_at`, and the indexed body. It mirrors the transcript and **survives deletion of the session directory**. |
+| **Grok Build** | `logs/unified.jsonl` | Parsed (selective) | Tool executions with outcome and duration, plus turn boundaries, written independently of the session tree. Records *that* a tool ran, never the command. |
+| **Grok Build** | `active_sessions.json` | Parsed | Sessions open at acquisition: `session_id`, `pid`, `cwd`, `opened_at`. |
+| **Grok Build** | `memtrace/*.jsonl` | Deliberately not parsed | Despite the name, a **memory profiler** trace (`rss_bytes`, `alloc`) — no conversation content. Tens of MB of allocation samples; only process-lifetime value. |
+| **Claude Desktop** | `claude-code-sessions/**/deleted_<session-uuid>` | Parsed | **Deletion evidence.** A 13-byte tombstone whose content is the epoch-ms deletion time and whose filename is the deleted session id. |
+| **Claude Desktop** | `pending-uploads/<uuid>-<epoch_ms>_<name>` | Inventory-only | Files staged for upload — what the user attached or pasted into a conversation, retained independently of it. Content is never read. |
+| **Claude Desktop** | `plan-usage-history.json` | Parsed (derived) | Dense usage samples collapsed into contiguous "application in use" windows that survive deletion of the conversations inside them. |
+| **Claude Desktop** | `scheduled-tasks.json`, `git-worktrees.json` | Parsed | Agent runs configured to fire without user interaction, and working directories with last-seen timestamps. |
 | **Grok Build** | `auth.json`, `mcp_credentials.json`, `config.toml`, `trusted_folders.toml` | Deliberately not parsed | These files can expose authorization/configuration state. Preserve and examine them only when in scope; IRFlow does not copy credential values into timeline fixtures or rows. |
 | **ChatGPT Desktop / Atlas** | LevelDB and SQLite stores under app data directories | Parsed when local stores contain data | LevelDB often proves conversation existence and titles; SQLite stores can contain full user/assistant message bodies on supported app versions. |
 | **ChatGPT Desktop / Atlas** | `conversations-v2-*`, `conversations-v3-*/*.data`, including `project-*` stores | Inventory-only | IRFlow reports bundle UUID, generation, project/store context, size, and source path. It does not decode message bodies. |
@@ -122,6 +136,22 @@ From a triage image, look under user profiles, for example:
 Each message becomes a timeline row with **Timestamp**, **Role**, **RecordType**, **Summary**, **FullText**, **InvokedTool**, **ToolCommand**, **ToolInput**, **ToolDescription**, **SessionId**, **Model**, token counts (when present), **IsSidechain**, **GitBranch**, **SourceFile**, and a **Description** column for search and review. Claude session files also surface non-chat events (file snapshots, system/compaction markers, attachments, and similar).
 
 When both `history.jsonl` and session JSONL contain the same prompt, the session copy is kept and the history duplicate is dropped.
+
+### Claude Desktop state artifacts
+
+Alongside the transcripts, Claude Desktop keeps stores that answer questions the transcripts cannot — precisely because they persist after a conversation is removed.
+
+**Deleted conversations leave a dated tombstone.** Under `claude-code-sessions/<account>/<org>/`, a removed session is replaced by a file named `deleted_<session-uuid>` whose entire 13-byte content is the **epoch-ms deletion time**. Both halves of the finding come from the artifact: the filename gives the session id, the content gives when it went. Measured on a live host, two tombstones sat beside five live `local_*.json` sessions. It does **not** recover the conversation, and the row's timestamp is the deletion — not the conversation's own activity.
+
+**Staged attachments outlive the chat.** `pending-uploads/` holds files named `<uuid>-<epoch_ms>_<original name>` — what the user attached or pasted into a conversation. They are retained independently of it, so they can evidence that a document or screenshot was sent to the assistant long after the chat is gone. Measured: 84 files, 58.7 MB, spanning six months. IRFlow inventories path, size and the timestamp parsed from the filename; **file content is never read**. Preserve the bytes separately under the usual evidence controls.
+
+**Usage samples give a presence timeline.** `plan-usage-history.json` records a sample roughly every five minutes while the app is open, each with an org UUID — 5,189 of them across a month on the measured host. One row per sample would be noise, so IRFlow collapses them into contiguous windows, splitting on a gap wider than the sampling interval. Those windows are *derived* from sample spacing, not recorded session boundaries, and the rows say so.
+
+Also collected: `scheduled-tasks.json` (agent runs configured to fire without user interaction — treat as an automation/persistence surface; an empty schedule is not reported) and `git-worktrees.json` (working directories with last-seen timestamps, which can place a workspace on the timeline when no transcript for it survives).
+
+::: tip Point the scan at the app-support folder
+`pending-uploads/`, `plan-usage-history.json` and `git-worktrees.json` are **siblings** of `claude-code-sessions`, not children of it. Select `~/Library/Application Support/Claude` (or `%APPDATA%\Claude`) to reach everything; discovery does this automatically. Selecting `claude-code-sessions` alone still works and still finds the tombstones — it simply cannot see its own siblings, because a scan never walks up out of the folder you authorized.
+:::
 
 ### ChatGPT Desktop
 
@@ -170,6 +200,20 @@ The macOS **Codex** app in `~/Library/Application Support/Codex` is UI cache onl
 | `trusted_folders.toml`, `slash-mru.json`, `version.json`, `agent_id` | Trust decisions, recent slash-command state, installed-version metadata, and installation identity. |
 
 For a `run_terminal_command` event, IRFlow places the exact recorded `rawInput.command` in **ToolCommand**, retains all structured input in **ToolInput**, and creates a related `tool_result` row containing working directory, exit code, timeout/truncation flags, captured output, and terminal-log path when present. Failed calls use `tool_result_failed`.
+
+#### Runtime stores outside the session tree
+
+Three Grok stores live outside `sessions/<encoded-cwd>/<session-id>/` and are written independently of it. That independence is the point: deleting a session directory does not delete the index that mirrors its text, the log that timestamped its tool calls, or the record that it was open.
+
+| Artifact | What it gives you |
+|----------|-------------------|
+| `sessions/session_search.sqlite` | `session_docs` holds `session_id`, `cwd`, `title`, `updated_at` (epoch **seconds**) and the indexed transcript body, with an FTS5 index over it. `last_indexed_offset` shows how much of the source was consumed — well below the body length means a partial view. |
+| `logs/unified.jsonl` | `shell.tool.exec_done` records give tool name, success/failure and duration per `sid`; turn boundaries bracket model calls. There is **no command string** here — that only ever lives in the session's `updates.jsonl`. |
+| `active_sessions.json` | `session_id` → `pid`, `cwd`, `opened_at` for sessions open when the host was captured. |
+
+::: warning `memtrace/` is not what the name suggests
+`~/.grok/memtrace/*.jsonl` looks like agent memory and is not. Every record is `{"kind":"sample","rss_bytes":…,"footprint_bytes":…,"alloc":{…}}` — a **memory profiler** trace, tens of megabytes of allocation samples with no conversation content. IRFlow does not parse it. Its only evidentiary use is proving the process was alive, which `active_sessions.json` and the unified log already cover.
+:::
 
 The consumer Grok product is separate. IRFlow does not currently claim a native parser for consumer Grok web/mobile chats. Investigate ordinary browser history, downloads, cache, cookies, local/IndexedDB storage, and vendor exports for `grok.com` or X/Grok use; do not attribute a generic browser profile to Grok without origin-level evidence.
 
@@ -478,6 +522,10 @@ Share the folder with counsel or attach it to a case folder; re-hash sources ind
 - Use **Description** or full-text search on **Summary** for keywords (credentials, internal hostnames, exploit terms).
 - Correlate **Workspace** (project/cwd) with suspicious repositories or production paths.
 - **User** / **Host** columns are derived from the collection path when the artifact sits under `Users\<name>\` or a KAPE host folder.
+- Filter **RecordType** = `session_deleted` first on any Claude Desktop import: it lists conversations that were removed, with the time of removal, before you draw conclusions from what remains.
+- **RecordType** = `pending_upload` shows what was sent to the assistant as an attachment; the timeline row is an inventory entry, so pull the file itself from `pending-uploads/` for the content.
+- **RecordType** = `session_search` (Grok) can hold transcript text for sessions whose directories are gone. Compare its `SessionId` against the sessions you actually recovered.
+- **RecordType** = `log_tool_exec` (Grok) places tool executions on the timeline with outcome and duration. It never carries the command — correlate `MessageId` (the tool call id) back to the session's `updates.jsonl` for that.
 
 ## Extraction safeguards
 
@@ -506,3 +554,9 @@ Large profile scans, **Collect AI Artifacts**, and merged folder extracts share 
 - **Computer History** `summary.profile` and `summary.priorcontext` rows are model inference, not observation, and `summary.priorcontext` describes activity from outside its own window — never date evidence from either.
 - The ChatGPT **analytics event store** (`Analytics.db`) is uploaded then cleared with freed pages zeroed. Expect it empty outside a fast live acquisition, and note that deleted analytics events are **not** carvable.
 - **Computer History** summary recovery from the memories git repository requires `git` on the examination host (Xcode Command Line Tools on macOS).
+- **Grok Build** `session_search.sqlite` requires SQLite support; `last_indexed_offset` well below the body length means the index is a partial view of the transcript.
+- **Grok Build** `logs/unified.jsonl` records that a tool ran, with outcome and duration, but never the command string. Do not present a `log_tool_exec` row as evidence of what was executed.
+- **Grok Build** `memtrace/` is a memory profiler trace, not agent memory, and is deliberately not parsed.
+- **Claude Desktop** deletion tombstones prove a conversation existed and when it was removed. They do not recover its content, and their timestamp is the deletion rather than the conversation's activity.
+- **Claude Desktop** `pending-uploads/` rows are inventory only — file content is never ingested. Preserve the files separately.
+- **Claude Desktop** app-usage windows are derived from usage-sample spacing, not recorded session boundaries.

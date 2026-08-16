@@ -52,6 +52,7 @@ features:
 - **Computer History analysis verified against a live capture** — Credential rows are time anchors, not recovered passwords; capture fidelity is measured per application rather than assumed from the app's category; and gaps spanning a recorder restart are reported as unassessed instead of falsely cleared.
 - **The copy that outlives the evidence** — Activity consolidated into `~/.codex/memories/` is neither purged at 48 hours nor cleared with Computer History, and is now collected. On a stale host it can be the only surviving record.
 - **More of each summary** — The model-inferred user profile and carried-forward prior context become their own rows instead of being flattened into one blob.
+- **Grok Build and Claude Desktop stores that outlive the conversation** — Deletion tombstones that date a removed chat, the files staged for upload to it, the Grok search index that mirrors a deleted session's text, and the app log that timestamps tool executions independently of it.
 - **Sharper grid** — Mouse modifiers reach `KeyChord` (a command-click opens a link in a background tab), and click multiplicity is named by meaning rather than producing ten numeric Activity values.
 
 [Read the v1.0.11 announcement →](/blog/v1.0.11-computer-history-verified) · [Computer History in v1.0.10 →](/blog/v1.0.10-computer-history) · [Full changelog →](/about/changelog)

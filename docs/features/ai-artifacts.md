@@ -8,6 +8,14 @@ AI Artifacts turns local AI assistant history into timeline evidence. It helps i
 
 The feature creates an **AI Query History** timeline tab from local desktop, CLI, and editor-assistant stores. Each row keeps the evidence context analysts need: timestamp, role, AI app, invoked action, session, workspace, source file, summary, full text, and endpoint attribution when available.
 
+::: tip New in v1.0.11
+**Stores that outlive the conversation.** Grok Build and Claude Desktop both keep evidence outside
+the session trees: a search index that mirrors transcript text, an application log that timestamps
+tool executions, deletion tombstones that date a removed conversation, and the files a user
+attached to it. All of them survive deleting the chat — see
+[Stores that outlive the conversation](#stores-that-outlive-the-conversation).
+:::
+
 ::: tip New in v1.0.10
 **ChatGPT Computer History (Skysight) is a new artifact family.** It is OS-level interaction telemetry rather than conversation history, so it opens in its own tab with a dedicated 54-column schema — plus deletion detection, recovery of cleared summaries, and host attribution. See [ChatGPT Computer History](#chatgpt-computer-history) below.
 :::
@@ -50,9 +58,9 @@ IRFlow scans local artifacts from these AI apps:
 | App | Local evidence handled |
 |-----|------------------------|
 | **Claude Code** | CLI history and project JSONL transcripts under `.claude`. |
-| **Claude Desktop** | `claude-code-sessions` metadata plus recursive Cowork `local-agent-mode-sessions` transcripts and audit trails. |
+| **Claude Desktop** | `claude-code-sessions` metadata, recursive Cowork `local-agent-mode-sessions` transcripts and audit trails, plus deletion tombstones, staged uploads, usage windows, scheduled tasks, and workspace sightings. |
 | **OpenAI Codex** | `history.jsonl`, current/archived rollout JSONL, session indexes, and versioned `state*.sqlite` thread/subagent/tool metadata. |
-| **Grok Build** | Timestamped prompts, responses, exact tool inputs, shell completions, session metadata, and file-hunk records under `.grok`. |
+| **Grok Build** | Timestamped prompts, responses, exact tool inputs, shell completions, session metadata, and file-hunk records under `.grok`, plus the session search index, application log, and open-session record. |
 | **ChatGPT Desktop / Atlas** | Local LevelDB and SQLite stores plus v2/v3 conversation-bundle metadata inventory. |
 | **Gemini CLI** | Current JSONL chats, nested subagent sessions, exact shell history/tool commands, and legacy session data under `.gemini`. |
 | **Cursor** | Agent transcripts, composer/workspace SQLite chat stores, and `conversation-search.db` indexed bodies. |
@@ -111,6 +119,29 @@ Results are **redacted by default** (cleartext is never written to disk). Analys
 | **Workspace** | Project, cwd, repository, or folder context when available. |
 | **SourceFile** | Original artifact path used to produce the row. |
 | **AlsoInTools** | Other AI apps where the same prompt appeared after dedupe. |
+
+## Stores that outlive the conversation
+
+Deleting a conversation does not delete everything it left behind. Both Grok Build and Claude
+Desktop keep stores outside the session directories, written independently of them — which makes
+them the highest-value targets when the transcripts are already gone.
+
+| App | Artifact | What it evidences |
+|-----|----------|-------------------|
+| **Claude Desktop** | `deleted_<session-uuid>` tombstone | That a conversation existed and **when it was deleted** — the filename is the session id, the file content is the epoch-ms deletion time. It does not recover the content. |
+| **Claude Desktop** | `pending-uploads/` | What the user attached or pasted into a conversation. Inventoried by path, size and staging time; **content is never read**. |
+| **Claude Desktop** | `plan-usage-history.json` | Contiguous windows during which the app was in use, derived from usage-sample spacing. |
+| **Claude Desktop** | `scheduled-tasks.json`, `git-worktrees.json` | Agent runs configured to fire without user interaction, and workspaces with last-seen times. |
+| **Grok Build** | `sessions/session_search.sqlite` | Indexed transcript text — it mirrors the session and survives deleting the session directory. |
+| **Grok Build** | `logs/unified.jsonl` | Tool executions with outcome and duration, plus turn boundaries. Records *that* a tool ran, never the command. |
+| **Grok Build** | `active_sessions.json` | Sessions open at acquisition, with pid and working directory. |
+
+Select the **app-support folder** (`~/Library/Application Support/Claude`) rather than
+`claude-code-sessions` — three of the Claude Desktop stores are siblings of that directory, and a
+scan never walks up out of the folder you authorized. Discovery already prefers the parent.
+
+`~/.grok/memtrace/` is **not** parsed: despite the name it is a memory profiler trace, not agent
+memory, and carries no conversation content.
 
 ## ChatGPT Computer History
 

@@ -17,13 +17,13 @@ export default defineConfig({
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/irflow-timeline/logo.svg' }],
     ['meta', { property: 'og:title', content: 'IRFlow Timeline' }],
-    ['meta', { property: 'og:description', content: 'IRFlow Timeline 1.0.11 verifies ChatGPT Computer History against a live capture: corrected credential, fidelity and deletion analysis, plus consolidated-memory collection.' }],
+    ['meta', { property: 'og:description', content: 'IRFlow Timeline 1.0.11 verifies Computer History against a live capture and adds the Grok Build and Claude Desktop stores that outlive the conversation — deletion tombstones, staged uploads, and session search indexes.' }],
     ['meta', { property: 'og:image', content: 'https://r3nzsec.github.io/irflow-timeline/IRFlow-Timeline-Home.png' }],
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:url', content: 'https://r3nzsec.github.io/irflow-timeline/' }],
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
     ['meta', { name: 'twitter:title', content: 'IRFlow Timeline' }],
-    ['meta', { name: 'twitter:description', content: 'IRFlow Timeline 1.0.11 verifies ChatGPT Computer History against a live capture: corrected credential, fidelity and deletion analysis, plus consolidated-memory collection.' }],
+    ['meta', { name: 'twitter:description', content: 'IRFlow Timeline 1.0.11 verifies Computer History against a live capture and adds the Grok Build and Claude Desktop stores that outlive the conversation — deletion tombstones, staged uploads, and session search indexes.' }],
     ['meta', { name: 'twitter:image', content: 'https://r3nzsec.github.io/irflow-timeline/IRFlow-Timeline-Home.png' }],
     ['script', { 'data-goatcounter': 'https://irflowtimeline.goatcounter.com/count', async: '', src: '//gc.zgo.at/count.js' }],
     ['script', { type: 'application/ld+json' }, JSON.stringify({
