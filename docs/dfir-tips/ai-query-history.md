@@ -231,6 +231,7 @@ Two properties matter for acquisition. Raw events are uploaded to OpenAI for sum
 | **Segment metadata** | `…/segments/<bucket>/metadata.json` | with its segment |
 | **Activity summaries** | `~/.codex/memories/extensions/skysight/resources/<ts>-<4char>-(10min\|6h)-*.md` | until the user clears them |
 | **Summariser instructions** | `~/.codex/memories/extensions/skysight/instructions.md` | persistent |
+| **Consolidated memory** | `~/.codex/memories/{memory_summary.md,MEMORY.md,raw_memories.md}`, `~/.codex/memories_*.sqlite` | **indefinite** — see below |
 | **Memories git repository** | `~/.codex/memories/.git` | persistent |
 | **Feature state** | `~/.codex/config.toml` → `[plugins."computer-history@openai-bundled"] enabled` | persistent |
 | **Computer Use agent approvals** | `…/CUAService/Library/Application Support/Software/ComputerUseAppApprovals.json` — see the caveat below; **not** the recording scope | persistent |
@@ -248,6 +249,8 @@ The **currently open** bucket is different: it carries only `id`, `startedAt`, a
 `session.started` · `session.ended` · `window.changed` · `mouse.click` · `mouse.context_menu` · `mouse.drag` · `selection.changed` · `keyboard.text_input` · `keyboard.submit` · `keyboard.shortcut`
 
 Each event may carry the frontmost app (bundle id and name), window title and URL, the accessibility target (role, subrole, label, description, identifier), the typed or selected payload, drag origin **and** destination, and an `ax` block containing accessibility text.
+
+`mouse.modifiers` records the modifier held during a click or drag, and it changes what the click *meant*. A `command`-click on an `AXLink` opens that link in a **background tab** — a deliberate choice not to navigate away, and the signature of bulk-opening results rather than reading one. `shift`-click extends a range selection; `command`-click on a row multi-selects. It shares the `KeyChord` column with keyboard chords, since both use the same vocabulary (`command`, `shift`, `control`, `function`).
 
 `app.secureInput` is a further per-event flag: `true` means macOS **Secure Input Mode** was engaged at that moment (a password field held focus anywhere on the system). It is a stronger and more common credential signal than the `AXSecureTextField` target subrole — see the credential note below.
 
@@ -277,7 +280,9 @@ Rows land in a dedicated schema rather than the AI history columns. The fields t
 | Which files were selected before an exfil? | `SelectedItems` / `SelectedItemRoles` — Finder row selections. These events carry no selected text, so without this column they are empty rows. |
 | Where did data move? | `mouse.drag` with `DestAppName` / `DestTargetLabel` / `DestContent` — the receiving end of a cross-app drag. |
 | What commands were run? | Terminal rows. Emulators expose the whole scrollback buffer as one `AXTextArea`, so these are screen-state snapshots, not a single command. |
-| What was searched for? | `TargetSubrole = AXSearchField`. |
+| What was searched for? | `TargetSubrole = AXSearchField`. After the 48h purge, typed search terms often still survive in `summary.profile` rows. |
+| Were links opened in background tabs? | `KeyChord = command` on a `mouse.click` against `AXLink` — deliberate non-navigation, the bulk-open pattern. |
+| Did a double-click open something? | `Activity = Double-Click`; exact multiplicity is in `ClickCount`. |
 | Was recording paused or cleared? | `Configuration` and `Integrity` rows — see the caveats below. |
 | Who does this host belong to? | `Identity` rows — see the attribution table below. |
 
@@ -308,6 +313,22 @@ Do not assume which apps those are. "Messaging app" is not the predictor — *UI
 **A missing segment bucket is not evidence of deletion.** Within a single recorder run, cross-check event-id continuity across the hole. Observed live: bucket `06-30` absent while ids ran `6347 → 6348` straight through, which proves the host was idle rather than that a bucket was removed. A genuine deletion shows an id **jump** — a positive discontinuity inside one run, never a reset to 1.
 
 **`metadata.eventCount` is a usable integrity anchor.** It matched the file exactly on every closed segment measured. Because the app offers "clear the last 10 minutes / hour / day / all", a clear removes records while leaving the count behind — so a shortfall between declared count and well-formed records present is a deletion lead. Count malformed lines separately: corruption and deletion both lower the record count but are different findings.
+
+**The activity data does not stop at Skysight — and the onward copy outlives everything.** `extensions/skysight/instructions.md` instructs the Codex memory consolidator to mine the summaries, naming the *"Important non-obvious context about the user"* section explicitly, and fold what it finds into the durable memory store one directory up. That produces a third copy of the observed activity with a completely different retention:
+
+| Copy | Retention |
+|------|-----------|
+| `segments/*/events.jsonl` | ~48 hours |
+| `skysight/resources/*.md` | until the user clears Computer History |
+| `~/.codex/memories/*.md` + `memories_*.sqlite` | **indefinite** — a different subsystem, not cleared with Computer History |
+
+This inverts the collection priority on a stale host. Measured on a live one: `memory_summary.md` carried a `## User Profile` built partly from observed activity, `MEMORY.md` cited a specific 6-hour summary *by path* as the evidence for a task-group memory, and 13 lines carried an explicit **`[skysight memory]`** provenance tag. IRFlow collects only those tagged lines and blocks citing a Skysight resource — the rest of `MEMORY.md` is ordinary Codex conversation memory, a different artifact family. These files are git-tracked too, so deletions are recoverable by the same route as cleared summaries.
+
+**A summary file is not one statement.** Its body holds structurally different assertions, and IRFlow now emits each as its own row so it can be filtered and searched:
+
+- **`Recording summary`** — what happened inside the window. Bounded by it.
+- **`Relevant prior context`** (`summary.priorcontext`) — carried in from *earlier* windows. The row timestamp is when it was written, **not** when the activity happened. Do not date evidence from it.
+- **`Important non-obvious context about the user`** (`summary.profile`) — the largest section, averaging ~1,000 characters against ~415 for the recording summary, and the highest-value one: a model-written dossier naming documents, typed search terms, organisation and project names, and each app's role. It survives the 48-hour purge, so it can still name a search term whose primary record is already gone. Corroborate before relying on it — it is inference, not observation.
 
 **`~/.codex/memories/` is a git repository.** Summaries cleared through the UI remain recoverable from the git object store, and the deleting commit is timestamped. On a host where the 48-hour purge has already run *and* the user cleared their history, this can be the only surviving record. Recovery proves the summary existed and when it was removed — it does not upgrade the summary's own evidentiary weight.
 
@@ -481,5 +502,7 @@ Large profile scans, **Collect AI Artifacts**, and merged folder extracts share 
 - **Computer History** capture depth varies by application, and the tier follows the UI toolkit rather than the app category — Electron and Chromium apps (Slack included) expose full message text, while hardened native UIs (Telegram) yield window metadata and outbound typed text only. Verify `AxLength` per bundle in your own capture before characterising what a messaging app did or did not record.
 - **Computer History** credential rows prove a password field was focused; they do not recover the password. macOS Secure Input Mode blocks the recorder's event tap, so the keystrokes consume event ids without being written to disk.
 - **Computer History** `EventId` resets to 1 on every recorder restart, so it is a within-run join key only. Across a restart boundary, id continuity cannot assess whether events were deleted.
+- **Computer History** activity is consolidated onward into `~/.codex/memories/`, which is **not** purged at 48 hours and **not** cleared with Computer History. Collect it alongside the segments, and expect it to be the surviving copy on a stale host.
+- **Computer History** `summary.profile` and `summary.priorcontext` rows are model inference, not observation, and `summary.priorcontext` describes activity from outside its own window — never date evidence from either.
 - The ChatGPT **analytics event store** (`Analytics.db`) is uploaded then cleared with freed pages zeroed. Expect it empty outside a fast live acquisition, and note that deleted analytics events are **not** carvable.
 - **Computer History** summary recovery from the memories git repository requires `git` on the examination host (Xcode Command Line Tools on macOS).

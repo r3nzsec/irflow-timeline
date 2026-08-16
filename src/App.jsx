@@ -3717,10 +3717,10 @@ export default function App() {
                 {APP_DESCRIPTION}
               </p>
               <p style={{ margin: "0 0 8px", fontSize: 12, color: th.text, lineHeight: 1.6, fontFamily: "-apple-system, sans-serif" }}>
-                Native ingestion covers CSV, TSV, XLS/XLSX, Plaso, raw $MFT and $UsnJrnl, plus EVTX through bounded 64 KiB chunk reads up to the format's approximately 4 GiB limit. AI evidence includes prompts, responses, tool calls, shell commands, and bounded tool output from supported assistants.
+                Native ingestion covers CSV, TSV, XLS/XLSX, Plaso, raw $MFT and $UsnJrnl, plus EVTX through bounded 64 KiB chunk reads up to the format's approximately 4 GiB limit. AI evidence includes prompts, responses, tool calls, shell commands, and bounded tool output from supported assistants, plus ChatGPT Computer History — the macOS interaction-event stream, the activity summaries derived from it, and the consolidated memory those summaries feed.
               </p>
               <p style={{ margin: 0, fontSize: 12, color: th.text, lineHeight: 1.6, fontFamily: "-apple-system, sans-serif" }}>
-                Built-in investigation includes Sigma and Hayabusa detection, process trees, lateral movement, persistence, ransomware and NTFS analytics, AI secret exposure hunting, IOC and VirusTotal enrichment, RDP bitmap recovery, tagging, and reporting.
+                Built-in investigation includes Sigma and Hayabusa detection, process trees, lateral movement, persistence, ransomware and NTFS analytics, AI secret exposure hunting, IOC and VirusTotal enrichment, RDP bitmap recovery, tagging, and reporting. Computer History adds per-application capture-fidelity tiering, credential-entry and deletion detection, recovery of cleared summaries, and host attribution.
               </p>
             </div>
             <div style={{ marginBottom: 16 }}>

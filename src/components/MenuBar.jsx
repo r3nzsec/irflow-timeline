@@ -168,12 +168,12 @@ export default function MenuBar({
   };
 
   /**
-   * Codex Computer History (Skysight) — OS activity telemetry with its own column schema.
+   * ChatGPT Computer History (Skysight) — OS activity telemetry with its own column schema.
    * Prepared like the AI-history tools (pick a path, then hand off to the verbose extract modal),
    * but there is no subagent scope choice: activity events have no sidechains.
    */
   const decodeComputerHistory = async () => {
-    const label = "Codex Computer History";
+    const label = "ChatGPT Computer History";
     const r = await tle.decodeComputerHistory(null, { prepareOnly: true });
     if (r?.canceled) return;
     if (isIpcError(r)) { toast.error(`${label} extraction failed`, { detail: ipcErrorMessage(r) }); return; }
@@ -352,7 +352,7 @@ export default function MenuBar({
           // extractors — nested so the split is visible rather than implied.
           { group: "OpenAI Codex", icon: <OpenAiMenuIcon th={th} />, items: [
             { label: "Codex AI History", icon: <OpenAiMenuIcon th={th} />, action: () => decodeAiHistory("codex", "OpenAI Codex AI History") },
-            { label: "Codex Computer History", icon: <ComputerHistoryMenuIcon th={th} />, action: () => decodeComputerHistory() },
+            { label: "ChatGPT Computer History", icon: <ComputerHistoryMenuIcon th={th} />, action: () => decodeComputerHistory() },
           ] },
           { label: "Grok Build", icon: <GrokMenuIcon th={th} />, action: () => decodeAiHistory("grok-build", "Grok Build AI History") },
           { label: "ChatGPT Desktop", icon: <ChatGptMenuIcon th={th} />, action: () => decodeAiHistory("chatgpt", "ChatGPT AI History") },

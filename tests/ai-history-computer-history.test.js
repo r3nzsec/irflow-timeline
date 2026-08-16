@@ -44,7 +44,11 @@ const {
   listSegmentDirs,
   detectSegmentGaps,
   parseSummaryFrontmatter,
+  describeActivity,
   parseSummaryFile,
+  parseSummaryFileRows,
+  extractSummarySection,
+  collectSkysightDerivedMemory,
   extractSegmentFile,
   extractComputerHistoryDir,
   extractComputerHistoryPath,
@@ -163,10 +167,19 @@ test("stampFidelityTiers gives an app one tier instead of one per row", () => {
   stampFidelityTiers(rows, new Map([["com.github.Electron", 41717], ["com.quiet.app", 120]]));
   assert.deepEqual(rows.map((r) => r.FidelityTier), ["1", "1", "1", "3"]);
 
-  // A tier already resolved from the measured table is authoritative and never overwritten.
-  const known = [{ BundleId: "ru.keepcoder.Telegram", FidelityTier: "3", Description: "" }];
-  stampFidelityTiers(known, new Map([["ru.keepcoder.Telegram", 999999]]));
-  assert.equal(known[0].FidelityTier, "3", "table wins over observed volume");
+  // A provisional tier stamped from the table at parse time is NOT authoritative: by finalization
+  // the whole capture has been seen, and evidence of a deeper capture must be able to correct it.
+  // Slack shipped pinned to Tier 3 on category reasoning while exposing 53,590 chars of channel
+  // content, which produced exactly the wrong "only one side of the conversation" report line.
+  const stale = [{ BundleId: "com.tinyspeck.slackmacgap", FidelityTier: "3", Description: "" }];
+  stampFidelityTiers(stale, new Map([["com.tinyspeck.slackmacgap", 53590]]));
+  assert.equal(stale[0].FidelityTier, "1", "evidence of a deep capture overrides a stale table tier");
+
+  // ...but a thin sample can never argue capability away. Telegram genuinely maxes out around 144
+  // chars, so nothing promotes it; a briefly-used browser must not be demoted on low volume.
+  const thin = [{ BundleId: "com.google.Chrome", FidelityTier: "1", Description: "" }];
+  stampFidelityTiers(thin, new Map([["com.google.Chrome", 6814]]));
+  assert.equal(thin[0].FidelityTier, "1", "a short sample never demotes a known-deep app");
 });
 
 test("only full-tree captures feed the fidelity profile", () => {
@@ -191,9 +204,19 @@ test("resolveAppClass carries the app family independently of the action", () =>
   assert.equal(resolveAppClass("com.unknown.app", ""), "");
 });
 
-test("resolveFidelityTier prefers the measured table, falls back to AX volume", () => {
+test("resolveFidelityTier takes the more capable of table and measurement", () => {
+  // No observation: the table is all there is.
   assert.equal(resolveFidelityTier("com.googlecode.iterm2", 0), 1);
-  assert.equal(resolveFidelityTier("ru.keepcoder.Telegram", 999999), 3, "table wins over volume");
+  assert.equal(resolveFidelityTier("com.unknown.app", 0), 3, "unknown and unobserved is not 'deep'");
+
+  // Measurement promotes a stale table entry — the Slack case.
+  assert.equal(resolveFidelityTier("ru.keepcoder.Telegram", 999999), 1, "evidence beats a stale tier");
+
+  // Measurement never demotes a known-deep app that was simply on screen briefly.
+  assert.equal(resolveFidelityTier("com.google.Chrome", 6814), 1, "thin sample does not demote");
+  assert.equal(resolveFidelityTier("com.apple.mail", 10), 2, "table floors the tier at its prior");
+
+  // Unknown bundles are tiered purely from what they produced.
   assert.equal(resolveFidelityTier("com.unknown.app", 50000), 1);
   assert.equal(resolveFidelityTier("com.unknown.app", 5000), 2);
   assert.equal(resolveFidelityTier("com.unknown.app", 10), 3);
@@ -314,22 +337,25 @@ test("a diff capture is qualified on the row, not just in AxMode", () => {
   assert.doesNotMatch(full.Description, /CHANGES ONLY/, "a snapshot needs no qualifier");
 });
 
-test("a secure text field is reported as credential entry, with the value caveat", () => {
-  // macOS withholds an AXSecureTextField value, but keyboard capture is hardware-level and
-  // app-independent — so typed characters can still reach the stream.
+test("a secure text field is credential entry — a timing anchor, not a recovered password", () => {
+  // Secure Input Mode blocks the recorder's event tap, so BOTH the field value and the keystrokes
+  // are withheld. Measured live: zero text-bearing input events under secure input across 5,370
+  // events. The fixture mirrors that — no `value`, no `text` — because a fixture carrying a
+  // readable password would enshrine the exact claim this row must never make.
   const row = parseSkysightEvent({
     id: 9, kind: "keyboard.text_input", timestamp: "2026-08-14T05:33:00Z",
     app: { bundleIdentifier: "in.sinew.Enpass-Desktop", name: "Enpass" },
     keyboard: {
-      text: "hunter2",
       target: { role: "AXTextField", subrole: "AXSecureTextField", title: "Master password" },
     },
   }, "/evidence/events.jsonl", {}, {}, {});
 
   assert.equal(row.TargetSubrole, "AXSecureTextField");
   assert.equal(row.Activity, "Credential Entry");
-  assert.match(row.Description, /SECURE FIELD/);
-  assert.match(row.Description, /value withheld by macOS/);
+  assert.equal(row.Content, "", "no credential material reaches the row");
+  assert.match(row.Description, /SECURE INPUT/);
+  assert.match(row.Description, /suppressed the keystrokes/);
+  assert.match(row.Description, /not what it was/);
 
   const submit = parseSkysightEvent({
     id: 10, kind: "keyboard.submit", timestamp: "2026-08-14T05:33:01Z",
@@ -337,6 +363,25 @@ test("a secure text field is reported as credential entry, with the value caveat
     keyboard: { target: { role: "AXTextField", subrole: "AXSecureTextField" } },
   }, "/evidence/events.jsonl", {}, {}, {});
   assert.equal(submit.Activity, "Credential Submit");
+
+  // app.secureInput is the BROADER signal — system-wide Secure Input Mode, which fires on prompts
+  // exposing no secure-field subrole at all. Observed live on a third-party app-lock dialog whose
+  // only trace was the focus change, and on 5 events against the subrole's 2.
+  const noSubrole = parseSkysightEvent({
+    id: 11, kind: "window.changed", timestamp: "2026-08-14T05:33:02Z",
+    app: { bundleIdentifier: "com.cisdem.appencrypt", name: "AppCrypt", secureInput: true },
+    window: { title: "Please Enter your Password" },
+  }, "/evidence/events.jsonl", {}, {}, {});
+  assert.equal(noSubrole.TargetSubrole, "", "no secure-field subrole on this event at all");
+  assert.equal(noSubrole.Activity, "Password Prompt");
+  assert.match(noSubrole.Description, /SECURE INPUT/);
+
+  const typedUnderSecureInput = parseSkysightEvent({
+    id: 12, kind: "keyboard.text_input", timestamp: "2026-08-14T05:33:03Z",
+    app: { bundleIdentifier: "com.microsoft.edgemac", name: "Microsoft Edge", secureInput: true },
+    keyboard: { target: { role: "AXTextField" } },
+  }, "/evidence/events.jsonl", {}, {}, {});
+  assert.equal(typedUnderSecureInput.Activity, "Credential Entry");
 
   // An ordinary field must not pick up the credential language.
   const ordinary = parseSkysightEvent({
@@ -728,6 +773,35 @@ test("the extractor feeds real id ranges into gap classification", async () => {
   assert.match(gap.Content, /26 event id\(s\) are unaccounted for across this bucket \(13 → 40\)/);
 });
 
+test("a gap spanning a recorder restart is unassessed, never cleared", () => {
+  // The counter restarts at 1 with each recorder session, so ids either side of the hole belong to
+  // different runs. Subtracting them yields a NEGATIVE "missing" count, which lands in the "<= 0"
+  // branch and reads as reassurance: on one live capture this cleared 183 of 186 gap rows with
+  // "ids run continuously (17169 → 1)" — thirteen-hour holes it had never actually assessed.
+  const [gap] = detectSegmentGaps(
+    ["2026-08-14T08-10-00Z", "2026-08-14T21-20-00Z"], FIXTURE_SEGMENTS, {},
+    {
+      "2026-08-14T08-10-00Z": { min: 15897, max: 17169 },
+      "2026-08-14T21-20-00Z": { min: 1, max: 513, sessionStart: true },
+    },
+  );
+  assert.equal(gap.Activity, "Segment Gap (recorder restarted — unassessed)");
+  assert.match(gap.Content, /CANNOT assess/);
+  assert.match(gap.Content, /neither confirmed nor cleared/);
+  assert.doesNotMatch(gap.Content, /NOT evidence of deletion/);
+  assert.doesNotMatch(gap.Content, /no events are missing/);
+});
+
+test("a restart is caught from the id reset alone, without a session.started marker", () => {
+  // Belt and braces: the reset is detectable even when the flag never made it through (a streaming
+  // sink, a truncated first bucket). A counter that went backwards cannot be a continuous chain.
+  const [gap] = detectSegmentGaps(
+    ["2026-08-14T05-20-00Z", "2026-08-14T05-40-00Z"], FIXTURE_SEGMENTS, {},
+    { "2026-08-14T05-20-00Z": { min: 1, max: 900 }, "2026-08-14T05-40-00Z": { min: 4, max: 60 } },
+  );
+  assert.equal(gap.Activity, "Segment Gap (recorder restarted — unassessed)");
+});
+
 test("a gap with no id evidence is marked unassessed rather than guessed at", () => {
   const [gap] = detectSegmentGaps(
     ["2026-08-14T05-20-00Z", "2026-08-14T05-40-00Z"], FIXTURE_SEGMENTS, {},
@@ -774,14 +848,124 @@ test("extractSummaryCitations pulls the evidence paths out of the body", () => {
   assert.equal(extractSummaryCitations("## Body only\ntext"), "");
 });
 
-test("collectFeatureState records what the recorder was allowed to watch", () => {
+test("click multiplicity is named by meaning, keeping Activity low-cardinality", () => {
+  const click = (clickCount) => describeActivity("mouse.click", { mouse: { clickCount } }, "", "", "");
+  assert.equal(click(undefined), "Click");
+  assert.equal(click(1), "Click");
+  assert.equal(click(2), "Double-Click");   // open / launch / select word
+  assert.equal(click(3), "Triple-Click");   // select line / paragraph
+  // macOS keeps incrementing while clicks stay inside the double-click interval, so x4..x10 were
+  // ten separate Activity values for one behaviour. The exact count lives in ClickCount.
+  for (const n of [4, 5, 6, 7, 8, 9, 10, 25]) assert.equal(click(n), "Multi-Click");
+});
+
+test("mouse modifiers reach KeyChord — a command-click is not a plain click", () => {
+  // command-click on a link opens it in a background tab: deliberate non-navigation, the pattern
+  // behind bulk-opening search results. It was being dropped entirely.
+  const cmd = parseSkysightEvent({
+    id: 40, kind: "mouse.click", timestamp: "2026-08-14T05:40:00Z",
+    app: { bundleIdentifier: "com.microsoft.edgemac", name: "Microsoft Edge" },
+    window: { title: "Results", url: "https://example.test/results" },
+    mouse: { button: "left", modifiers: ["command"], target: { role: "AXLink", title: "next" } },
+  }, "/evidence/events.jsonl", {}, {}, {});
+  assert.equal(cmd.KeyChord, "command");
+  assert.equal(cmd.Activity, "Click", "the modifier belongs in KeyChord, not in Activity");
+
+  const shift = parseSkysightEvent({
+    id: 41, kind: "mouse.click", timestamp: "2026-08-14T05:40:01Z",
+    app: { bundleIdentifier: "com.apple.finder", name: "Finder" },
+    mouse: { button: "left", modifiers: ["shift"], target: { role: "AXRow" } },
+  }, "/evidence/events.jsonl", {}, {}, {});
+  assert.equal(shift.KeyChord, "shift");
+
+  // Keyboard chords keep working unchanged.
+  const kb = parseSkysightEvent({
+    id: 42, kind: "keyboard.shortcut", timestamp: "2026-08-14T05:40:02Z",
+    app: { bundleIdentifier: "com.apple.finder", name: "Finder" },
+    keyboard: { modifiers: ["command"], keyEquivalent: "c", target: { role: "AXRow" } },
+  }, "/evidence/events.jsonl", {}, {}, {});
+  assert.equal(kb.KeyChord, "command+c");
+});
+
+test("a summary body is split into its distinct assertions", () => {
+  const rows = parseSummaryFileRows(FIXTURE_SUMMARY, { user: "subject" }, {});
+  const kinds = rows.map((r) => r.EventKind);
+  assert.ok(kinds.includes("summary.10min"), "the parent activity summary is still emitted");
+  assert.ok(kinds.includes("summary.profile"));
+  assert.ok(kinds.includes("summary.priorcontext"));
+
+  // The user profile is the largest and highest-value section, and it outlives the raw purge —
+  // buried in ScreenText it was neither filterable nor discoverable.
+  const profile = rows.find((r) => r.EventKind === "summary.profile");
+  assert.equal(profile.Activity, "User Profile (model-inferred)");
+  assert.match(profile.Content, /telco/, "it names a search term the raw stream may no longer hold");
+  assert.doesNotMatch(profile.Content, /MODEL-INFERRED/, "the caveat must not pollute Content");
+  assert.match(profile.Description, /MODEL-INFERRED PROFILE/);
+  assert.match(profile.Description, /persists after the ~48h raw purge/);
+
+  // Prior context describes activity from OUTSIDE this window — the row timestamp does not bound it.
+  const prior = rows.find((r) => r.EventKind === "summary.priorcontext");
+  assert.match(prior.Description, /CARRIED FORWARD/);
+  assert.match(prior.Description, /NOT the time of the activity it describes/);
+
+  // Sub-rows sort with the window they were written in.
+  const parent = rows.find((r) => r.EventKind === "summary.10min");
+  assert.equal(profile.Timestamp, parent.Timestamp);
+  assert.equal(profile.SegmentId, parent.SegmentId);
+});
+
+test("extractSummarySection stops at the next heading and tolerates absence", () => {
+  const body = "## A\nalpha\n\n### B\nbravo\n\n## C\ncharlie\n";
+  assert.equal(extractSummarySection(body, "A"), "alpha");
+  assert.equal(extractSummarySection(body, "B"), "bravo");
+  assert.equal(extractSummarySection(body, "Nope"), "");
+  assert.equal(extractSummarySection("", "A"), "");
+});
+
+test("Skysight-derived consolidated memory is collected — it outlives the artifacts", () => {
+  // The durable Codex memory store is a THIRD copy of observed activity, one directory up from the
+  // artifacts everyone collects. It is not purged at 48h and not removed by clearing Computer
+  // History, so on a stale host it can be the only surviving record.
+  const rows = collectSkysightDerivedMemory(FIXTURE_ROOT, { user: "subject" });
+  assert.ok(rows.length >= 3, `expected tagged + citing lines, got ${rows.length}`);
+
+  for (const r of rows) {
+    assert.equal(r.EventKind, "memory.consolidated");
+    assert.equal(r.Activity, "Consolidated Memory (Skysight-derived)");
+    assert.equal(r.EventClass, "Narrative");
+    assert.match(r.Description, /NOT purged with the 48h event stream/);
+    // No per-line time exists in these files; the mtime must be labelled as what it is.
+    assert.match(r.Description, /Timestamp is the file mtime/);
+    assert.ok(Number(r.LineNumber) > 0, "each row points back to its line");
+  }
+
+  const files = new Set(rows.map((r) => path.basename(r.SourceFile)));
+  assert.ok(files.has("memory_summary.md"));
+  assert.ok(files.has("MEMORY.md"));
+
+  // Ordinary Codex conversation memory is a different artifact family and must stay out.
+  assert.ok(
+    !rows.some((r) => /Unrelated conversation memory|must not be imported/.test(r.Content)),
+    "untagged, non-citing blocks are not swept in",
+  );
+});
+
+test("the Computer Use approvals file is not presented as the recording scope", () => {
   const rows = collectFeatureState(FIXTURE_ROOT, {});
-  const approvals = rows.find((r) => r.Activity === "App Approvals");
-  assert.ok(approvals, "the approvals file is the coverage/blind-spot map");
+  const approvals = rows.find((r) => r.Activity === "Computer Use Agent Approvals");
+  assert.ok(approvals, "the approvals file is still recorded, as what it actually is");
   assert.equal(approvals.EventClass, "Configuration");
   assert.equal(approvals.EventKind, "feature.state");
-  // The caveat is the point: silence for an unapproved app is not evidence the app was unused.
-  assert.match(approvals.Content, /absence of events for an app is not evidence the app was unused/);
+
+  // The whole point of the row. This file belongs to Computer Use (ChatGPT DRIVING the Mac), not
+  // to Computer History recording: on a live host it listed one bundle while the recorder captured
+  // 38, with an mtime three months older than the feature. Reading it as a coverage map inverts
+  // every conclusion drawn from silence.
+  assert.match(approvals.Content, /NOT the recording scope/);
+  assert.match(approvals.Content, /approved to CONTROL/);
+  assert.match(approvals.Content, /UNKNOWN/);
+  assert.match(approvals.Content, /not evidence the app was unused/);
+  assert.doesNotMatch(approvals.Activity, /^App Approvals$/);
 });
 
 test("parseSummaryFile emits a Narrative row timestamped from the filename", () => {
@@ -871,9 +1055,15 @@ test("extractComputerHistoryPath accepts a single events file and a single summa
   assert.ok(eventsOnly.some((r) => r.EventKind === "session.started"));
   assert.ok(eventsOnly.every((r) => r.SegmentId === "2026-08-14T05-20-00Z"));
 
+  // One summary file yields the activity summary plus a row per distinct assertion in its body.
   const summaryOnly = await extractComputerHistoryPath(FIXTURE_SUMMARY);
-  assert.equal(summaryOnly.length, 1);
-  assert.equal(summaryOnly[0].EventClass, CLASS_NARRATIVE);
+  assert.equal(summaryOnly.length, 3);
+  assert.ok(summaryOnly.every((r) => r.EventClass === CLASS_NARRATIVE));
+  assert.deepEqual(
+    summaryOnly.map((r) => r.EventKind),
+    ["summary.10min", "summary.priorcontext", "summary.profile"],
+  );
+  assert.deepEqual(summaryOnly.map((r) => r.RecordId), ["1", "2", "3"]);
 });
 
 test("extractComputerHistoryPath rejects unrelated paths with a clear message", async () => {

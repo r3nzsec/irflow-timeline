@@ -4,6 +4,36 @@ description: IRFlow Timeline changelog — version history, new features, perfor
 
 # Changelog
 
+## v1.0.11 — August 16, 2026
+
+Computer History correctness release. Every claim in the 1.0.10 analysis was re-tested against a live 9,000-event capture; four were wrong, and three artifacts were not being collected at all.
+
+### Corrected analysis
+
+- **Credential rows no longer claim to recover passwords.** macOS Secure Input Mode blocks the recorder's event tap, so keystrokes consume event ids without ever being written — zero text-bearing input events under secure input across the measured capture. A credential row is now presented as a timing anchor: that a password was entered, in which field and app, at what second
+- **Recorder restarts are detected instead of clearing the gap.** `EventId` restarts at 1 with each recorder session, and the previous continuity check subtracted ids across that boundary — yielding a negative shortfall that read as reassurance. On the measured capture it cleared 183 of 186 gap rows with "ids run continuously (17169 → 1)". Restart-spanning gaps are now reported as unassessed
+- **Capture fidelity is measured, not assumed.** `resolveFidelityTier` takes the more capable of the known-app table and what the application actually produced, so a stale table entry can be corrected by evidence while a thin sample can never argue capability away. Slack, previously pinned to metadata-only on category reasoning, exposed 53,590 characters of channel content including message bodies
+- **`ComputerUseAppApprovals.json` is no longer presented as the recording scope.** It belongs to the separate Computer Use agent feature; on the measured host it listed one bundle against 38 actually recorded, with an mtime predating the feature. Recording scope is account-side and is now reported as unknown
+
+### New evidence collected
+
+- **Consolidated Codex memory.** Skysight summaries are mined by the Codex memory consolidator into `~/.codex/memories/`, which is neither purged at 48 hours nor cleared with Computer History — on a stale host it can be the only surviving copy. Lines carrying the `[skysight memory]` provenance tag, and blocks citing a Skysight resource, are collected as `memory.consolidated` rows
+- **Summary bodies are split into their distinct assertions.** `summary.profile` carries the model-inferred user dossier — the largest section, naming documents, typed search terms and application roles, and surviving the raw purge. `summary.priorcontext` carries text describing activity from outside its own window and is labelled so it is never used to date evidence
+- **Mouse modifiers.** `mouse.modifiers` was dropped entirely. A command-click on a link opens it in a background tab — deliberate non-navigation, the bulk-open pattern — and now reaches the `KeyChord` column alongside keyboard chords
+- **Secure Input as a second credential signal.** `app.secureInput` fires on any system-wide password prompt, including those exposing no secure-field subrole, and surfaces as `Password Prompt`
+
+### Grid quality
+
+- Click multiplicity is named by meaning — `Click`, `Double-Click`, `Triple-Click`, `Multi-Click` — instead of ten numeric `Click (xN)` values. The exact count remains in the `ClickCount` column, where a numeric dimension belongs
+- Open (in-progress) segments are excluded from count reconciliation rather than scored as a shortfall
+- Fidelity table corrections: Cursor's real bundle identifier added, a mislabelled entry removed, Slack and Discord tiered from evidence
+
+### Naming
+
+- The artifact family is **ChatGPT Computer History** everywhere — menu, tab title and the `Tool` column previously disagreed
+
+The column schema is unchanged at 54 columns; existing saved tabs and sessions need no migration.
+
 ## v1.0.10 — August 14, 2026
 
 ### ChatGPT Computer History

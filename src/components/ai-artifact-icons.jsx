@@ -74,8 +74,10 @@ export function OpenAiMenuIcon() {
 }
 
 /**
- * Codex Computer History (Skysight) — a display with an activity pulse: this artifact is recorded
- * screen/input activity, not a conversation transcript. Codex azure keeps it in the Codex family.
+ * ChatGPT Computer History (Skysight) — a display with an activity pulse: this artifact is recorded
+ * screen/input activity, not a conversation transcript. It is a ChatGPT desktop feature, but the
+ * summaries and feature state land under `~/.codex`, so Codex azure groups it with the other stores
+ * an analyst opens that folder to find.
  */
 export function ComputerHistoryMenuIcon() {
   const { a, soft } = tones(BRAND.codex);

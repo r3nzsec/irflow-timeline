@@ -572,7 +572,7 @@ module.exports = function registerAiHistoryHandlers(safeHandle, safeSend, ctx) {
 
     const user = deriveUser(target);
     const sourceFormat = "computer-history";
-    const baseName = "Codex Computer History";
+    const baseName = "ChatGPT Computer History";
 
     if (!(jobManager && db && nextTabId && _newTempDbPath)) {
       return { error: "Computer History extraction requires the worker runtime." };

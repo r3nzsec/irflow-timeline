@@ -183,10 +183,23 @@ const APP_CLASS_OVERRIDES = {
  *   Tier 2  Structural Navigation structure, labels and counts; message/document bodies collapsed.
  *   Tier 3  Metadata  Hardened or custom-drawn native UI. Window title + bundle id only.
  *
- * FORENSIC CAVEAT (must survive into any report): in Tier 3 comms apps, OUTBOUND typed text is
+ * This table is a PRIOR, not a verdict. resolveFidelityTier takes the more capable of this value
+ * and what the app actually produced in the capture at hand, because each source fails in a
+ * different direction: the table goes stale when an app changes toolkit, and the measurement
+ * understates any app that was only briefly on screen. Neither may be trusted alone.
+ *
+ * The tier tracks the UI TOOLKIT, not the product category. Measured on one live capture: Telegram
+ * exposed a largest-ever full tree of 144 characters (window/menu labels — genuinely Tier 3) while
+ * Slack, an Electron app, exposed 53,590 including channel message bodies, thread markers and
+ * per-message timestamps. Two messaging apps, three orders of magnitude apart. Slack was pinned to
+ * Tier 3 here on category reasoning alone and produced exactly the wrong report sentence.
+ *
+ * FORENSIC CAVEAT (must survive into any report): in a genuine Tier 3 app, OUTBOUND typed text is
  * still captured (keyboard events are hardware-level and app-independent) while INBOUND message
- * content is not (it only ever appears via the AX tree). A Tier 3 capture is one side of a
- * conversation and must never be presented as a conversation record.
+ * content is not (it only ever appears via the AX tree). Such a capture is one side of a
+ * conversation and must never be presented as a conversation record. Confirm the tier against
+ * AxLength for that bundle in the capture in front of you before writing that sentence — or its
+ * opposite.
  */
 const FIDELITY_TIER_BY_BUNDLE = {
   // Tier 1 — deep content
@@ -205,7 +218,14 @@ const FIDELITY_TIER_BY_BUNDLE = {
   "com.apple.Terminal": 1,
   "dev.warp.Warp-Stable": 1,
   "com.microsoft.VSCode": 1,
-  "com.anysphere.sand": 1,
+  // Cursor. `com.anysphere.sand` was listed here as Cursor and is not — on a live host it resolves
+  // to an unrelated app ("Grok Bot") whose largest full tree was 12,916 chars. Cursor's real bundle
+  // is the todesktop id below, which was absent from the table entirely.
+  "com.todesktop.230313mzl4w4u92": 1,
+  // Electron — exposes the full rendered tree, message bodies included. Do not demote on the
+  // grounds that it is a chat app; see the toolkit note above.
+  "com.tinyspeck.slackmacgap": 1,
+  "com.hnc.Discord": 1,
   // Tier 2 — structural
   "com.spotify.xirp": 2,
   "net.whatsapp.WhatsApp": 2,
@@ -213,7 +233,6 @@ const FIDELITY_TIER_BY_BUNDLE = {
   "com.apple.mail": 2,
   // Tier 3 — metadata only
   "ru.keepcoder.Telegram": 3,
-  "com.tinyspeck.slackmacgap": 3,
   "com.apple.UserNotificationCenter": 3,
   "com.apple.notificationcenterui": 3,
   "com.apple.dock": 3,

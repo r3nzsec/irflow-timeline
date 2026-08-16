@@ -17,15 +17,18 @@
  *
  *   Feature state (not parsed here; useful corroboration for "was it enabled, and when"):
  *     ~/.codex/config.toml → [plugins."computer-history@openai-bundled"] enabled = true
- *     …/Library/Application Support/Software/ComputerUseAppApprovals.json → excluded/approved bundles
+ *     …/Library/Application Support/Software/ComputerUseAppApprovals.json → belongs to the separate
+ *       Computer Use agent feature, NOT the recording scope (see collectFeatureState)
  *
- * Event kinds observed in the live 2026 schema: session.started, window.changed, mouse.click,
- * mouse.context_menu, mouse.drag, selection.changed, keyboard.text_input, keyboard.submit,
- * keyboard.shortcut.
+ * Event kinds observed in the live 2026 schema: session.started, session.ended, window.changed,
+ * mouse.click, mouse.context_menu, mouse.drag, selection.changed, keyboard.text_input,
+ * keyboard.submit, keyboard.shortcut.
  *
  * Notes for the analyst:
- *   - `.id` is a session-global monotonic counter that continues ACROSS segment files. It is the
- *     stable join key, not the per-file line number.
+ *   - `.id` is a monotonic counter that continues ACROSS segment files but RESTARTS AT 1 on every
+ *     recorder session — each session.started carries id 1, and events hold no session identifier,
+ *     so the reset is the only run boundary available. It is a join key within a run, never across
+ *     the whole capture, and continuity checks must be scoped per run (see detectSegmentGaps).
  *   - Gaps in `.id` are NOT a suppression count. Measured on a live capture: one 10-minute bucket
  *     spanned 2,374 ids while retaining 329 events, against a declared `suppressedEventCount` of 13.
  *     The counter plainly increments for events that are never persisted at all (sub-threshold
@@ -36,7 +39,11 @@
  *     tamper indicator: if the id chain runs continuously across the hole, the host was simply idle.
  *     `detectSegmentGaps` cross-checks id continuity and only calls out a gap where ids are actually
  *     unaccounted for.
- *   - Capture depth varies by an order of magnitude between apps (see FIDELITY_TIER_BY_BUNDLE).
+ *   - Capture depth varies by orders of magnitude between apps, tracking the UI toolkit rather than
+ *     the app category (see FIDELITY_TIER_BY_BUNDLE and resolveFidelityTier).
+ *   - Credential rows are timing anchors, NOT recovered passwords. macOS Secure Input Mode blocks
+ *     the recorder's event tap, so the keystrokes consume event ids and are never written — zero
+ *     text-bearing input events under secure input across a measured 5,370-event capture.
  *   - `ax.mode` decides how ScreenText must be read: `fullTree` is a screen snapshot,
  *     `diffFromPrevious` is only what changed. 58% of ax-bearing events observed live were diffs.
  */
@@ -308,19 +315,35 @@ function resolveAppClass(bundleId, url) {
 }
 
 /**
- * Capture depth for this app. Table first (measured), heuristic fallback for unknown bundles so a
- * new app is tiered from what it actually produced rather than silently defaulting to "deep".
+ * Capture depth for this app: the MORE CAPABLE of the known-app table and what the app actually
+ * produced in this capture (lower tier number = deeper capture).
+ *
+ * Neither input is trustworthy alone, and they fail in opposite directions:
+ *
+ *   Table only        goes stale. Slack was pinned to Tier 3 ("metadata only") on the reasoning
+ *                     that it is a hardened messaging app; it is Electron, and a live capture had
+ *                     it exposing 53,590 chars of channel content. Reports built on that entry
+ *                     would have claimed only one side of a conversation was recoverable while the
+ *                     inbound messages sat in ScreenText.
+ *   Measurement only  understates. An app that was on screen briefly produces a small largest-tree
+ *                     through lack of opportunity, not lack of capability — Chrome measured 6,814
+ *                     chars from a single full-tree capture on the same host. Demoting it would
+ *                     tell an analyst not to look for content that the app does in fact expose.
+ *
+ * Taking the minimum keeps both failure modes safe: a stale table entry can be corrected upward by
+ * evidence, and a thin sample can never argue evidence away. Being wrong in this direction costs
+ * an analyst a look; being wrong in the other costs them the finding.
  *
  * `axLength` must be the app's LARGEST full-tree capture across the extraction, not one event's —
  * see stampFidelityTiers.
  */
 function resolveFidelityTier(bundleId, axLength) {
   const known = FIDELITY_TIER_BY_BUNDLE[bundleId];
-  if (known) return known;
   const len = Number(axLength) || 0;
-  if (len >= TIER1_MIN_AX_CHARS) return 1;
-  if (len >= TIER2_MIN_AX_CHARS) return 2;
-  return 3;
+  // No observation at all: fall back to the table, else assume the least capable.
+  if (!len) return known || 3;
+  const measured = len >= TIER1_MIN_AX_CHARS ? 1 : len >= TIER2_MIN_AX_CHARS ? 2 : 3;
+  return known ? Math.min(known, measured) : measured;
 }
 
 /**
@@ -335,7 +358,10 @@ function stampFidelityTiers(rows, axProfile) {
   const profile = axProfile instanceof Map ? axProfile : new Map();
   const cache = new Map();
   for (const row of rows) {
-    if (row.FidelityTier) continue;
+    // Deliberately NOT skipping rows that already carry a tier. Parse time stamps a provisional
+    // value from the table alone (all a streaming sink ever gets); by now the whole capture has
+    // been seen, so the measurement is available and may correct it. Skipping here is what let a
+    // stale table entry survive contradicting evidence.
     if (!row.BundleId) continue;
     let tier = cache.get(row.BundleId);
     if (tier === undefined) {
@@ -348,13 +374,42 @@ function stampFidelityTiers(rows, axProfile) {
   return rows;
 }
 
+/**
+ * Two independent credential signals, and neither recovers a password.
+ *
+ * `AXSecureTextField` is the focused element's subrole. `app.secureInput` is macOS Secure Input
+ * Mode, engaged system-wide whenever any password field holds focus — which is the broader signal:
+ * it fires on prompts that expose no secure-field subrole at all (measured live on a third-party
+ * app-lock dialog, and on 5 events against the subrole's 2).
+ *
+ * What Secure Input Mode does is block the event tap this recorder reads from. So the field value
+ * is withheld AND the keystrokes are suppressed — they consume event ids and are never written.
+ * Measured across a 5,370-event capture: zero keyboard.text_input records carrying text while
+ * secure input was engaged. A credential row is a TIMING ANCHOR — a password was entered here, in
+ * this app, at this second — and must never be read as a recovered credential.
+ *
+ * The one value that does surface is the MASKED rendering: selecting a secure field yields a run of
+ * U+2022 bullets in selection.selectedText (verified byte-level: 14 and 5 bullets, no other
+ * codepoint). It is retained deliberately — its LENGTH is a legitimate corroborating detail — but
+ * it is not credential material and must not be quoted as one.
+ */
+function isCredentialContext(ev, targetSubrole) {
+  return targetSubrole === SECURE_TEXT_SUBROLE || ev?.app?.secureInput === true;
+}
+
 function describeActivity(kind, ev, bundleId, destBundleId, targetSubrole = "") {
-  // A secure text field never exposes its value through the AX API, but the keystrokes are captured
-  // at the hardware level regardless — so this is credential entry, and it must say so rather than
-  // reading as ordinary typing.
-  if (targetSubrole === SECURE_TEXT_SUBROLE
-    && (kind === "keyboard.text_input" || kind === "keyboard.submit")) {
-    return kind === "keyboard.submit" ? "Credential Submit" : "Credential Entry";
+  if (isCredentialContext(ev, targetSubrole)) {
+    switch (kind) {
+      case "keyboard.submit": return "Credential Submit";
+      case "keyboard.text_input": return "Credential Entry";
+      // Secure Input engaged while focus lands on a window is the password prompt appearing —
+      // often the only row a credential event leaves behind, since the typing never persists.
+      case "window.changed": return "Password Prompt";
+      case "keyboard.shortcut": return "Shortcut (Secure Input)";
+      case "mouse.click": return "Click (Secure Input)";
+      case "selection.changed": return "Selection (Secure Input)";
+      default: break;
+    }
   }
 
   switch (kind) {
@@ -363,9 +418,18 @@ function describeActivity(kind, ev, bundleId, destBundleId, targetSubrole = "") 
     case "window.changed":
       if (bundleId === "com.apple.loginwindow") return "Screen Lock";
       return "App Focus";
+    // Named by what the multiplicity MEANS, not by its number. `Click (x2)`…`Click (x10)` put a
+    // numeric dimension into a categorical column: ten Activity values for one action, so "show me
+    // every click" needed ten checkboxes or a regex, and stacking Activity was dominated by noise.
+    // The exact count is not lost — it already has its own column (ClickCount), which is where a
+    // numeric dimension belongs. macOS keeps incrementing clickCount while clicks stay inside the
+    // double-click interval, so anything past a triple-click is one behaviour: rapid repetition.
     case "mouse.click": {
       const count = Number(ev?.mouse?.clickCount) || 0;
-      return count > 1 ? `Click (x${count})` : "Click";
+      if (count >= 4) return "Multi-Click";      // rapid repeated clicking (impatience, spam, stuck UI)
+      if (count === 3) return "Triple-Click";    // select line / paragraph
+      if (count === 2) return "Double-Click";    // open / launch / select word — a distinct intent
+      return "Click";
     }
     case "mouse.context_menu": return "Context Menu";
     case "mouse.drag":
@@ -401,8 +465,12 @@ function buildDescription(row) {
   const ax = row.ScreenText && row.AxMode === AX_MODE_DIFF
     ? " | ScreenText: CHANGES ONLY (ax.mode=diffFromPrevious — not a full screen capture)"
     : "";
-  const secure = row.TargetSubrole === SECURE_TEXT_SUBROLE
-    ? " | SECURE FIELD: value withheld by macOS; any captured text came from keystrokes"
+  // Carried on Activity as well as the subrole, because Secure Input Mode fires on prompts that
+  // expose no secure-field subrole — and because this qualification must survive CSV export and
+  // report copy-paste rather than living only in a column an analyst may have hidden.
+  const secure = row.TargetSubrole === SECURE_TEXT_SUBROLE || /Credential |Secure Input|Password Prompt/.test(row.Activity || "")
+    ? " | SECURE INPUT: macOS withheld the field value AND suppressed the keystrokes — this row"
+      + " evidences THAT a password was entered here, not what it was"
     : "";
   const seg = row.SegmentId ? ` | Segment: ${row.SegmentId}` : "";
   const body = preview ? ` - "${preview}"` : "";
@@ -554,7 +622,16 @@ function parseSkysightEvent(ev, sourceFile, ctx = {}, attribution = {}, options 
       content = "";
   }
 
-  const modifiers = Array.isArray(ev.keyboard?.modifiers) ? ev.keyboard.modifiers : [];
+  // `mouse.modifiers` was dropped entirely. It is the modifier held during a click or drag, and it
+  // changes what the click MEANT: command-click on an AXLink opens the link in a background tab
+  // (deliberately not navigating away — the bulk-open / harvest pattern), shift-click extends a
+  // range selection, command-click on a row multi-selects. Observed live on Edge, Prisma Browser
+  // and an Electron file list. Both vocabularies are the same words ("command", "shift",
+  // "control", "function"), so they share KeyChord rather than needing a column of their own.
+  const modifiers = [
+    ...(Array.isArray(ev.keyboard?.modifiers) ? ev.keyboard.modifiers : []),
+    ...(Array.isArray(ev.mouse?.modifiers) ? ev.mouse.modifiers : []),
+  ];
   const keyEquivalent = firstNonEmpty(ev.keyboard?.keyEquivalent);
   const keyChord = [...modifiers, keyEquivalent].filter(Boolean).join("+");
 
@@ -807,12 +884,24 @@ function listSegmentDirs(segmentsDir) {
  * These rows are SYNTHETIC — they assert an absence, not an observation — and are labelled as such
  * (`EventKind: "segment.gap"`). Disable with `{ detectGaps: false }`.
  *
- * A missing bucket on its own says nothing about tampering. `.id` is a session-global counter that
- * continues across buckets, so it decides between the two readings: if the last id before the hole
- * and the first id after it are consecutive, no event was lost and the host was simply idle
- * (observed live: bucket 06-30 absent, ids running 6347 → 6348 straight through). Only a
- * discontinuity means events are actually unaccounted for. `idRanges` maps segment id → {min, max};
- * without it the gap is reported as unassessed rather than as a finding.
+ * A missing bucket on its own says nothing about tampering. `.id` continues across buckets, so it
+ * decides between the two readings: if the last id before the hole and the first id after it are
+ * consecutive, no event was lost and the host was simply idle (observed live: bucket 06-30 absent,
+ * ids running 6347 → 6348 straight through). Only a discontinuity means events are unaccounted for.
+ *
+ * CRITICAL: `.id` is monotonic only WITHIN a recorder session. It restarts at 1 every time the
+ * recorder does — each `session.started` event carries `id: 1`, and events carry no session
+ * identifier, so the reset is the only run boundary there is. One 35-hour capture held four runs,
+ * the counter reaching 17,169 before dropping back to 1.
+ *
+ * Comparing ids across such a boundary is meaningless, and the failure is not benign: the naive
+ * subtraction yields a negative "missing" count, which reads as "<= 0" and therefore as the
+ * REASSURING branch. On that capture it emitted "ids run continuously (17169 → 1), so no events
+ * are missing" for 183 of 186 gap rows — clearing thirteen-hour holes it had never assessed. A
+ * check that cannot answer must say so, not answer "fine".
+ *
+ * `idRanges` maps segment id → {min, max, sessionStart}; without it the gap is reported as
+ * unassessed rather than as a finding.
  */
 function detectSegmentGaps(segmentIds, segmentsDir, attribution = {}, idRanges = null) {
   const stamps = segmentIds
@@ -848,18 +937,31 @@ function detectSegmentGaps(segmentIds, segmentsDir, attribution = {}, idRanges =
       + "cleared as evidence loss.";
 
     if (before && after) {
-      const missing = after.min - before.max - 1;
-      if (missing <= 0) {
-        activity = "Segment Gap (no activity)";
-        verdict = `Event ids run continuously across this bucket (${before.max} → ${after.min}), so `
-          + "no events are missing. The host was idle, asleep, or recording was paused — this is "
-          + "NOT evidence of deletion.";
+      // The recorder restarted somewhere in this hole: the counter is back at or below where it
+      // already was, or the next bucket opens with a session.started. Either way the two ids are
+      // from different runs and cannot be subtracted.
+      const restarted = after.sessionStart === true || after.min <= before.max;
+      if (restarted) {
+        activity = "Segment Gap (recorder restarted — unassessed)";
+        verdict = `The event-id counter restarts at 1 with each recorder session, and it reset `
+          + `across this bucket (${before.max} → ${after.min}). Ids from different runs cannot be `
+          + "compared, so continuity CANNOT assess whether events were deleted here — this gap is "
+          + "neither confirmed nor cleared. Corroborate against metadata suppressedEventCount, the "
+          + "summaries, and system logs for the restart itself.";
       } else {
-        activity = "Segment Gap (ids unaccounted for)";
-        verdict = `${missing} event id(s) are unaccounted for across this bucket `
-          + `(${before.max} → ${after.min}). Ids are not a suppression count — the counter also `
-          + "advances for events that are never persisted — so this is a lead to corroborate "
-          + "against metadata suppressedEventCount, not a finding of deletion.";
+        const missing = after.min - before.max - 1;
+        if (missing <= 0) {
+          activity = "Segment Gap (no activity)";
+          verdict = `Event ids run continuously across this bucket (${before.max} → ${after.min}), `
+            + "so no events are missing. The host was idle, asleep, or recording was paused — this "
+            + "is NOT evidence of deletion.";
+        } else {
+          activity = "Segment Gap (ids unaccounted for)";
+          verdict = `${missing} event id(s) are unaccounted for across this bucket `
+            + `(${before.max} → ${after.min}). Ids are not a suppression count — the counter also `
+            + "advances for events that are never persisted — so this is a lead to corroborate "
+            + "against metadata suppressedEventCount, not a finding of deletion.";
+        }
       }
     }
 
@@ -939,6 +1041,53 @@ function extractSummaryCitations(body) {
   return lines.join("\n");
 }
 
+/** Body text under a `##`/`###` heading, up to the next heading of any level. */
+function extractSummarySection(body, heading) {
+  const re = new RegExp(`^#{2,4}\\s*${heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "mi");
+  const m = String(body || "").match(re);
+  if (!m) return "";
+  const rest = String(body).slice(m.index + m[0].length);
+  const next = rest.search(/^#{1,4}\s/m);
+  return (next === -1 ? rest : rest.slice(0, next)).trim();
+}
+
+/**
+ * The distinct assertions buried inside one summary body.
+ *
+ * A summary file is not one statement. It has structurally different halves that were being
+ * flattened into a single ScreenText blob, where none of them could be filtered, searched or
+ * tagged separately — and where an analyst scanning the grid would never learn they existed:
+ *
+ *   Recording summary   what happened inside this window. Bounded by the window. ~415 chars.
+ *   Relevant prior context   carried in from EARLIER windows. This is the trap: the row's
+ *                       timestamp does NOT bound the information in it. ~415 chars.
+ *   Important non-obvious context about the user   the largest section at ~1,015 chars, and the
+ *                       highest-value one: a model-written dossier naming documents, typed search
+ *                       terms, org and project names, and what each app was being used for. It
+ *                       survives the 48h raw purge, so on a stale image it may be the only place a
+ *                       search term the user typed still exists.
+ *
+ * Each becomes its own row so it can be found. The parent row still carries the whole body, so
+ * nothing is lost and the sub-rows are additive.
+ */
+const SUMMARY_SECTIONS = [
+  {
+    heading: "Relevant prior context",
+    kind: "summary.priorcontext",
+    activity: "Prior Context (carried from earlier windows)",
+    caveat: "CARRIED FORWARD: this text summarises activity from BEFORE this window. The row "
+      + "timestamp is the window it was written in, NOT the time of the activity it describes.",
+  },
+  {
+    heading: "Important non-obvious context about the user",
+    kind: "summary.profile",
+    activity: "User Profile (model-inferred)",
+    caveat: "MODEL-INFERRED PROFILE: entities, documents, search terms and app roles the "
+      + "summariser attributed to the user. It persists after the ~48h raw purge, so it may name "
+      + "evidence whose primary record is already gone — corroborate before relying on it.",
+  },
+];
+
 function listSummaryFiles(resourcesDir) {
   let entries;
   try { entries = fs.readdirSync(resourcesDir, { withFileTypes: true }); } catch { return []; }
@@ -998,6 +1147,51 @@ function parseSummaryFile(filePath, attribution = {}, options = {}) {
     user: attribution.user || "",
     host: attribution.host || "",
   });
+}
+
+/**
+ * One summary file as the rows it actually contains: the activity summary, plus a row per distinct
+ * assertion inside its body (see SUMMARY_SECTIONS).
+ *
+ * The caveat lands on Description rather than Content so that Content stays clean for search,
+ * secret scanning and export, while the qualification still travels with the row into a CSV or a
+ * pasted report — the same split used for the Secure Input and diff-capture warnings.
+ */
+function parseSummaryFileRows(filePath, attribution = {}, options = {}) {
+  const parent = parseSummaryFile(filePath, attribution, options);
+  if (!parent) return [];
+  const rows = [parent];
+
+  let text = "";
+  try { text = fs.readFileSync(filePath, "utf8"); } catch { return rows; }
+  const { body } = parseSummaryFrontmatter(text);
+
+  for (const sec of SUMMARY_SECTIONS) {
+    const content = extractSummarySection(body, sec.heading);
+    if (!content) continue;
+    const row = makeComputerHistoryRow({
+      timestamp: parent.Timestamp,
+      eventClass: CLASS_NARRATIVE,
+      eventKind: sec.kind,
+      activity: sec.activity,
+      appName: parent.AppName,
+      targetRole: "SkysightSummary",
+      targetLabel: parent.TargetLabel,
+      content,
+      summaryCitations: parent.SummaryCitations,
+      fidelityTier: "",
+      segmentId: parent.SegmentId,
+      segmentStart: parent.SegmentStart,
+      segmentEnd: parent.SegmentEnd,
+      sourceFile: filePath,
+      recordedSourcePath: filePath,
+      user: attribution.user || "",
+      host: attribution.host || "",
+    });
+    row.Description += ` | ${sec.caveat}`;
+    rows.push(row);
+  }
+  return rows;
 }
 
 /**
@@ -1066,6 +1260,93 @@ async function recoverDeletedSummaries(resourcesDir, attribution = {}, options =
   return rows;
 }
 
+/* ------------------------------------------ consolidated (phase-2) memory */
+
+/** Lines the consolidator tagged as Skysight-derived. The tag is the provenance — do not infer. */
+const SKYSIGHT_MEMORY_TAG = /\[skysight memory\]/i;
+const CONSOLIDATED_MEMORY_FILES = ["memory_summary.md", "MEMORY.md", "raw_memories.md"];
+
+/**
+ * Activity intelligence that OUTLIVES the Computer History artifacts it came from.
+ *
+ * Skysight is not a terminus. `extensions/skysight/instructions.md` instructs the consolidator to
+ * mine the summaries — naming the "Important non-obvious context about the user" section by name —
+ * and fold them into the durable Codex memory at `~/.codex/memories/`. So a third copy of the
+ * user's observed activity exists, one directory up from the artifacts everyone collects:
+ *
+ *   events.jsonl        purged after ~48h
+ *   skysight/resources  until the user clears Computer History
+ *   memories/*.md       INDEFINITE — a different subsystem, not cleared with Computer History
+ *
+ * That inverts the collection priority on a stale image. Measured on a live host: memory_summary.md
+ * carried a `## User Profile` built partly from observed activity, and MEMORY.md cited a specific
+ * 6h summary file by path as the evidence for a task-group memory. Thirteen lines carried the
+ * explicit `[skysight memory]` provenance tag.
+ *
+ * Only tagged lines and blocks citing a Skysight resource are emitted. The rest of MEMORY.md is
+ * ordinary Codex conversation memory — a different artifact family — and importing it wholesale
+ * here would bury the activity evidence it is supposed to surface. These files are also tracked in
+ * the memories git repo, so deletions are recoverable through the same path as cleared summaries.
+ */
+function collectSkysightDerivedMemory(target, attribution = {}) {
+  const resourcesDir = findSkysightResourcesDir(target);
+  // resources/ -> skysight/ -> extensions/ -> memories/
+  const memoriesDir = resourcesDir
+    ? path.resolve(resourcesDir, "..", "..", "..")
+    : findDirBelow(target, (d) => path.basename(d) === "memories"
+      && fs.existsSync(path.join(d, "MEMORY.md")));
+  if (!memoriesDir || !fs.existsSync(memoriesDir)) return [];
+
+  const rows = [];
+  for (const name of CONSOLIDATED_MEMORY_FILES) {
+    const filePath = path.join(memoriesDir, name);
+    let st;
+    let text;
+    try {
+      st = fs.statSync(filePath);
+      text = fs.readFileSync(filePath, "utf8");
+    } catch { continue; }
+
+    const lines = text.split(/\r?\n/);
+    const hits = [];
+    lines.forEach((line, i) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      if (SKYSIGHT_MEMORY_TAG.test(trimmed)) hits.push({ n: i + 1, text: trimmed, why: "tagged" });
+      else if (trimmed.includes("extensions/skysight/resources/")) {
+        hits.push({ n: i + 1, text: trimmed, why: "cites a Skysight summary" });
+      }
+    });
+    if (!hits.length) continue;
+
+    for (const hit of hits) {
+      rows.push(makeComputerHistoryRow({
+        // No per-line time exists in these files. The file mtime is a LAST-WRITTEN bound on the
+        // whole file, not the time of this line — never fabricate one from the activity it cites.
+        timestamp: formatTimestampUtc(st.mtimeMs),
+        eventClass: CLASS_NARRATIVE,
+        eventKind: "memory.consolidated",
+        activity: "Consolidated Memory (Skysight-derived)",
+        targetRole: "CodexMemory",
+        targetLabel: name,
+        content: hit.text,
+        lineNumber: hit.n,
+        sourceFile: filePath,
+        recordedSourcePath: filePath,
+        fidelityTier: "",
+        user: attribution.user || "",
+        host: attribution.host || "",
+      }));
+      const row = rows[rows.length - 1];
+      row.Description += ` | DERIVED (${hit.why}): consolidated from Computer History activity into`
+        + " the durable Codex memory store. NOT purged with the 48h event stream and NOT removed by"
+        + " clearing Computer History — on a stale host this may be the only surviving record."
+        + " Timestamp is the file mtime, not the time of the activity described.";
+    }
+  }
+  return rows;
+}
+
 /* --------------------------------------------------------- feature state */
 
 /**
@@ -1097,7 +1378,11 @@ function collectFeatureState(target, attribution = {}) {
     }));
   };
 
-  // Which apps the user approved for capture — the coverage/blind-spot map.
+  // Approvals for COMPUTER USE — the separate feature that lets ChatGPT drive the Mac. This is NOT
+  // the Computer History recording scope, and reading it as one inverts the finding: on a live host
+  // it listed a single bundle while the recorder captured 38, and its mtime predated the Computer
+  // History release by three months. Recorded for what it is (which apps the agent could control),
+  // never as a coverage map.
   const approvals = findFileBelow(target, "ComputerUseAppApprovals.json");
   if (approvals) {
     let parsed = null;
@@ -1106,11 +1391,15 @@ function collectFeatureState(target, attribution = {}) {
       ? parsed.approvedBundleIdentifiers : [];
     addRow(
       approvals,
-      "App Approvals",
-      bundles.length
-        ? `${bundles.length} approved bundle(s): ${bundles.join(", ")}. Apps outside this list may `
-          + "not have been observed — absence of events for an app is not evidence the app was unused."
-        : "No approved bundle identifiers recorded (file present but empty or unreadable).",
+      "Computer Use Agent Approvals",
+      `${bundles.length ? `${bundles.length} approved bundle(s): ${bundles.join(", ")}.`
+        : "No approved bundle identifiers recorded (file present but empty or unreadable)."}`
+      + " These are the apps ChatGPT was approved to CONTROL via Computer Use — a different feature"
+      + " from Computer History, often predating it on disk. This is NOT the recording scope and"
+      + " must not be read as a coverage map. Computer History's per-app and per-website"
+      + " include/exclude settings are account-side and were not resolvable from local artifacts:"
+      + " treat recording scope as UNKNOWN. Absence of events for an app may be exclusion, a pause,"
+      + " an idle period, or a recorder restart — it is not evidence the app was unused.",
     );
   }
 
@@ -1597,13 +1886,21 @@ async function extractComputerHistoryDir(target, attribution = {}, options = {})
   const recordIdRange = (batch, dir) => {
     const segmentId = path.basename(dir);
     for (const r of batch || []) {
+      // A recorder restart zeroes the id counter, so a bucket containing session.started shares no
+      // id namespace with the bucket before it. Flagged here because it is the authoritative
+      // boundary marker — the id reset alone can be ambiguous when the previous run was very short.
+      if (r.EventKind === "session.started") {
+        const cur = idRanges.get(segmentId);
+        if (cur) cur.sessionStart = true;
+        else idRanges.set(segmentId, { min: Infinity, max: -Infinity, sessionStart: true });
+      }
       // Synthetic rows (segment.boundary) carry EventId "" — and Number("") is 0, which would drag
       // every bucket's minimum to zero and make the continuity check meaningless.
       if (!r.EventId) continue;
       const n = Number(r.EventId);
       if (!Number.isFinite(n)) continue;
       const cur = idRanges.get(segmentId);
-      if (!cur) idRanges.set(segmentId, { min: n, max: n });
+      if (!cur) idRanges.set(segmentId, { min: n, max: n, sessionStart: false });
       else { if (n < cur.min) cur.min = n; if (n > cur.max) cur.max = n; }
     }
   };
@@ -1639,8 +1936,8 @@ async function extractComputerHistoryDir(target, attribution = {}, options = {})
     fileIndex += 1;
     tickFileProgress(onFileProgress, fileIndex, fileCount, filePath);
     try {
-      const row = parseSummaryFile(filePath, attribution, options);
-      if (row) emit([row]);
+      const summaryRows = parseSummaryFileRows(filePath, attribution, options);
+      if (summaryRows.length) emit(summaryRows);
     } catch (e) {
       dbg("AIHIST", "computer-history summary failed", { path: filePath, err: e.message });
     }
@@ -1669,6 +1966,18 @@ async function extractComputerHistoryDir(target, attribution = {}, options = {})
     : collectFeatureState(target, attribution);
   if (stateRows.length) emit(stateRows);
 
+  // Activity intelligence consolidated into the durable Codex memory — the copy that survives both
+  // the 48h purge and a "clear Computer History".
+  let memoryRows = [];
+  if (options.includeConsolidatedMemory !== false) {
+    try {
+      memoryRows = collectSkysightDerivedMemory(target, attribution);
+    } catch (e) {
+      dbg("AIHIST", "computer-history consolidated memory failed", { path: target, err: e.message });
+    }
+    if (memoryRows.length) emit(memoryRows);
+  }
+
   // Attribution: who this host belongs to, and the Codex conversation ledger the timeline joins to.
   let identityRows = [];
   if (options.includeIdentity !== false) {
@@ -1688,6 +1997,7 @@ async function extractComputerHistoryDir(target, attribution = {}, options = {})
     gapCount: gapRows.length,
     recoveredCount: recoveredRows.length,
     featureStateCount: stateRows.length,
+    consolidatedMemoryCount: memoryRows.length,
     identityCount: identityRows.length,
     accountCount: identityRows.filter((r) => r.EventKind === "identity.account").length,
     deletedThreadCount: identityRows.filter((r) => r.EventKind === "codex.thread.deleted").length,
@@ -1749,10 +2059,10 @@ async function extractComputerHistoryPath(target, attribution = {}, options = {}
   }
 
   if (isSkysightSummaryFile(target)) {
-    const row = parseSummaryFile(target, attribution, options);
-    if (!row) throw new Error("Unreadable Skysight summary file.");
-    row.RecordId = "1";
-    return [row];
+    const summaryRows = parseSummaryFileRows(target, attribution, options);
+    if (!summaryRows.length) throw new Error("Unreadable Skysight summary file.");
+    summaryRows.forEach((r, i) => { r.RecordId = String(i + 1); });
+    return summaryRows;
   }
 
   throw new Error(
@@ -1782,8 +2092,10 @@ module.exports = {
   resolveFidelityTier,
   stampFidelityTiers,
   extractSummaryCitations,
+  extractSummarySection,
   recoverDeletedSummaries,
   collectFeatureState,
+  collectSkysightDerivedMemory,
   collectIdentityArtifacts,
   describeActivity,
   makeComputerHistoryRow,
@@ -1797,6 +2109,8 @@ module.exports = {
   parseSummaryFrontmatter,
   listSummaryFiles,
   parseSummaryFile,
+  parseSummaryFileRows,
+  SUMMARY_SECTIONS,
   extractSegmentFile,
   extractComputerHistoryDir,
   extractComputerHistoryPath,

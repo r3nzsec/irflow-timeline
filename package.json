@@ -1,7 +1,7 @@
 {
   "name": "irflow-timeline",
-  "version": "1.0.10",
-  "description": "IRFlow Timeline is a high-performance, SQLite-backed DFIR investigation workspace for macOS that turns large forensic datasets, native artifacts, and AI application histories into searchable timelines with source provenance.",
+  "version": "1.0.11",
+  "description": "IRFlow Timeline is a high-performance, SQLite-backed DFIR investigation workspace for macOS that turns large forensic datasets, native artifacts, AI application histories, and OS-level activity telemetry into searchable timelines with source provenance.",
   "main": "electron/main.js",
   "author": "DFIR Community",
   "license": "Apache-2.0",

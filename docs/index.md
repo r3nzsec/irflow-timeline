@@ -47,14 +47,14 @@ features:
     details: Bookmarks, color-coded tags, conditional formatting with KAPE-aware presets, and full session save/restore.
 ---
 
-## What's New · v1.0.10
+## What's New · v1.0.11
 
-- **ChatGPT Computer History is a new artifact family** — The opt-in macOS interaction-event stream and its derived activity summaries, parsed into a dedicated 54-column schema instead of the conversation columns.
-- **Deletion detection and recovery** — Segments are reconciled against their own metadata, and activity summaries cleared through the app are recovered read-only from the Codex memories git history with the time they were removed.
-- **Host attribution** — Account, signed-in identity, and per-app device pseudonyms are collected separately and labelled with how strongly each identifies an account rather than a device. No token material is stored or exported.
-- **Crash resilience** — Worker threads retire cleanly, autosaves are written atomically and validated on restore, and Electron is upgraded to 43 (macOS 12 floor).
+- **Computer History analysis verified against a live capture** — Credential rows are time anchors, not recovered passwords; capture fidelity is measured per application rather than assumed from the app's category; and gaps spanning a recorder restart are reported as unassessed instead of falsely cleared.
+- **The copy that outlives the evidence** — Activity consolidated into `~/.codex/memories/` is neither purged at 48 hours nor cleared with Computer History, and is now collected. On a stale host it can be the only surviving record.
+- **More of each summary** — The model-inferred user profile and carried-forward prior context become their own rows instead of being flattened into one blob.
+- **Sharper grid** — Mouse modifiers reach `KeyChord` (a command-click opens a link in a background tab), and click multiplicity is named by meaning rather than producing ten numeric Activity values.
 
-[Read the v1.0.10 announcement →](/blog/v1.0.10-computer-history) · [Large EVTX reliability in v1.0.9 →](/blog/v1.0.9-large-evtx-imports) · [Full changelog →](/about/changelog)
+[Read the v1.0.11 announcement →](/blog/v1.0.11-computer-history-verified) · [Computer History in v1.0.10 →](/blog/v1.0.10-computer-history) · [Full changelog →](/about/changelog)
 
 ## What is IRFlow Timeline?
 
