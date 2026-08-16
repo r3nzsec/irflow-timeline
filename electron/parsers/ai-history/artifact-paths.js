@@ -135,14 +135,23 @@ const CLAUDE_DESKTOP_SESSION_DIR_NAMES = [
   "local-agent-mode-sessions", // Cowork isolated sessions; older builds also used it as metadata-only
 ];
 
+/**
+ * Roots to scan for Claude Desktop.
+ *
+ * Prefer the app-support directory itself when it exists: pending-uploads/, plan-usage-history.json
+ * and git-worktrees.json are SIBLINGS of claude-code-sessions, so a scan aimed at the session dirs
+ * alone cannot see them. Scanning the parent reaches the session trees below it as well, so this
+ * replaces the child roots rather than adding to them — listing both would parse every transcript
+ * twice and leave dedupe to clean up after us.
+ */
 function listClaudeDesktopSessionRoots() {
   const support = appSupportDir();
   const claudeBase = path.join(support, "Claude");
-  const roots = [];
-  for (const name of CLAUDE_DESKTOP_SESSION_DIR_NAMES) {
-    roots.push(path.join(claudeBase, name));
-  }
-  return roots.filter((p) => fs.existsSync(p));
+  const children = CLAUDE_DESKTOP_SESSION_DIR_NAMES
+    .map((name) => path.join(claudeBase, name))
+    .filter((p) => fs.existsSync(p));
+  if (children.length && fs.existsSync(claudeBase)) return [claudeBase];
+  return children;
 }
 
 /** Candidate paths to probe before validation (may not exist). */
@@ -278,6 +287,15 @@ function dirHasClaudeDesktopMetadata(rootDir, maxDepth = 8) {
 function isClaudeDesktopSessionsRoot(dirPath) {
   if (!dirPath || !fs.existsSync(dirPath)) return false;
   const base = path.basename(dirPath);
+  // The app-support directory itself (the PARENT of claude-code-sessions) is a valid root, because
+  // several state artifacts are its direct children rather than living under the sessions tree:
+  // pending-uploads/, plan-usage-history.json and git-worktrees.json are siblings of
+  // claude-code-sessions. Accepting the parent lets a scan reach them without ever walking UP out
+  // of the folder the user authorized — which scope confinement forbids. Selecting the sessions
+  // directory alone still works; it just cannot see its own siblings.
+  if (CLAUDE_DESKTOP_SESSION_DIR_NAMES.some((n) => {
+    try { return fs.statSync(path.join(dirPath, n)).isDirectory(); } catch { return false; }
+  })) return true;
   if (!CLAUDE_DESKTOP_SESSION_DIR_NAMES.includes(base)
     && !CLAUDE_DESKTOP_SESSION_DIR_NAMES.some((n) => String(dirPath).includes(`${path.sep}${n}${path.sep}`))) {
     return false;

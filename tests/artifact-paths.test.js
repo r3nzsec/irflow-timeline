@@ -37,10 +37,19 @@ test("listClaudeCodeCandidatePaths includes CLI and Desktop roots", () => {
   const kinds = new Set(listClaudeCodeCandidatePaths().map((c) => c.kind));
   assert.ok(kinds.has("cli"));
   assert.ok(listClaudeCodeCandidatePaths().some((c) => c.path.endsWith(".claude")));
+  // A desktop root is either the app-support directory itself or one of the session directories
+  // below it. The parent is preferred when present, because pending-uploads/,
+  // plan-usage-history.json and git-worktrees.json are siblings of claude-code-sessions and are
+  // unreachable from a scan aimed at the session directories alone.
   const desktopPaths = listClaudeCodeCandidatePaths().filter((c) => c.kind === "desktop");
   for (const { path: p } of desktopPaths) {
-    assert.match(p, /claude-code-sessions|local-agent-mode-sessions/);
+    assert.match(p, /claude-code-sessions|local-agent-mode-sessions|[/\\]Claude$/);
   }
+  // Never both: scanning the parent already covers the children, and listing both would parse
+  // every transcript twice.
+  const parents = desktopPaths.filter((c) => /[/\\]Claude$/.test(c.path));
+  const children = desktopPaths.filter((c) => /sessions$/.test(c.path));
+  assert.ok(!(parents.length && children.length), "parent and children are mutually exclusive");
 });
 
 test("listChatgptCandidatePaths is non-empty on every platform", () => {

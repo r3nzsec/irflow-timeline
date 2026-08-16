@@ -24,6 +24,7 @@ const { readJsonlBounded } = require("./jsonl-reader");
 const { filterSidechainRows, tickFileProgress } = require("./extract-plan");
 const { TOOL_GROK_BUILD } = require("./schema");
 const { buildToolEvidence, serializeEvidenceValue } = require("./tool-evidence");
+const { collectGrokRuntimeArtifacts } = require("./grok-runtime");
 const {
   formatTimestampUtc,
   parseIsoTimestamp,
@@ -650,6 +651,17 @@ async function extractGrokBuildDir(grokRoot, attribution = {}, options = {}) {
       dbg("AIHIST", "grok session failed", { path: sessionDir, err: error.message });
     }
     await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  // Runtime stores outside the session tree — the search index, the app log, and open sessions.
+  // They survive deletion of the session directories, so they run last and independently.
+  if (options.includeGrokRuntime !== false) {
+    options.checkAbort?.();
+    try {
+      emitBatch(await collectGrokRuntimeArtifacts(grokRoot, attribution, options));
+    } catch (error) {
+      dbg("AIHIST", "grok runtime artifacts failed", { path: grokRoot, err: error.message });
+    }
   }
 
   if (onExtractedRows) {

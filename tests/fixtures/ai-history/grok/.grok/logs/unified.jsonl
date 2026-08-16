@@ -1,0 +1,6 @@
+{"ts":"2026-08-12T16:03:31.400Z","lvl":"info","src":"shell","sid":"019ff6b6-eaf1-7411-a545-9635aa332f93","pid":74428,"ver":"1.0.3","msg":"shell.turn.inference_start","ctx":{}}
+{"ts":"2026-08-12T16:03:32.000Z","lvl":"info","src":"shell","sid":"019ff6b6-eaf1-7411-a545-9635aa332f93","pid":74428,"ver":"1.0.3","msg":"shell.tool.exec_done","ctx":{"tool_name":"read_file","tool_call_id":"call-aaa-1","elapsed_ms":1,"success":true}}
+{"ts":"2026-08-12T16:03:32.000Z","lvl":"info","src":"shell","sid":"019ff6b6-eaf1-7411-a545-9635aa332f93","pid":74428,"ver":"1.0.3","msg":"shell.tool.exec_done","ctx":{"tool_name":"read_file","tool_call_id":"call-aaa-2","elapsed_ms":1,"success":true}}
+{"ts":"2026-08-12T16:03:33.000Z","lvl":"warn","src":"shell","sid":"019ff6b6-eaf1-7411-a545-9635aa332f93","pid":74428,"ver":"1.0.3","msg":"shell.tool.exec_done","ctx":{"tool_name":"run_terminal_command","tool_call_id":"call-aaa-3","elapsed_ms":250,"success":false}}
+{"ts":"2026-08-12T16:03:34.000Z","lvl":"debug","src":"grok-pager","sid":"019ff6b6-eaf1-7411-a545-9635aa332f93","pid":74428,"ver":"1.0.3","msg":"turn.phase_transition","ctx":{"from":"a","to":"b"}}
+{"ts":"2026-08-12T16:03:35.000Z","lvl":"info","src":"shell","sid":"019ff6b6-eaf1-7411-a545-9635aa332f93","pid":74428,"ver":"1.0.3","msg":"shell.turn.inference_done","ctx":{}}

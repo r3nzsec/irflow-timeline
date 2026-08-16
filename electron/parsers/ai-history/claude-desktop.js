@@ -28,6 +28,7 @@ const {
   finalizeAiHistoryRows,
   assignLineNumber,
 } = require("./row-utils");
+const { collectClaudeDesktopState } = require("./claude-desktop-state");
 
 const LOCAL_META_RE = /^local_.*\.json$/i;
 const AUDIT_JSONL_RE = /^audit(?:\d+)?\.jsonl$/i;
@@ -404,6 +405,20 @@ async function extractClaudeDesktopDir(desktopRoot, attribution = {}, options = 
   }
   if (parseStats.errors) stats.parseErrors = parseStats.errors;
 
+  // State artifacts that outlive the conversations: deletion tombstones, staged attachments, the
+  // usage timeline, scheduled runs, and workspace sightings. Collected last so a failure here can
+  // never cost the transcripts.
+  if (options.includeDesktopState !== false) {
+    const stateRows = collectClaudeDesktopState(desktopRoot, attribution, options);
+    if (stateRows.length) {
+      stats.deletedSessions = stateRows.filter((r) => r.RecordType === "session_deleted").length;
+      stats.pendingUploads = stateRows.filter((r) => r.RecordType === "pending_upload").length;
+      stats.usageWindows = stateRows.filter((r) => r.RecordType === "app_usage_window").length;
+      stats.scheduledTasks = stateRows.filter((r) => r.RecordType === "scheduled_task").length;
+      emitBatch(stateRows);
+    }
+  }
+
   return {
     rows: onExtractedRows ? [] : finalizeAiHistoryRows(rows, options),
     stats,
@@ -429,6 +444,19 @@ function buildClaudeDesktopImportNotice(stats) {
   }
   if (stats.metadataOnly > 0) {
     parts.push(`${stats.metadataOnly} metadata file(s) without cliSessionId (titles only)`);
+  }
+  // Lead with deletion: it is the finding an analyst must not miss in a notice they may skim.
+  if (stats.deletedSessions > 0) {
+    parts.unshift(`${stats.deletedSessions} DELETED conversation(s) evidenced by tombstone, with deletion time`);
+  }
+  if (stats.pendingUploads > 0) {
+    parts.push(`${stats.pendingUploads} staged upload(s) inventoried (content not read — preserve separately)`);
+  }
+  if (stats.usageWindows > 0) {
+    parts.push(`${stats.usageWindows} app-usage window(s) derived from usage samples`);
+  }
+  if (stats.scheduledTasks > 0) {
+    parts.push(`${stats.scheduledTasks} scheduled agent task(s)`);
   }
   if (stats.metadataFiles > 0 && stats.linkedTranscripts === 0 && stats.danglingCli === 0 && stats.metadataOnly === stats.metadataFiles) {
     return "Claude Desktop: session metadata found but no CLI transcripts — also import ~/.claude/projects for message bodies.";
