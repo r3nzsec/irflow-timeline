@@ -9,11 +9,11 @@ on:
       from_tag:
         description: "Previous release tag whose ZIP blockmap must remain available"
         required: true
-        default: "v1.0.8"
+        default: "v1.0.10"
       to_tag:
         description: "Current release tag whose ZIP blockmap must be published"
         required: true
-        default: "v1.0.10"
+        default: "v1.0.11"
 
 permissions:
   contents: write
