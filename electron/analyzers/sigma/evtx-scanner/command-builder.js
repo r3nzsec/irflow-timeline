@@ -8,15 +8,22 @@ const STATUS_LIST = ["stable", "test", "experimental"];
 
 function hayabusaMajorVersion(version) {
   if (typeof version !== "string") return null;
-  const match = version.match(/(\d+)/);
-  return match ? parseInt(match[1], 10) : null;
+  // Require a recognisable version token — "v4", "v4.0.0" or "4.0.0". A bare /(\d+)/
+  // matches the first digit run ANYWHERE, so a string like "unknown-3" would silently
+  // route the scan down the legacy v2/v3 CLI and fail against a v4 binary. Anything
+  // unrecognised returns null, which callers treat as "assume modern".
+  const match = version.match(/\bv(\d+)(?:\.\d+)*\b|\b(\d+)\.\d+(?:\.\d+)*\b/);
+  if (!match) return null;
+  return parseInt(match[1] ?? match[2], 10);
 }
 
 function createScanOutputPaths(outputMode = "csv") {
   const ts = Date.now();
   const tmpOutput = path.join(os.tmpdir(), `tle-hayabusa-${ts}.csv`);
   const tmpHtmlReport = path.join(os.tmpdir(), `tle-hayabusa-report-${ts}.html`);
-  const outputExt = outputMode === "csv" ? ".csv" : ".jsonl";
+  // One extension per output type. This used to collapse json and jsonl onto ".jsonl",
+  // so a `-t json` scan wrote JSON-document content into a file named .jsonl.
+  const outputExt = outputMode === "json" ? ".json" : outputMode === "jsonl" ? ".jsonl" : ".csv";
   const actualOutput = outputMode !== "csv" ? tmpOutput.replace(".csv", outputExt) : tmpOutput;
   return { tmpOutput, tmpHtmlReport, actualOutput };
 }

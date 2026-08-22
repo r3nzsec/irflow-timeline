@@ -11,7 +11,13 @@ const DFIR_KV_FIELDS = new Set(getKvExtractableFields());
 
 function normalizeLevel(level) {
   const normalized = String(level || "medium").toLowerCase();
-  return normalized === "info" ? "informational" : normalized;
+  // Hayabusa abbreviates level names in its output depending on version and profile
+  // ("crit"/"med"/"info"). Left unmapped they become their own severity buckets, so a
+  // critical detection lands under a "crit" level the severity histogram never counts.
+  if (normalized === "crit") return "critical";
+  if (normalized === "med") return "medium";
+  if (normalized === "info") return "informational";
+  return normalized;
 }
 
 // Returns true if the file ends on a newline (i.e. a complete final record).
@@ -383,6 +389,7 @@ function parseCsvFile(filePath) {
 module.exports = {
   MAX_EVENT_ROWS,
   DFIR_KV_FIELDS,
+  normalizeLevel,
   parseCsvLine,
   parseCsvFile,
   extractDfirKvFields,
