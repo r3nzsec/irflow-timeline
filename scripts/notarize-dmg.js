@@ -28,16 +28,38 @@ function run(cmd, args, opts = {}) {
   return execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...opts });
 }
 
-/** Developer ID signing identity: CSC_NAME wins, else the one in the keychain. */
-function resolveIdentity() {
+/**
+ * Developer ID signing identity, in order of reliability:
+ *   1. CSC_NAME, if the build set it explicitly.
+ *   2. The Authority already recorded in the signed .app. afterSign has always run
+ *      by this point, so this is the identity that actually signed this build —
+ *      and it works even when the key lives in a keychain we cannot enumerate.
+ *   3. The keychain search list.
+ *
+ * (2) exists because CI hands the certificate over as CSC_LINK and lets
+ * electron-builder import it into a keychain it owns and tears down. Relying on
+ * `security find-identity` alone made this return null on CI, the hook skip, and
+ * v1.0.12 ship an unsigned disk image.
+ */
+function resolveIdentity(outDir) {
   if (process.env.CSC_NAME) return process.env.CSC_NAME;
-  let out = "";
-  try {
-    out = run("security", ["find-identity", "-v", "-p", "codesigning"]);
-  } catch {
-    return null;
+
+  if (outDir) {
+    for (const dir of fs.existsSync(outDir) ? fs.readdirSync(outDir) : []) {
+      if (!dir.startsWith("mac")) continue;
+      const appDir = path.join(outDir, dir);
+      const app = (fs.existsSync(appDir) ? fs.readdirSync(appDir) : []).find((f) => f.endsWith(".app"));
+      if (!app) continue;
+      const probe = spawnSync("codesign", ["-dvv", path.join(appDir, app)], { encoding: "utf8" });
+      const authority = `${probe.stdout || ""}${probe.stderr || ""}`
+        .split("\n").map((l) => l.match(/^Authority=(.+)$/)).find((m) => m && m[1].startsWith(IDENTITY_PREFIX));
+      if (authority) return authority[1];
+    }
   }
-  const match = out.split("\n").map((l) => l.match(/"([^"]+)"/)).find((m) => m && m[1].startsWith(IDENTITY_PREFIX));
+
+  const found = spawnSync("security", ["find-identity", "-v", "-p", "codesigning"], { encoding: "utf8" });
+  const match = `${found.stdout || ""}`.split("\n")
+    .map((l) => l.match(/"([^"]+)"/)).find((m) => m && m[1].startsWith(IDENTITY_PREFIX));
   return match ? match[1] : null;
 }
 
@@ -86,10 +108,16 @@ exports.default = async function afterAllArtifactBuild(context) {
     console.log("notarize-dmg: skipping, Apple notarization credentials are not set.");
     return [];
   }
-  const identity = resolveIdentity();
+  // Credentials being present means a real signed release was intended, so a
+  // missing identity is a build failure — not something to skip past quietly.
+  // Skipping is what let an unsigned DMG reach the v1.0.12 release.
+  const identity = resolveIdentity(context.outDir);
   if (!identity) {
-    console.log(`notarize-dmg: skipping, no "${IDENTITY_PREFIX}" identity found in the keychain.`);
-    return [];
+    throw new Error(
+      `notarize-dmg: Apple credentials are set but no "${IDENTITY_PREFIX}" identity could be resolved `
+      + "(checked CSC_NAME, the signed .app's Authority, and the keychain search list). "
+      + "Refusing to publish an unsigned DMG.",
+    );
   }
 
   for (const dmg of dmgs) {
