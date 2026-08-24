@@ -21,3 +21,6 @@ export const VT_COL_WIDTH = 80;
 export const EVIDENCE_COL_WIDTH = 220;
 export const EVIDENCE_COL_MIN_WIDTH = 60;
 export const VT_COMPATIBLE_RE = /^(SHA256|SHA1|MD5)_Hash$|^Domain_Name$|^IPv[46]_Address(:Port)?$|^URL$/;
+// Delay before a gap in the row window is allowed to paint skeleton placeholders. Window
+// fetches that resolve faster than this never flash grey bars on their way out.
+export const SKELETON_ARM_DELAY = 120;

@@ -84,6 +84,7 @@ Tabs are named after the source filename. Use descriptive filenames for your evi
 ## See Also
 
 - [Merging Timelines](/workflows/merge-tabs) — combine multiple tabs into a single unified timeline
+- [Diff Tabs](/workflows/diff-tabs) — compare two tabs of any format and inspect what was added, removed, or changed
 - [Search & Filtering](/features/search-filtering) — cross-tab search finds matches across all open tabs
 - [Sessions](/workflows/sessions) — save and restore your full multi-tab workspace
 - [Export & Reports](/workflows/export-reports) — export data from any tab independently

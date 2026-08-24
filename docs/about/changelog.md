@@ -4,6 +4,54 @@ description: IRFlow Timeline changelog — version history, new features, perfor
 
 # Changelog
 
+## v1.0.12 — August 24, 2026
+
+### Diff Tabs
+
+View → **Diff Tabs** compares any two imported files — not a Computer History special case. Pick a baseline and a compare tab, match on auto-detected identity columns or entire-row content, and get a result timeline of Added / Removed / Changed rows with field-level before/after, clickable status counts, and schema-delta highlighting.
+
+### Tags and bookmarks
+
+A triage layer that was losing work in several places. Every item below is a fix, not a new feature.
+
+- **Bulk Tag / Bookmark leads with an explicit scope** — Selected rows / Filtered view / Entire tab — defaulting to the selection whenever one exists, with the real row count for each option resolved in SQLite. Opened from the Actions menu it previously ignored the selection entirely and, on an unfiltered tab, tagged every row in the file on a single click. Writing to a whole tab now asks first, and the store refuses an unscoped write that has not been confirmed
+- **Tags written during the post-import index build are no longer discarded.** Single- and multi-row tag and bookmark writes were dropped for the minutes that build takes, while the grid showed the tag as applied. The guard was unnecessary — the build runs on the same connection and touches only the data tables
+- **Multi-row tagging applies one direction uniformly.** The right-clicked row is the anchor: its ● / ○ state decides add-versus-remove and that decision applies to every selected row. Previously each row decided for itself, so one click on a mixed selection tagged some rows and untagged others
+- **"Select all" plus tag writes the whole filtered population** in SQL, honouring deselected rows. It used to write exactly one row while the status bar reported the full count
+- **Cached query windows no longer repaint pre-tag state.** A filter round-trip could restore the tag snapshot from before an edit, making a successful write look like it had reverted
+- **Manage Tags is backed by live row counts** and can rename a tag (merging into the destination on collision), collapse tags that differ only by case or spacing, and delete a tag from the rows that carry it. Deleting previously removed only the colour swatch — every row kept the tag, still filterable and still in the report, and could no longer be untagged from the row menu because the palette no longer listed it. Analyzer-written tags (`IOC:`, `VT:`, Sigma, `Encrypted`) now appear alongside manual ones
+- **Tags and bookmarks survive export.** CSV, TSV and XLSX exports carry `Tags` and `Bookmarked` columns when the tab has any
+- **`⌘⇧1`–`⌘⇧9` apply palette tag 1–9** to the current selection, under the same scope rules as the context menu
+- Multi-row tag writes go through a single transaction instead of one IPC round trip per row
+
+### ChatGPT Computer History — live re-audit (this Mac, 16,173 events)
+
+The 1.0.10 catalog and the 1.0.11 verification both missed a later recorder kind, and overstated how hard 48-hour purge is.
+
+- **`terminal.value_changed` is now parsed.** Nine events on the measured host, all while Secure Input was engaged. Content is the visible iTerm2 scrollback (`keyboard.target.value`): SSH targets, `rsync`/`scp` command lines, first-seen host-key acceptance. The typed password is still withheld. Previously the kind fell through to an empty `Content` field. Activity values: `Terminal Buffer`, `SSH Session`, and the Secure Input variants
+- **Visible-range truncation is labelled.** Records prefixed `[truncated to visible range]` are the on-screen AX slice, not full scrollback
+- **`com.openai.chat.StatsigService.plist`** is collected as `identity.statsig_account` — email / user id / account UUID with no tokens
+- **Computer History plugin vs Computer Use MCP** are recorded separately. They share a container; they are not the same feature
+- **48-hour purge caveat.** Advertised rolling window applies while the recorder is running. A stopped recorder left 90 segment buckets on disk three days after the last write
+
+### Hayabusa v2 / v3 / v4 compatibility
+
+Hayabusa v4 merged `csv-timeline` and `json-timeline` into a single `dfir-timeline` subcommand with an explicit `-t` output type, and rejects the old form before scanning a single event.
+
+- **The scanner detects the installed binary's version and builds the matching command line**, keeping v2 and v3 on the legacy subcommands. Contributed by [@Yuds16](https://github.com/Yuds16) in [#27](https://github.com/r3nzsec/irflow-timeline/pull/27)
+- **The output file extension matches the requested type.** `json` and `jsonl` both landed on `.jsonl`, so a JSON run wrote a JSON document into a file named `.jsonl`
+- **Version detection requires a real version token.** A loose digit match meant an unparsable version string could route a v4 binary down the legacy path; anything unrecognised now falls back to the modern CLI
+- **Hayabusa's abbreviated level names (`crit`, `med`) map to full severities.** Left unmapped they became their own severity buckets, so critical detections dropped out of the severity histogram
+
+Known limitation: the `JSON` output mode still cannot be read by the result parser, which is line-delimited. Use `CSV` or `JSONL`.
+
+### Multi-tab selection controls
+
+- **Lateral Movement Tracker** gains **Select All** and **Clear** for its multi-source tab list
+- **Persistence Analyzer** gains **Clear** alongside its existing **Select all**
+
+Both contributed by [@Yuds16](https://github.com/Yuds16) in [#27](https://github.com/r3nzsec/irflow-timeline/pull/27).
+
 ## v1.0.11 — August 16, 2026
 
 Computer History correctness release. Every claim in the 1.0.10 analysis was re-tested against a live 9,000-event capture; four were wrong, and three artifacts were not being collected at all.

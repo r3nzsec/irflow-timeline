@@ -35,6 +35,8 @@ function parseTimestampMs(value) {
   }
   const s = String(value).trim();
   if (!s) return null;
+  // FILETIME epoch / DateTime.MinValue — not a real event time.
+  if (/^(1600|1601|0001)[-/T]/.test(s)) return null;
 
   // Numeric epoch strings — SQLite TEXT columns are always strings, so an epoch column
   // arrives here as text. Mirrors forensic-normalize.normalizeTimestamp and the

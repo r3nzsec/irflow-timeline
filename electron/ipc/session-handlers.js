@@ -15,6 +15,7 @@ const {
   writeSessionAtomic,
   readSessionWithBackup,
 } = require("../utils/session-persistence");
+const { diffTabTitle } = require("../db/diff-tabs");
 
 function enqueuePlannedImports(planned, enqueueImport) {
   const scopePending = [];
@@ -330,6 +331,76 @@ function registerSessionHandlers(safeHandle, safeSend, ctx) {
       safeSend("import-error", {
         tabId: mergedTabId,
         fileName: "Merged Timeline",
+        error: err.message,
+      });
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Diff two tabs into a result timeline (Added / Removed / Changed / Unchanged)
+  safeHandle("diff-tabs", async (event, { diffTabId, spec }) => {
+    const baselineName = spec?.baseline?.tabName || "Baseline";
+    const compareName = spec?.compare?.tabName || "Compare";
+    const fileName = diffTabTitle(baselineName, compareName);
+    try {
+      safeSend("import-start", {
+        tabId: diffTabId,
+        fileName,
+        filePath: "(diff)",
+      });
+
+      const result = await db.diffTabs(diffTabId, spec, (progress) => {
+        safeSend("import-progress", {
+          tabId: diffTabId,
+          rowsImported: progress.current,
+          bytesRead: progress.current,
+          totalBytes: progress.total,
+          percent: progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0,
+          phase: progress.phase,
+          statusDetail: progress.sourceName || progress.phase || "",
+        });
+      });
+
+      const sortCol = (result.headers || []).includes("datetime") ? "datetime" : "_Diff";
+      const initialData = db.queryRows(diffTabId, {
+        offset: 0,
+        limit: 5000,
+        sortCol,
+        sortDir: "asc",
+      });
+      const emptyColumns = db.getEmptyColumns(diffTabId);
+
+      safeSend("import-complete", {
+        tabId: diffTabId,
+        fileName,
+        headers: result.headers,
+        rowCount: result.rowCount,
+        tsColumns: result.tsColumns,
+        numericColumns: result.numericColumns || [],
+        initialRows: initialData.rows,
+        totalFiltered: initialData.totalFiltered,
+        emptyColumns,
+        sourceFormat: "tab-diff",
+        diffMeta: {
+          kind: "tab-diff",
+          baselineName,
+          compareName,
+          baselineTabId: spec?.baseline?.tabId || null,
+          compareTabId: spec?.compare?.tabId || null,
+          matchKeys: result.matchKeys || [],
+          includeUnchanged: !!result.includeUnchanged,
+          stats: result.stats || {},
+          schemaDelta: result.schemaDelta || { onlyA: [], onlyB: [], common: [] },
+        },
+      });
+
+      if (scheduleIndexBuild) scheduleIndexBuild(diffTabId);
+      return { success: true, rowCount: result.rowCount, stats: result.stats };
+    } catch (err) {
+      try { db.closeTab(diffTabId); } catch (_) {}
+      safeSend("import-error", {
+        tabId: diffTabId,
+        fileName,
         error: err.message,
       });
       return { success: false, error: err.message };

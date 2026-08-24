@@ -6,6 +6,7 @@ import { DT_FORMATS, TIMEZONES } from "../constants/datetime.js";
 import { isIpcError, ipcErrorMessage } from "../utils/ipc-result.js";
 import { handleOpenFileDialogResult } from "../utils/open-file-result.js";
 import { isAiHistorySourceFormat, tabHasActiveExportFilters } from "../utils/ai-history-profile.js";
+import { isDiffTab } from "../utils/diff-tabs.js";
 import { getNextEnabledIndex } from "../utils/keyboard-navigation.js";
 import { Modal } from "./primitives/index.js";
 // Shared analyzer column/format detection — the single source of truth, also used by
@@ -38,6 +39,8 @@ import {
   openTriageCollectionModal,
   openLogSourceCoverageModal,
   openMergeTabsModal,
+  openDiffTabsModal,
+  openDiffExplorerModal,
 	  openPersistenceModal,
 	  openProcessTreeModal,
 	  openProximityModal,
@@ -518,6 +521,20 @@ export default function MenuBar({
         checked: true,
       }))));
     }, disabled: tabs.filter((t) => t.dataReady && !t.importing).length < 2 },
+    { label: "Diff Tabs", icon: ic(<><path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4"/><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 8l4 4-4 4"/></>, th.accent), action: () => {
+      const ready = tabs.filter((t) => t.dataReady && !t.importing);
+      if (ready.length < 2) return;
+      setModal(openDiffTabsModal(ready.map((t) => ({
+        tabId: t.id, tabName: t.name, rowCount: t.totalRows,
+        headers: t.headers || [],
+        tsColumns: [...(t.tsColumns || new Set())],
+        selectedTsCol: [...(t.tsColumns || new Set())][0] || "",
+      })), { compareTabId: ct?.id }));
+    }, disabled: tabs.filter((t) => t.dataReady && !t.importing).length < 2 },
+    { label: "Diff Explorer", icon: ic(<><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/><path d="M8 11h6M11 8v6"/></>, th.accent), action: () => {
+      if (!isDiffTab(ct)) return;
+      setModal(openDiffExplorerModal({ tabId: ct.id }));
+    }, disabled: !isDiffTab(ct) },
   ];
 
   const flattenToolCommands = (items, trail = [], unavailable = false) => items.flatMap((item) => {

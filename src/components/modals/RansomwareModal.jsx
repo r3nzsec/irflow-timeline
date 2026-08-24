@@ -378,7 +378,7 @@ code{background:${c.bgAlt};padding:2px 6px;border-radius:4px;font-family:"SF Mon
 .stat-val{font-size:20px;font-weight:700;line-height:1.2}
 .stat-label{font-size:9px;text-transform:uppercase;letter-spacing:0.05em;color:${c.textMuted};margin-top:4px}
 .section{margin-bottom:20px}
-h2{font-size:13px;font-weight:600;color:${c.text};margin-bottom:8px;padding:6px 10px;background:${c.bgAlt};border-radius:6px;border-left:3px solid ${c.accent}}
+h2{font-size:13px;font-weight:600;color:${c.text};margin-bottom:8px;padding:6px 10px;background:${c.bgAlt};border-radius:6px}
 table{width:100%;border-collapse:collapse;font-size:11px;font-family:"SF Mono",Menlo,monospace}
 th{text-align:left;padding:6px 10px;background:${c.bgAlt};color:${c.textMuted};font-weight:600;border-bottom:1px solid ${c.border};font-size:10px;text-transform:uppercase;letter-spacing:0.05em}
 td{padding:5px 10px;border-bottom:1px solid ${c.borderSub};color:${c.textDim};word-break:break-all}
@@ -615,7 +615,7 @@ strong{color:${c.text}}
                     const scoreColor = c.score >= 0.7 ? (th.danger) : c.score >= 0.4 ? (th.warning) : th.accent;
                     return (
                       <div key={i} onClick={() => toggleExt(c.extension)}
-                        style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", fontSize: 11, borderBottom: `1px solid ${th.border}15`, cursor: "pointer", background: sel ? `${th.accent}12` : (i % 2 === 0 ? "transparent" : `${th.border}08`), borderLeft: sel ? `3px solid ${th.accent}` : "3px solid transparent", transition: "all var(--m-base)" }}>
+                        style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", fontSize: 11, borderBottom: `1px solid ${th.border}15`, cursor: "pointer", background: sel ? `${th.accent}12` : (i % 2 === 0 ? "transparent" : `${th.border}08`), transition: "all var(--m-base)" }}>
                         <div style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, background: sel ? th.accent : "transparent", border: `1.5px solid ${sel ? th.accent : th.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
                           {sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                         </div>
@@ -642,7 +642,7 @@ strong{color:${c.text}}
                     const sel = ransomNotePattern === n.fileName;
                     return (
                       <div key={i} onClick={() => setModal((p) => ({ ...p, ransomNotePattern: n.fileName }))}
-                        style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", fontSize: 11, borderBottom: `1px solid ${th.border}15`, cursor: "pointer", background: sel ? `${(th.warning)}12` : (i % 2 === 0 ? "transparent" : `${th.border}08`), borderLeft: sel ? `3px solid ${th.warning}` : "3px solid transparent" }}>
+                        style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", fontSize: 11, borderBottom: `1px solid ${th.border}15`, cursor: "pointer", background: sel ? `${(th.warning)}12` : (i % 2 === 0 ? "transparent" : `${th.border}08`) }}>
                         <span style={{ fontFamily: "'SF Mono',Menlo,monospace", fontWeight: 600, color: th.text, minWidth: 120 }}>{n.fileName}</span>
                         <span style={{ color: th.textDim, fontSize: 10, fontFamily: "-apple-system, sans-serif" }}>{n.dirCount} dirs</span>
                         {n.timeSpanMinutes != null && <span style={{ color: th.textMuted, fontSize: 9, fontFamily: "'SF Mono',Menlo,monospace" }}>{n.timeSpanMinutes < 60 ? `${n.timeSpanMinutes} min` : n.timeSpanMinutes < 1440 ? `${Math.round(n.timeSpanMinutes / 60)}h` : `${Math.round(n.timeSpanMinutes / 1440)}d`} span</span>}
@@ -760,7 +760,7 @@ strong{color:${c.text}}
                 const s = data.incidentSummary;
                 const sevColor = s.severity === "Critical" ? th.danger : s.severity === "High" ? th.warning : s.severity === "Medium" ? th.accent : th.textMuted;
                 return (
-                  <div style={{ marginBottom: 14, padding: "14px 16px", background: `linear-gradient(135deg, ${sevColor}1c, ${th.panelBg}ee)`, backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", borderRadius: 12, border: `1px solid ${sevColor}44`, borderLeft: `4px solid ${sevColor}` }}>
+                  <div style={{ marginBottom: 14, padding: "14px 16px", background: `linear-gradient(135deg, ${sevColor}1c, ${th.panelBg}ee)`, backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", borderRadius: 12, border: `1px solid ${sevColor}44` }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
                       <span style={{ padding: "3px 11px", background: sevColor, color: "#fff", borderRadius: 6, fontSize: 11, fontWeight: 800, fontFamily: "-apple-system, sans-serif", letterSpacing: "0.04em", textTransform: "uppercase" }}>{s.severity}</span>
                       <span style={{ fontSize: 10, color: th.textMuted, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 }}>Incident Verdict</span>
@@ -935,7 +935,7 @@ strong{color:${c.text}}
                     { label: "First Encrypted", data: data.firstEncrypted, color: th.danger },
                     { label: "Last Encrypted", data: data.lastEncrypted, color: th.warning },
                   ].map((card) => (
-                    <div key={card.label} style={{ flex: 1, minWidth: 0, padding: "12px 14px", background: `linear-gradient(135deg, ${card.color}08, ${th.panelBg}ee)`, backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", borderRadius: 10, border: `1px solid ${card.color}22`, borderLeft: `3px solid ${card.color}`, overflow: "hidden" }}>
+                    <div key={card.label} style={{ flex: 1, minWidth: 0, padding: "12px 14px", background: `linear-gradient(135deg, ${card.color}08, ${th.panelBg}ee)`, backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", borderRadius: 10, border: `1px solid ${card.color}22`, overflow: "hidden" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
                         <span style={{ padding: "2px 8px", background: `linear-gradient(135deg, ${card.color}33, ${card.color}15)`, color: card.color, borderRadius: 6, fontSize: 9, fontWeight: 700, fontFamily: "-apple-system, sans-serif", letterSpacing: "0.05em", textTransform: "uppercase" }}>{card.label}</span>
                       </div>
@@ -950,7 +950,7 @@ strong{color:${c.text}}
               {data.timingEvidence && (() => {
                 const te = data.timingEvidence;
                 const renderTimingCard = (title, snap, color) => (
-                  <div style={{ minWidth: 0, padding: "10px 12px", background: `linear-gradient(135deg, ${color}08, ${th.panelBg}ee)`, borderRadius: 10, border: `1px solid ${color}22`, borderLeft: `3px solid ${color}` }}>
+                  <div style={{ minWidth: 0, padding: "10px 12px", background: `linear-gradient(135deg, ${color}08, ${th.panelBg}ee)`, borderRadius: 10, border: `1px solid ${color}22` }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
                       <span style={{ fontSize: 9, fontWeight: 700, color, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "-apple-system, sans-serif" }}>{title}</span>
                       {snap?.skewMinutes > 0 && <span style={{ fontSize: 8, color: th.textMuted, fontFamily: "'SF Mono',Menlo,monospace" }}>skew {snap.skewMinutes}m</span>}
@@ -1248,7 +1248,7 @@ strong{color:${c.text}}
                 const items = data.backupRecoveryImpact || [];
                 const dc = th.danger;
                 return (
-                  <div style={{ marginBottom: 16, padding: "12px 14px", background: `linear-gradient(135deg, ${dc}08, ${th.panelBg}ee)`, border: `1px solid ${dc}22`, borderRadius: 10, borderLeft: `3px solid ${dc}` }}>
+                  <div style={{ marginBottom: 16, padding: "12px 14px", background: `linear-gradient(135deg, ${dc}08, ${th.panelBg}ee)`, border: `1px solid ${dc}22`, borderRadius: 10 }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={dc} strokeWidth="2" strokeLinecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
@@ -1508,7 +1508,7 @@ strong{color:${c.text}}
                       const scoreColor = sc >= 0.6 ? (th.danger) : sc >= 0.35 ? (th.warning) : sc >= 0.15 ? th.accent : th.textMuted;
                       const isExpanded = expanded?.section === "susp" && expanded?.idx === i;
                       return (<Fragment key={i}>
-                      <div onClick={() => toggleSet("rwSelSusp", i)} style={{ ...rowStyle(i), background: sel ? `${th.accent}0a` : (sc >= 0.35 ? `linear-gradient(90deg, ${scoreColor}08, transparent)` : (i % 2 === 0 ? "transparent" : `${th.border}0a`)), borderBottom: `1px solid ${th.border}15`, borderLeft: `2px solid ${sc >= 0.35 ? scoreColor + "66" : "transparent"}`, cursor: "pointer", flexWrap: "wrap" }}>
+                      <div onClick={() => toggleSet("rwSelSusp", i)} style={{ ...rowStyle(i), background: sel ? `${th.accent}0a` : (sc >= 0.35 ? `linear-gradient(90deg, ${scoreColor}08, transparent)` : (i % 2 === 0 ? "transparent" : `${th.border}0a`)), borderBottom: `1px solid ${th.border}15`, cursor: "pointer", flexWrap: "wrap" }}>
                         <div style={cbStyle(sel)}>
                           {sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                         </div>
@@ -1596,7 +1596,7 @@ strong{color:${c.text}}
                         const gi = afIdx++;
                         const sel = selAF.has(gi);
                         return (
-                          <div key={`${cat.key}-${ii}`} onClick={() => toggleSet("rwSelAF", gi)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", fontSize: 10, borderBottom: `1px solid ${th.border}12`, cursor: "pointer", background: sel ? `${th.accent}0a` : (gi % 2 === 0 ? "transparent" : `${th.border}08`), borderLeft: `2px solid ${cat.color}44` }}>
+                          <div key={`${cat.key}-${ii}`} onClick={() => toggleSet("rwSelAF", gi)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", fontSize: 10, borderBottom: `1px solid ${th.border}12`, cursor: "pointer", background: sel ? `${th.accent}0a` : (gi % 2 === 0 ? "transparent" : `${th.border}08`) }}>
                             <div style={cbStyle(sel)}>{sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}</div>
                             <span style={{ fontSize: 7, padding: "1px 4px", borderRadius: 3, background: `${cat.color}22`, color: cat.color, fontWeight: 600, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase", flexShrink: 0 }}>{cat.label.split(" ")[0]}</span>
                             <span style={{ color: th.textDim, fontFamily: "'SF Mono',Menlo,monospace", fontSize: 9, flexShrink: 0 }}>#{item.entryNumber}</span>
@@ -1623,7 +1623,7 @@ strong{color:${c.text}}
                   </div>
                   {/* Precise start callout */}
                   {usn.preciseStartTime && data.firstEncrypted?.timestamp && usn.preciseStartTime !== data.firstEncrypted.timestamp && (
-                    <div style={{ marginBottom: 8, padding: "8px 12px", background: `${ac}08`, border: `1px solid ${ac}22`, borderRadius: 8, borderLeft: `3px solid ${ac}` }}>
+                    <div style={{ marginBottom: 8, padding: "8px 12px", background: `${ac}08`, border: `1px solid ${ac}22`, borderRadius: 8 }}>
                       <div style={{ fontSize: 10, color: ac, fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>USN places encryption start at <span style={{ fontFamily: "'SF Mono',Menlo,monospace" }}>{usn.preciseStartTime}</span></div>
                       <div style={{ fontSize: 9, color: th.textMuted, fontFamily: "-apple-system, sans-serif", marginTop: 2 }}>MFT LastModified shows <span style={{ fontFamily: "'SF Mono',Menlo,monospace" }}>{data.firstEncrypted.timestamp}</span></div>
                     </div>
@@ -1688,7 +1688,7 @@ strong{color:${c.text}}
                 const ev = data.evtxEnrichment;
                 const techColor = (tech) => tech === "T1490" ? th.danger : tech === "T1070.001" ? th.warning : tech === "T1569.002" ? th.accent : th.textMuted;
                 return (
-                  <div style={{ marginTop: 14, padding: "12px 14px", background: `linear-gradient(135deg, ${th.danger}0e, ${th.panelBg}ee)`, borderRadius: 10, border: `1px solid ${th.danger}33`, borderLeft: `3px solid ${th.danger}` }}>
+                  <div style={{ marginTop: 14, padding: "12px 14px", background: `linear-gradient(135deg, ${th.danger}0e, ${th.panelBg}ee)`, borderRadius: 10, border: `1px solid ${th.danger}33` }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
                       <span style={{ fontSize: 10, fontWeight: 700, color: th.danger, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "-apple-system, sans-serif" }}>Defense Evasion (EVTX)</span>
                       <span style={{ fontSize: 9, color: th.textMuted, fontFamily: "-apple-system, sans-serif" }}>{ev.total.toLocaleString()} correlated event{ev.total !== 1 ? "s" : ""} in window · corroborates T1490 (VSS / backup destruction)</span>
@@ -1716,7 +1716,7 @@ strong{color:${c.text}}
                 const pc = data.processCorrelation;
                 const trunc = (s, n) => { const v = String(s || ""); return v.length > n ? v.slice(0, n) + "…" : v; };
                 return (
-                  <div style={{ marginTop: 14, padding: "12px 14px", background: `linear-gradient(135deg, ${th.accent}0e, ${th.panelBg}ee)`, borderRadius: 10, border: `1px solid ${th.accent}33`, borderLeft: `3px solid ${th.accent}` }}>
+                  <div style={{ marginTop: 14, padding: "12px 14px", background: `linear-gradient(135deg, ${th.accent}0e, ${th.panelBg}ee)`, borderRadius: 10, border: `1px solid ${th.accent}33` }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
                       <span style={{ fontSize: 10, fontWeight: 700, color: th.accent, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "-apple-system, sans-serif" }}>Process Execution (EVTX)</span>
                       <span style={{ fontSize: 9, color: th.textMuted, fontFamily: "-apple-system, sans-serif" }}>
@@ -1779,7 +1779,7 @@ strong{color:${c.text}}
                 const cc = ip.confidence === "high" ? th.danger : ip.confidence === "medium" ? th.warning : th.textMuted;
                 const trunc = (s, n) => { const v = String(s || ""); return v.length > n ? "…" + v.slice(-n) : v; };
                 return (
-                  <div style={{ marginTop: 14, padding: "12px 14px", background: `linear-gradient(135deg, ${cc}12, ${th.panelBg}ee)`, borderRadius: 10, border: `1px solid ${cc}44`, borderLeft: `3px solid ${cc}` }}>
+                  <div style={{ marginTop: 14, padding: "12px 14px", background: `linear-gradient(135deg, ${cc}12, ${th.panelBg}ee)`, borderRadius: 10, border: `1px solid ${cc}44` }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
                       <span style={{ fontSize: 10, fontWeight: 700, color: cc, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "-apple-system, sans-serif" }}>In-Place Encryption</span>
                       <span style={{ padding: "1px 6px", borderRadius: 4, fontSize: 8.5, fontWeight: 800, color: "#fff", background: cc, textTransform: "uppercase" }}>{ip.confidence}</span>

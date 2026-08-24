@@ -125,6 +125,13 @@ export const KAPE_PROFILES = {
     detect: ["CopiedTimestamp", "SourceFile", "DestinationFile", "SourceFileSha1"],
     columnOrder: ["CopiedTimestamp", "SourceFile", "DestinationFile", "FileSize", "SourceFileSha1", "DeferredCopy", "CreatedOnUtc", "ModifiedOnUtc", "LastAccessedOnUtc", "CopyDuration"],
   },
+  "Tab Diff": {
+    detect: ["_Diff", "_Baseline", "_Compare", "_ChangedFields"],
+    hiddenColumns: ["_DiffDetail"],
+    columnOrder: ["_Diff", "_ChangedFields", "_DiffSummary", "datetime", "_MatchKey", "_Baseline", "_Compare"],
+    defaultSortCol: "datetime",
+    defaultSortDir: "asc",
+  },
   "AI Query History": {
     detect: ["Timestamp", "Role", "RecordType", "Summary", "SessionId", "Tool"],
     showAllColumns: true,

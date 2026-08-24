@@ -1,4 +1,5 @@
 const { parseTimestampMs } = require("../utils/parse-timestamp");
+const { fillHistogramGaps } = require("./histogram-buckets");
 
 /**
  * Timeline analytics methods mixed into TimelineDB.
@@ -6,7 +7,9 @@ const { parseTimestampMs } = require("../utils/parse-timestamp");
 class TimelineAnalyticsMethods {
   /**
    * Get histogram data for a timestamp column (event density over time).
-   * Groups by day (first 10 chars = YYYY-MM-DD) and respects all active filters.
+   * Groups by UTC day/hour via extract_date / extract_datetime_minute (which
+   * drop Windows FILETIME-epoch sentinels) and fills empty buckets so the
+   * x-axis matches the TimeCreated span instead of a sparse date list.
    */
   getHistogramData(tabId, colName, options = {}) {
     const meta = this.databases.get(tabId);
@@ -20,12 +23,22 @@ class TimelineAnalyticsMethods {
     this._applyStandardFilters(options, meta, whereConditions, params);
     const whereClause = `WHERE ${whereConditions.join(" AND ")}`;
     const extractFn = granularity === "hour" ? `substr(extract_datetime_minute(${safeCol}), 1, 13)` : `extract_date(${safeCol})`;
-    const sql = `SELECT ${extractFn} as day, COUNT(*) as cnt FROM data ${whereClause} GROUP BY day HAVING day IS NOT NULL ORDER BY day`;
+    // Keep the NULL bucket so FILETIME-epoch rows can be counted as omittedUnset
+    // instead of silently disappearing from the histogram.
+    const sql = `SELECT ${extractFn} as day, COUNT(*) as cnt FROM data ${whereClause} GROUP BY day ORDER BY day`;
     // Cache histogram results — same filters often redraw without data changes
     const histoSig = safeCol + "|" + granularity + "|" + whereClause + "|" + JSON.stringify(params);
     if (meta._histoCache && meta._histoCache.sig === histoSig) return meta._histoCache.data;
     try {
-      const data = db.prepare(sql).all(...params);
+      const raw = db.prepare(sql).all(...params);
+      let omittedUnset = 0;
+      const dated = [];
+      for (const r of raw) {
+        if (r.day == null || r.day === "") omittedUnset += r.cnt;
+        else dated.push(r);
+      }
+      const data = fillHistogramGaps(dated, granularity);
+      data.omittedUnset = omittedUnset;
       meta._histoCache = { sig: histoSig, data };
       return data;
     } catch (err) { console.error(`Histogram query failed: ${err.message}`); return []; }

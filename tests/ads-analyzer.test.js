@@ -149,7 +149,7 @@ test("ADS T4: facade resolves a companion USN tab and passes it through without 
   }
 });
 
-test("ADS Tag Downloaded: corrected filter tags only the downloaded set; unrecognized shape is refused; {} still tags all", { skip }, () => {
+test("ADS Tag Downloaded: corrected filter tags only the downloaded set; unrecognized shape is refused; {} needs an explicit whole-tab confirmation", { skip }, () => {
   const TimelineDB = require("../electron/db");
   const db = new TimelineDB();
   const tabId = "ads-tag-test";
@@ -175,8 +175,17 @@ test("ADS Tag Downloaded: corrected filter tags only the downloaded set; unrecog
     assert.equal(bad.tagged, 0);
     assert.equal(tagCount("Bad"), 0);
 
-    // (3) empty options is still a valid intentional tag-all (e.g. Sigma result tagging)
-    const all = db.bulkTagFiltered(tabId, "All", {});
+    // (3) empty options means "every row in the tab". That used to happen silently,
+    // which is how the Bulk Actions modal tagged whole files by accident, so it now
+    // needs the caller to say so explicitly.
+    const unconfirmed = db.bulkTagFiltered(tabId, "All", {});
+    assert.equal(unconfirmed.tagged, 0);
+    assert.equal(unconfirmed.wholeTab, true);
+    assert.ok(/all 5 rows/.test(unconfirmed.error), "refusal names the row count");
+    assert.equal(tagCount("All"), 0);
+
+    // Deliberate tag-all (e.g. Sigma result tagging) still works when confirmed.
+    const all = db.bulkTagFiltered(tabId, "All", { confirmWholeTab: true });
     assert.equal(all.tagged, 5);
     assert.equal(tagCount("All"), 5);
   } finally {

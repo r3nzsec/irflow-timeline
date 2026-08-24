@@ -139,6 +139,8 @@ const KIND_CLASS = {
   "keyboard.text_input": CLASS_INPUT,
   "keyboard.submit": CLASS_INPUT,
   "keyboard.shortcut": CLASS_INPUT,
+  // Visible terminal scrollback while Secure Input blocks keystroke capture.
+  "terminal.value_changed": CLASS_TERMINAL,
 };
 
 /**

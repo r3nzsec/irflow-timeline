@@ -110,9 +110,9 @@ export default function PersistenceModal() {
   //          th.textDim → supporting values (category, path, time, host, user)
   //          th.textMuted → headers and labels
   //
-  // Severity/risk color is confined to the severity pill, the risk number, and the
-  // row's left border. Value TEXT is never severity-colored — the row already shows
-  // severity three other ways, and coloring the artifact was the main source of the
+  // Severity/risk color is confined to the severity pill and the risk number.
+  // Value TEXT is never severity-colored — the row already shows severity other ways,
+  // and coloring the artifact was the main source of the
   // "some red, some white, some bold" inconsistency.
   const PA_SANS = "-apple-system, BlinkMacSystemFont, sans-serif";
   const PA_MONO = "SF Mono, Menlo, monospace";
@@ -1128,7 +1128,7 @@ export default function PersistenceModal() {
                               );
                             }
                             rows.push(
-                              <div key={key} style={{ padding: "2px 4px 2px 8px", borderLeft: `2px solid ${off ? th.border + "33" : sevColor + (evCount > 0 ? "" : "44")}`, background: isHi ? th.accent + "14" : "transparent", borderRadius: isHi ? 4 : 0, opacity: off ? 0.4 : (evCount > 0 ? 1 : 0.6), transition: "opacity var(--m-base), background var(--m-base), border-color var(--m-base)" }}>
+                              <div key={key} style={{ padding: "2px 4px 2px 8px", background: isHi ? th.accent + "14" : "transparent", borderRadius: isHi ? 4 : 0, opacity: off ? 0.4 : (evCount > 0 ? 1 : 0.6), transition: "opacity var(--m-base), background var(--m-base)" }}>
                                 <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                                   <input type="checkbox" checked={!off} onChange={() => toggleRule(key)} style={{ accentColor: th.accent, margin: 0, flexShrink: 0 }} />
                                   <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: sevColor + "22", color: sevColor, fontWeight: 600, fontFamily: "-apple-system, sans-serif", minWidth: 42, textAlign: "center", textTransform: "uppercase" }}>{r.sev}</span>
@@ -2202,7 +2202,7 @@ export default function PersistenceModal() {
                           const repItem = inc.items?.[0];
                           return (
                             <div key={inc.id}>
-                              <div style={{ display: "flex", borderBottom: `1px solid ${th.border}11`, borderLeft: inc.isSuspicious ? `3px solid ${th.sev.critical}` : "3px solid transparent", transition: "background var(--m-fast)", background: inc.isSuspicious ? `${th.sev.critical}0d` : "transparent", cursor: "pointer" }}
+                              <div style={{ display: "flex", borderBottom: `1px solid ${th.border}11`, transition: "background var(--m-fast)", background: inc.isSuspicious ? `${th.sev.critical}0d` : "transparent", cursor: "pointer" }}
                                 onClick={() => setModal((p) => ({ ...p, _expandedCluster: p._expandedCluster === inc.id ? null : inc.id, selectedPersistKey: repItem ? persistItemKey(repItem) : p.selectedPersistKey }))}
                                 onMouseEnter={(e) => e.currentTarget.style.background = `${th.accent}06`}
                                 onMouseLeave={(e) => e.currentTarget.style.background = inc.isSuspicious ? `${th.sev.critical}0d` : "transparent"}>
@@ -2216,7 +2216,7 @@ export default function PersistenceModal() {
                               {isExp && inc.items.slice(0, 50).map((item, si) => {
                                 const isSelSub = isSelPersist(item);
                                 return (
-                                  <div key={si} style={{ display: "flex", borderBottom: `1px solid ${th.border}08`, borderLeft: "3px solid transparent", background: isSelSub ? `${th.accent}14` : `${th.border}06`, cursor: "pointer", paddingLeft: 12 }}
+                                  <div key={si} style={{ display: "flex", borderBottom: `1px solid ${th.border}08`, background: isSelSub ? `${th.accent}14` : `${th.border}06`, cursor: "pointer", paddingLeft: 12 }}
                                     onClick={() => toggleSelPersist(item)}
                                     onMouseEnter={(e) => { if (!isSelSub) e.currentTarget.style.background = `${th.accent}08`; }}
                                     onMouseLeave={(e) => { if (!isSelSub) e.currentTarget.style.background = `${th.border}06`; }}>
@@ -2239,7 +2239,7 @@ export default function PersistenceModal() {
                         {!useCollapse && sorted.slice(0, modal._tblLimit || 500).map((item, idx) => {
                           const isSelItem = isSelPersist(item);
                           return (
-                          <div key={idx} style={{ display: "flex", borderBottom: `1px solid ${th.border}11`, borderLeft: item.isSuspicious ? `3px solid ${th.sev.critical}` : "3px solid transparent", transition: "background var(--m-fast)", background: isSelItem ? `${th.accent}14` : isChecked(item) ? `${th.accent}0a` : item.isSuspicious ? `${th.sev.critical}0d` : "transparent", cursor: "pointer" }}
+                          <div key={idx} style={{ display: "flex", borderBottom: `1px solid ${th.border}11`, transition: "background var(--m-fast)", background: isSelItem ? `${th.accent}14` : isChecked(item) ? `${th.accent}0a` : item.isSuspicious ? `${th.sev.critical}0d` : "transparent", cursor: "pointer" }}
                             onClick={() => toggleSelPersist(item)}
                             onMouseEnter={(e) => { if (!isSelItem && !isChecked(item)) e.currentTarget.style.background = `${th.accent}06`; }}
                             onMouseLeave={(e) => { if (!isSelItem) e.currentTarget.style.background = isChecked(item) ? `${th.accent}0a` : item.isSuspicious ? `${th.sev.critical}0d` : "transparent"; }}>

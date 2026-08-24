@@ -78,6 +78,11 @@ test("sort_datetime orders mixed naive + offset rows by true instant (Forensic T
   ]);
 });
 
+test("sort_datetime treats FILETIME epoch as null (not a real event time)", { skip }, () => {
+  assert.equal(sortKey("1601-01-01 00:00:00"), null);
+  assert.equal(sortKey("1601-01-01T00:00:00.0000000Z"), null);
+});
+
 test("sort_datetime is monotonic between naive and equal-instant zoned rows", { skip }, () => {
   // A naive UTC time and the same instant expressed with Z must order adjacently/correctly.
   const ordered = orderBy([

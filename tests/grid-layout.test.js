@@ -84,10 +84,12 @@ test("visible row range reports viewport rows without overscan", async () => {
 });
 
 test("sticky grid surfaces are opaque and structural cells use border-box sizing", () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, "..", "src", "components", "VirtualGrid.jsx"),
-    "utf8",
-  );
+  // The grid's markup lives in two files: VirtualGrid.jsx owns the header, filter row and
+  // group rows; the data row was extracted into the memoized GridRow.jsx. This contract is
+  // about the rendered grid, so it reads both.
+  const source = ["VirtualGrid.jsx", "GridRow.jsx"]
+    .map((f) => fs.readFileSync(path.join(__dirname, "..", "src", "components", f), "utf8"))
+    .join("\n");
 
   assert.match(source, /const stickyHeaderBg = th\.headerBg;/);
   assert.match(source, /const stickyFilterBg = th\.bg;/);

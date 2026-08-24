@@ -433,21 +433,29 @@ const ARTIFACT_PATH_REFERENCES = {
     label: "OpenAI Codex",
     paths: [
       { platform: "all", path: "$CODEX_HOME or ~/.codex/ (history.jsonl, sessions/**/rollout-*.jsonl, archived_sessions/, state*.sqlite + WAL/SHM)" },
+      { platform: "all", path: "~/.codex/sqlite/codex-dev.db (local_thread_catalog — thread surface + missing-rollout flag; automations — scheduled agent runs)" },
+      { platform: "all", path: "~/.codex/logs*.sqlite + WAL/SHM (tracing log; Submission/UserInput bodies carry prompt text independently of history.jsonl)" },
+      { platform: "all", path: "~/.codex/memories/rollout_summaries/*.md (per-thread summaries that outlive the rollouts they describe)" },
+      { platform: "all", path: "~/.codex/hooks.json (commands executed on SessionStart/PreToolUse/Stop — execution persistence)" },
     ],
+    notes: "Thread summaries and the thread catalog can evidence a thread whose rollout JSONL is gone. "
+      + "Not yet parsed: thread_history*.sqlite (a rolling projection of the rollouts), goals/queue/memories*.sqlite, "
+      + "and clipboard image pastes under $TMPDIR/codex-clipboard-*.png (outside the .codex root, so out of scan scope).",
   },
   "computer-history": {
     label: "ChatGPT Computer History",
     paths: [
       { platform: "macOS", path: "~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/Library/Caches/ComputerUse/Skysight/segments/<YYYY-MM-DDTHH-MM-SSZ>/{events.jsonl,metadata.json}" },
       { platform: "macOS", path: "~/.codex/memories/extensions/skysight/resources/*-(10min|6h)-*.md (derived activity summaries)" },
-      { platform: "macOS", path: "~/.codex/config.toml → [plugins.\"computer-history@openai-bundled\"] enabled (feature on/off state)" },
-      { platform: "macOS", path: "~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/Library/Application Support/Software/ComputerUseAppApprovals.json (app coverage gaps)" },
+      { platform: "macOS", path: "~/.codex/config.toml → [plugins.\"computer-history@openai-bundled\"] enabled (feature on/off state); [mcp_servers.computer-use] is the separate Computer Use agent" },
+      { platform: "macOS", path: "~/Library/Preferences/com.openai.chat.StatsigService.plist (email / account UUID, no tokens)" },
+      { platform: "macOS", path: "~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/Library/Application Support/Software/ComputerUseAppApprovals.json (Computer Use AGENT approvals — NOT recording scope)" },
     ],
-    notes: "Opt-in, off by default. Raw events are retained ~48h under Library/Caches (commonly excluded "
-      + "from backup/EDR collection and purgeable under disk pressure); the derived summaries persist until "
-      + "deleted and are often the only survivor on a stale image. Capture depth varies by app: browsers, "
-      + "Electron apps and terminal emulators yield full text, while hardened native apps (Telegram, Slack) "
-      + "yield window metadata only — in those, typed OUTBOUND text is captured but received content is not.",
+    notes: "Opt-in, off by default. Raw events are advertised as a ~48h rolling window while the recorder "
+      + "is running (Library/Caches — commonly excluded from backup/EDR); a stopped recorder can leave "
+      + "segments longer. Derived summaries persist until deleted. Event kinds include terminal.value_changed "
+      + "(visible terminal scrollback during Secure Input / SSH prompts). Capture depth tracks the UI toolkit, "
+      + "not the app category: Electron Slack can expose channel bodies; native Telegram may expose little.",
   },
   "grok-build": {
     label: "Grok Build",

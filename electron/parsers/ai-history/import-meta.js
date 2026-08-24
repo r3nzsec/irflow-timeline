@@ -155,6 +155,16 @@ function buildAiHistoryImportNotice(meta) {
     const s = buildCodexStateSqliteNotice(meta.codexStateSqlite);
     if (s) parts.push(s);
   }
+  if (meta?.codexAuxSqlite) {
+    const { buildCodexAuxSqliteNotice } = require("./codex-aux-sqlite");
+    const s = buildCodexAuxSqliteNotice(meta.codexAuxSqlite);
+    if (s) parts.push(s);
+  }
+  if (meta?.codexLocalEvidence) {
+    const { buildCodexLocalEvidenceNotice } = require("./codex-local-evidence");
+    const s = buildCodexLocalEvidenceNotice(meta.codexLocalEvidence);
+    if (s) parts.push(s);
+  }
   if (meta?.windsurfCascade) {
     const s = buildWindsurfCascadeNotice(meta.windsurfCascade);
     if (s) parts.push(s);

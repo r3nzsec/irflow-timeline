@@ -5,6 +5,7 @@ import { _integrityShort, _providerShort, _ptFormatDuration } from "../../../uti
 import { consistentParentKey } from "../../../utils/process-inspector-pipeline.js";
 import { normalizeTimestamp } from "../../../utils/forensic-normalize.js";
 import { toast } from "../../../store/useToastStore.js";
+import { isIpcError, ipcErrorMessage } from "../../../utils/ipc-result.js";
 import { PI_TYPOGRAPHY, PT_VIEW_MODES } from "../constants.js";
 import { PI_GRID_PIVOT_WINDOWS } from "../../../utils/process-grid-pivot.js";
 import {
@@ -703,7 +704,7 @@ export default function ProcessTreeResultsView(p) {
                 ["Provider", _providerShort(selNode.provider)], ["Event ID", selNode.eventId],
               ].filter(([, v]) => v);
               return (
-                <div style={{ width: detailW, borderLeft: selSusInfo.level >= 2 ? `3px solid ${selSusColor}` : `1px solid ${th.border}44`, background: `${th.modalBg}cc`, flexShrink: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                <div style={{ width: detailW, borderLeft: `1px solid ${th.border}44`, background: `${th.modalBg}cc`, flexShrink: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
                   <div style={{ padding: "10px 16px 8px", borderBottom: `1px solid ${th.border}44`, background: `${th.headerBg}aa`, fontSize: 9, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 600, fontFamily: "'SF Mono', Menlo, monospace", flexShrink: 0 }}>Event Details</div>
                   <div style={{ padding: "12px 16px 8px", borderBottom: `1px solid ${th.border}33`, flexShrink: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
@@ -1237,7 +1238,7 @@ export default function ProcessTreeResultsView(p) {
               }
             };
             const tagLinkedRows = () => {
-              if (!tle?.addTag || !crossRefs.length) return;
+              if (!(tle?.setTagOnRows || tle?.addTag) || !crossRefs.length) return;
               setModal((p) => p?.type === "processTree" ? {
                 ...p,
                 ptLinkedTagKey: selectedKey,
@@ -1246,16 +1247,25 @@ export default function ProcessTreeResultsView(p) {
             };
             const applyLinkedTag = async () => {
               const tag = String(modal.ptLinkedTagDraft || "").trim();
-              if (!tag || !tle?.addTag || !crossRefs.length) return;
+              if (!tag || !crossRefs.length) return;
               try {
+                // One transaction per tab. The previous per-row `addTag` loop cost an
+                // IPC round trip per evidence row and stalled on wide process trees.
+                let tagged = 0;
                 for (const [tabId, rowIds] of groupRefsByTab(crossRefs)) {
-                  for (const rowId of [...new Set(rowIds)]) await tle.addTag(tabId, rowId, tag);
+                  const ids = [...new Set(rowIds)];
+                  const res = tle?.setTagOnRows
+                    ? await tle.setTagOnRows(tabId, ids, tag, true)
+                    : await Promise.all(ids.map((rowId) => tle.addTag(tabId, rowId, tag))).then(() => ({ requested: ids.length }));
+                  if (isIpcError(res)) throw new Error(ipcErrorMessage(res));
+                  if (res && res.ok === false) throw new Error(res.error || "Tag write failed");
+                  tagged += res?.requested ?? ids.length;
                 }
                 setModal((p) => p?.type === "processTree" ? {
                   ...p,
                   ptLinkedTagKey: null,
                   ptLinkedTagDraft: "",
-                  ptLinkedActionStatus: `Tagged ${crossRefs.length} linked evidence rows as ${tag}.`,
+                  ptLinkedActionStatus: `Tagged ${tagged} linked evidence rows as ${tag}.`,
                 } : p);
               } catch (err) {
                 toast.error("Tagging failed", { detail: err?.message || "Could not tag the linked evidence rows." });
@@ -1362,7 +1372,7 @@ export default function ProcessTreeResultsView(p) {
                 : ""],
             ].filter(([, v]) => v);
             return (
-              <div style={{ width: detailW, position: "relative", borderLeft: selSusInfo.level >= 2 ? `3px solid ${selSusColor}` : `1px solid ${th.border}44`, background: `${th.modalBg}cc`, backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", flexShrink: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+              <div style={{ width: detailW, position: "relative", borderLeft: `1px solid ${th.border}44`, background: `${th.modalBg}cc`, backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", flexShrink: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
                 {detailResizeHandle}
                 {/* EVENT DETAILS header bar */}
                 <div style={{ padding: "10px 16px 8px", borderBottom: `1px solid ${th.border}44`, background: `${th.headerBg}aa`, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", fontSize: 9, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 600, fontFamily: "'SF Mono', Menlo, monospace", flexShrink: 0 }}>Event Details</div>

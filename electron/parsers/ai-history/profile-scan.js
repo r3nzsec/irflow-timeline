@@ -323,6 +323,8 @@ async function extractMergedAiHistoryRoots(roots, attribution = {}, options = {}
   let cursorComposerStats = null;
   let windsurfStats = null;
   let codexStateSqliteStats = null;
+  let codexAuxSqliteStats = null;
+  let codexLocalEvidenceStats = null;
   let windsurfCascadeStats = null;
   let parseErrorTotal = 0;
   let capped = false;
@@ -398,6 +400,8 @@ async function extractMergedAiHistoryRoots(roots, attribution = {}, options = {}
       if (chunk._cursorComposerStats) cursorComposerStats = chunk._cursorComposerStats;
       if (chunk._windsurfStats) windsurfStats = chunk._windsurfStats;
       if (chunk._codexStateSqliteStats) codexStateSqliteStats = chunk._codexStateSqliteStats;
+      if (chunk._codexAuxSqliteStats) codexAuxSqliteStats = chunk._codexAuxSqliteStats;
+      if (chunk._codexLocalEvidenceStats) codexLocalEvidenceStats = chunk._codexLocalEvidenceStats;
       if (chunk._windsurfCascadeStats) windsurfCascadeStats = chunk._windsurfCascadeStats;
       if (chunk._parseErrors) parseErrorTotal += chunk._parseErrors;
       // Push element-by-element, not `merged.push(...chunk)`: spreading an array past ~125k
@@ -485,6 +489,8 @@ async function extractMergedAiHistoryRoots(roots, attribution = {}, options = {}
   }
   if (windsurfStats) importMeta.windsurf = windsurfStats;
   if (codexStateSqliteStats) importMeta.codexStateSqlite = codexStateSqliteStats;
+  if (codexAuxSqliteStats) importMeta.codexAuxSqlite = codexAuxSqliteStats;
+  if (codexLocalEvidenceStats) importMeta.codexLocalEvidence = codexLocalEvidenceStats;
   if (windsurfCascadeStats) importMeta.windsurfCascade = windsurfCascadeStats;
   if (parseErrorTotal) importMeta.parseErrors = parseErrorTotal;
   if (capped) importMeta.capped = { maxRows, rowCount: rows.length };
@@ -508,6 +514,8 @@ function collectChunkSidecarStats(chunk, acc) {
   if (chunk._cursorComposerStats) acc.cursorComposerStats = chunk._cursorComposerStats;
   if (chunk._windsurfStats) acc.windsurfStats = chunk._windsurfStats;
   if (chunk._codexStateSqliteStats) acc.codexStateSqliteStats = chunk._codexStateSqliteStats;
+  if (chunk._codexAuxSqliteStats) acc.codexAuxSqliteStats = chunk._codexAuxSqliteStats;
+  if (chunk._codexLocalEvidenceStats) acc.codexLocalEvidenceStats = chunk._codexLocalEvidenceStats;
   if (chunk._windsurfCascadeStats) acc.windsurfCascadeStats = chunk._windsurfCascadeStats;
   if (chunk._parseErrors) acc.parseErrorTotal += chunk._parseErrors;
 }
@@ -547,6 +555,8 @@ async function extractMergedAiHistoryRootsToDb(db, tabId, roots, attribution = {
     cursorComposerStats: null,
     windsurfStats: null,
     codexStateSqliteStats: null,
+    codexAuxSqliteStats: null,
+    codexLocalEvidenceStats: null,
     windsurfCascadeStats: null,
     parseErrorTotal: 0,
   };
@@ -719,6 +729,8 @@ async function extractMergedAiHistoryRootsToDb(db, tabId, roots, attribution = {
   }
   if (stats.windsurfStats) importMeta.windsurf = stats.windsurfStats;
   if (stats.codexStateSqliteStats) importMeta.codexStateSqlite = stats.codexStateSqliteStats;
+  if (stats.codexAuxSqliteStats) importMeta.codexAuxSqlite = stats.codexAuxSqliteStats;
+  if (stats.codexLocalEvidenceStats) importMeta.codexLocalEvidence = stats.codexLocalEvidenceStats;
   if (stats.windsurfCascadeStats) importMeta.windsurfCascade = stats.windsurfCascadeStats;
   if (stats.parseErrorTotal) importMeta.parseErrors = stats.parseErrorTotal;
   if (capped) importMeta.capped = { maxRows, rowCount: totalWritten };

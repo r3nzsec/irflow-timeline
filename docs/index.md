@@ -47,6 +47,13 @@ features:
     details: Bookmarks, color-coded tags, conditional formatting with KAPE-aware presets, and full session save/restore.
 ---
 
+## What's New · v1.0.12
+
+- **Diff Tabs** — View → Diff Tabs compares any two imported files (EVTX, MFT, Prefetch, AI history, Computer History, or any CSV). The result is a color-coded Added / Removed / Changed timeline with field-level before/after and clickable status counts. Merge is a union; Diff is a comparison.
+- **Computer History re-audit** — `terminal.value_changed` (visible iTerm2 scrollback), Statsig account identity, and a corrected 48-hour purge caveat.
+
+[Diff Tabs workflow →](/workflows/diff-tabs) · [Full changelog →](/about/changelog)
+
 ## What's New · v1.0.11
 
 - **Computer History analysis verified against a live capture** — Credential rows are time anchors, not recovered passwords; capture fidelity is measured per application rather than assumed from the app's category; and gaps spanning a recorder restart are reported as unassessed instead of falsely cleared.

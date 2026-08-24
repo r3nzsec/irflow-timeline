@@ -80,7 +80,7 @@ Two acquisition properties matter. Raw events are uploaded to OpenAI for summari
 
 | Artifact | Path | Retention |
 |----------|------|-----------|
-| **Raw event stream** | `~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/Library/Caches/ComputerUse/Skysight/segments/<YYYY-MM-DDTHH-MM-SSZ>/events.jsonl` | **~48 hours**, then purged |
+| **Raw event stream** | `~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/Library/Caches/ComputerUse/Skysight/segments/<YYYY-MM-DDTHH-MM-SSZ>/events.jsonl` | Advertised **~48 hours** while the recorder is running. A **stopped** recorder can leave segments on disk longer — measured: 90 buckets still present 3 days after the last write |
 | **Segment metadata** | `…/segments/<bucket>/metadata.json` | with its segment |
 | **Activity summaries** | `~/.codex/memories/extensions/skysight/resources/<ts>-<4char>-(10min\|6h)-*.md` | until the user clears them |
 | **Summariser instructions** | `~/.codex/memories/extensions/skysight/instructions.md` | persistent |
@@ -91,6 +91,8 @@ Two acquisition properties matter. Raw events are uploaded to OpenAI for summari
 | **Analytics store** | `…/CUAService/Library/Application Support/Software/Analytics.db` | uploaded then cleared |
 | **Device pseudonyms** | `~/Library/Preferences/com.openai.sky.CUAService.plist`, `com.openai.chat.plist` | persistent |
 | **Account binding** | `~/Library/Preferences/com.openai.chat.RemoteFeatureFlags.<account-uuid>.plist` | persistent |
+| **Statsig account cache** | `~/Library/Preferences/com.openai.chat.StatsigService.plist` — email, user id, account UUID, **no tokens** | persistent |
+| **Plugin cache** | `~/.codex/plugins/cache/openai-bundled/computer-history/<version>/.codex-plugin/plugin.json` | persistent |
 | **Helper app / IPC** | `~/.codex/computer-use/Codex Computer Use.app`, `…/CUAService/IPC/computeruse.sock` | persistent |
 
 Segment directories are fixed **10-minute UTC buckets**. A closed `metadata.json` carries `startedAt`, `endedAt`, `eventCount`, `suppressedEventCount`, `id`, and `eventsPath` — the original home directory recorded at capture time.
@@ -99,7 +101,9 @@ The **currently open** bucket carries only `id`, `startedAt`, and `eventsPath`. 
 
 ### Event kinds
 
-`session.started` · `session.ended` · `window.changed` · `mouse.click` · `mouse.context_menu` · `mouse.drag` · `selection.changed` · `keyboard.text_input` · `keyboard.submit` · `keyboard.shortcut`
+`session.started` · `session.ended` · `window.changed` · `mouse.click` · `mouse.context_menu` · `mouse.drag` · `selection.changed` · `keyboard.text_input` · `keyboard.submit` · `keyboard.shortcut` · **`terminal.value_changed`**
+
+`terminal.value_changed` was missing from the 1.0.10/1.0.11 catalog. It is the visible terminal scrollback (`keyboard.target.value`) emitted when macOS **Secure Input Mode** blocks keystroke capture — typically an SSH/sudo/rsync password prompt. The typed password is **not** in the payload. The command that opened the prompt **is**. Some records start with `[truncated to visible range]`: that is the on-screen AX slice, not the full scrollback. Window titles like `ssh` / `Default (ssh)` mark an SSH session.
 
 Each event may carry the frontmost app, window title and URL, accessibility target, typed or selected payload, drag origin **and** destination, and an `ax` block.
 
@@ -132,7 +136,7 @@ Rows land in a dedicated schema, not the AI Query History columns.
 | Did the subject enter credentials? | `TargetSubrole = AXSecureTextField` or `app.secureInput`, surfaced as `Activity: Credential Entry` / `Password Prompt`. Proves a password was entered — **not** what it was. |
 | Which files were selected? | `SelectedItems` / `SelectedItemRoles` — Finder row selections. |
 | Where did data move? | `mouse.drag` with `DestAppName` / `DestTargetLabel` / `DestContent`. |
-| What commands were run? | Terminal rows. Emulators expose the whole scrollback as one `AXTextArea`. |
+| What commands were run? | `EventKind = terminal.value_changed` (`Content` = visible buffer) and Terminal `keyboard.*` rows. Emulators also expose scrollback as `AXTextArea` on other kinds. Filter `Activity` for `SSH Session` / `Terminal Buffer`. |
 | What was searched for? | `TargetSubrole = AXSearchField`. After the 48h purge, terms often survive in `summary.profile`. |
 | Background-tab opens? | `KeyChord = command` on `mouse.click` against `AXLink`. |
 | Double-click? | `Activity = Double-Click`; exact multiplicity is in `ClickCount`. |
@@ -143,7 +147,7 @@ Rows land in a dedicated schema, not the AI Query History columns.
 
 These were measured against a live capture, not inferred.
 
-**Raw events purge after ~48 hours. Collect early.** On a stale image the derived summaries are often the only surviving record — and they are model-generated interpretation. The summariser also self-redacts.
+**Raw events are advertised as a ~48 hour rolling window. Collect early anyway.** The purge is performed by the live recorder. A **stopped** recorder can leave the last segments on disk well past 48 hours (measured: 90 buckets from a 36-hour capture still present three days after the last write). On a truly stale image the derived summaries and `~/.codex/memories/` are still the copies that outlive a running purge. Summaries are model-generated interpretation and self-redact.
 
 **A credential row is not a recovered password.** Secure Input Mode blocks the recorder’s event tap. Keystrokes are consumed (event ids advance) but never written. Measured across 5,370 events: zero text-bearing `keyboard.text_input` records under Secure Input. Read the row as *a password was entered here, at this time, into this field, in this app*. `app.secureInput: true` also fires on password prompts with no `AXSecureTextField` subrole. `selection.selectedText` on a secure field is a run of U+2022 bullets — length only, never the value.
 
@@ -169,11 +173,16 @@ A summary file is not one statement:
 
 **Do not read recording scope from `ComputerUseAppApprovals.json`.** That file belongs to the separate Computer Use *agent* feature. On one live host it listed one bundle against 38 actually recorded, with an mtime predating Computer History. Treat recording scope as unknown unless you can evidence it from the account side.
 
+**Computer Use and Computer History are independent.** `[plugins."computer-history@openai-bundled"] enabled = true` can coexist with `[mcp_servers.computer-use] enabled = false`. Shared CUAService container and helper app do not mean the agent was driving the Mac.
+
+**Observation allow/block lists** are managed through Computer History MCP tools (`computer_history_get_settings`). The vendor skill implies a settings document on disk; a live host search did not find a standalone JSON/plist for it. Continue to treat recording scope as **unknown** from disk, not as “account-only so it cannot exist locally.”
+
 ### Attribution — four different UUIDs
 
 | Identifier | Location | What it identifies |
 |------------|----------|--------------------|
 | **Account UUID** | `com.openai.chat.RemoteFeatureFlags.<uuid>.plist` **filename** | The ChatGPT account. Two such files mean two accounts used the host. |
+| **Statsig account cache** | `com.openai.chat.StatsigService.plist` | Email, user id, account UUID, paid-plan flag. **No tokens.** Survives `auth.json` expiry. |
 | **Signed-in identity** | `~/.codex/auth.json` → `id_token` claims | Email, name, plan, org. **Holds live bearer and refresh tokens.** |
 | **`distinct_id`** | `Analytics.db` | The recorder install. Cite this in a vendor request. |
 | **Statsig `stableID`** | `com.openai.sky.CUAService.plist`, `com.openai.chat.plist` | Per-app device pseudonym — several of these are one machine. |

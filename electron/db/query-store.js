@@ -1,3 +1,4 @@
+const { dbg } = require("../logger");
 const { normalizeTimestamp } = require("../utils/forensic-normalize");
 const { AI_HISTORY_TOOLS } = require("../parsers/ai-history/schema");
 
@@ -5,6 +6,24 @@ const { AI_HISTORY_TOOLS } = require("../parsers/ai-history/schema");
 const LARGE_FILE_UNIQUE_SAMPLE_ROWS = 500_000;
 /** Row-count floor before sampling kicks in (below this, full GROUP BY is fine). */
 const LARGE_FILE_UNIQUE_SAMPLE_MIN_ROWS = 250_000;
+/** Bound-parameter IN lists stay under SQLite's variable cap (~32k). */
+const BIND_IN_MAX = 500;
+/** Chunk size for inlined IN lists when the value set is too large to bind. */
+const SQL_IN_CHUNK = 400;
+
+function sqlQuote(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function sqlInPredicate(expr, values) {
+  const chunks = [];
+  for (let i = 0; i < values.length; i += SQL_IN_CHUNK) {
+    const slice = values.slice(i, i + SQL_IN_CHUNK);
+    chunks.push(`${expr} IN (${slice.map(sqlQuote).join(",")})`);
+  }
+  if (chunks.length === 0) return "0";
+  return chunks.length === 1 ? chunks[0] : `(${chunks.join(" OR ")})`;
+}
 const AI_HISTORY_TOOL_LABELS = [...new Set(Object.values(AI_HISTORY_TOOLS).map((t) => t.label))];
 const AI_HISTORY_TOOL_LABEL_SQL = AI_HISTORY_TOOL_LABELS
   .map((v) => `'${String(v).replace(/'/g, "''")}'`)
@@ -24,6 +43,36 @@ function normalizedColumnExpr(meta, colName) {
   return `CASE WHEN TRIM(COALESCE(${safeCol}, '')) = TRIM(COALESCE(${toolCol}, '')) `
     + `AND TRIM(COALESCE(${toolCol}, '')) IN (${AI_HISTORY_TOOL_LABEL_SQL}) `
     + `THEN '' ELSE ${safeCol} END`;
+}
+
+/**
+ * Characters SQLite should treat as blank padding. Bare TRIM() strips spaces only, so a
+ * tab- or newline-only cell would survive as its own value — rendering blank in the grid
+ * and as a second blank-looking row in the filter list. This set mirrors what JS .trim()
+ * removes on the renderer side, so both ends of the filter agree on what "empty" means.
+ */
+const SQL_BLANK_CHARS = "char(32)||char(9)||char(10)||char(13)||char(11)||char(12)||char(160)";
+
+/**
+ * SQL predicate for "this cell reads as empty".
+ *
+ * NULL, the empty string and whitespace-only all render as a blank cell, so the value list
+ * and the filter that consumes it have to agree they are one bucket. When they disagreed,
+ * GROUP BY produced a separate row per representation — the dropdown showed two entries
+ * both labelled "(empty)", and unchecking the one you could see left the other's rows on
+ * screen. Whitespace-only was worse still: it grouped under a label that rendered blank but
+ * was not "(empty)", so it stayed selected and looked like the filter had been ignored.
+ */
+function emptyValuePredicate(expr) {
+  return `TRIM(COALESCE(${expr}, ''), ${SQL_BLANK_CHARS}) = ''`;
+}
+
+/**
+ * The same rule as a value expression: every empty-reading cell collapses to '' so they
+ * group as a single "(empty)" entry that the checkbox filter can actually act on.
+ */
+function emptyBucketedExpr(expr) {
+  return `CASE WHEN ${emptyValuePredicate(expr)} THEN '' ELSE ${expr} END`;
 }
 
 function truncateRowStrings(row, truncateColumns) {
@@ -544,21 +593,37 @@ class QueryStoreMethods {
       const list = this._normalizeCheckboxFilterValues(values);
       if (list.length === 0) continue;
       if (cn === "__vt__") {
-        const ph = values.map(() => "?").join(",");
-        whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag IN (${ph}))`);
-        params.push(...values);
+        if (list.length <= BIND_IN_MAX) {
+          const ph = list.map(() => "?").join(",");
+          whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE tag IN (${ph}))`);
+          params.push(...list);
+        } else {
+          whereConditions.push(`data.rowid IN (SELECT rowid FROM tags WHERE ${sqlInPredicate("tag", list)})`);
+        }
         continue;
       }
       const sc = meta.colMap[cn];
       if (!sc) continue;
       const expr = normalizedColumnExpr(meta, cn);
-      const hasNull = list.some((v) => v === null || v === "");
-      const nonNull = list.filter((v) => v !== null && v !== "");
+      // A selected value that is itself blank means "the (empty) bucket". Match it with the
+      // same rule the value list groups by, so checking (empty) selects every cell that
+      // renders blank — and unchecking it excludes every one of them.
+      const hasNull = list.some((v) => v === null || String(v).trim() === "");
+      const nonNull = list.filter((v) => v !== null && String(v).trim() !== "");
       const parts = [];
-      if (hasNull) parts.push(`(${expr} IS NULL OR ${expr} = '')`);
-      if (nonNull.length === 1) { parts.push(`${expr} = ?`); params.push(nonNull[0]); }
-      else if (nonNull.length > 1) { parts.push(`${expr} IN (${nonNull.map(() => "?").join(",")})`); params.push(...nonNull); }
-      whereConditions.push(parts.length > 1 ? `(${parts.join(" OR ")})` : parts[0]);
+      if (hasNull) parts.push(`(${emptyValuePredicate(expr)})`);
+      if (nonNull.length === 1) {
+        parts.push(`${expr} = ?`);
+        params.push(nonNull[0]);
+      } else if (nonNull.length > 1 && nonNull.length <= BIND_IN_MAX) {
+        parts.push(`${expr} IN (${nonNull.map(() => "?").join(",")})`);
+        params.push(...nonNull);
+      } else if (nonNull.length > BIND_IN_MAX) {
+        // Timestamp columns are nearly unique (100-ns EvtxECmd values). Binding
+        // 200k+ timestamps exceeds SQLITE_MAX_VARIABLE_NUMBER; inline+chunk instead.
+        parts.push(sqlInPredicate(expr, nonNull));
+      }
+      if (parts.length) whereConditions.push(parts.length > 1 ? `(${parts.join(" OR ")})` : parts[0]);
     }
   }
 
@@ -871,18 +936,46 @@ class QueryStoreMethods {
     const meta = this.databases.get(tabId);
     if (!meta) return null;
 
-    const { sortCol = null, sortDir = "asc", visibleHeaders = null } = options;
+    const { sortCol = null, sortDir = "asc", visibleHeaders = null, includeTriage = false } = options;
 
-    const headers = visibleHeaders || meta.headers;
+    const headers = [...(visibleHeaders || meta.headers)];
     const safeCols = [];
     const selectCols = [];
-    for (const h of headers) {
+    for (const h of headers.slice()) {
       const safe = meta.colMap[h];
       if (!safe) continue;
       safeCols.push(safe);
       const expr = normalizedColumnExpr(meta, h);
       selectCols.push(expr === safe ? safe : `${expr} AS ${safe}`);
     }
+
+    // Tags and bookmarks ARE the analyst's work product — the grid shows both as
+    // columns, but they used to vanish on export, so a triaged CSV came out
+    // indistinguishable from an untriaged one. Appended only when the tab
+    // actually carries triage, so untriaged exports keep their exact old shape.
+    if (includeTriage) {
+      let hasTriage = false;
+      try {
+        hasTriage = !!meta.db.prepare(
+          "SELECT (EXISTS(SELECT 1 FROM tags) OR EXISTS(SELECT 1 FROM bookmarks)) AS any"
+        ).get()?.any;
+      } catch { /* tables missing on a partially built tab — skip the columns */ }
+      if (hasTriage) {
+        // group_concat's ORDER BY argument needs SQLite 3.44+; the nested ordered
+        // subquery gives deterministic output on every version.
+        selectCols.push(
+          "(SELECT group_concat(t.tag, '; ') FROM (SELECT tag FROM tags WHERE tags.rowid = data.rowid ORDER BY tag) t) AS _tle_tags"
+        );
+        safeCols.push("_tle_tags");
+        headers.push("Tags");
+        selectCols.push(
+          "(CASE WHEN EXISTS(SELECT 1 FROM bookmarks WHERE bookmarks.rowid = data.rowid) THEN 'Yes' ELSE '' END) AS _tle_bookmarked"
+        );
+        safeCols.push("_tle_bookmarked");
+        headers.push("Bookmarked");
+      }
+    }
+
     const colList = selectCols.join(", ");
 
     const params = [];
@@ -1070,13 +1163,18 @@ class QueryStoreMethods {
     const {
       filterText = "",
       filterRegex = false,
-      limit = 1000,
+      limit,
       checkboxFilters = {},
     } = options;
 
     const db = meta.db;
     const params = [];
     const whereConditions = [];
+    const isTsCol = Boolean(meta.tsColumns && meta.tsColumns.has(colName));
+    // No default cap: TimeCreated is nearly unique and a "top 1000" list hides
+    // the forensic range. Callers that want a bound (find-duplicates) pass one.
+    const hasLimit = Number.isInteger(limit) && limit > 0;
+    const orderBy = isTsCol ? `sort_datetime(val) ASC, val ASC` : `cnt DESC`;
 
     // Exclude self-column from checkbox filters to avoid circular filtering
     const filteredOptions = checkboxFilters[colName]
@@ -1086,6 +1184,9 @@ class QueryStoreMethods {
 
     // Filter values list by search text (supports regex mode)
     const valExpr = normalizedColumnExpr(meta, colName);
+    // Group on the bucketed expression so NULL, '' and whitespace-only collapse into the
+    // one "(empty)" row the checkbox filter can act on. Search still matches the raw value.
+    const groupExpr = emptyBucketedExpr(valExpr);
     if (filterText.trim()) {
       if (filterRegex) {
         whereConditions.push(`${valExpr} REGEXP ?`);
@@ -1106,34 +1207,47 @@ class QueryStoreMethods {
       // Full-table GROUP BY on 6M+ rows can spike RSS and freeze the UI thread pool.
       // Sample the first N rowids (stable, fast) — still honors active filters.
       sql = `SELECT val, COUNT(*) as cnt FROM (
-        SELECT ${valExpr} as val FROM data ${whereClause} ORDER BY rowid LIMIT ${LARGE_FILE_UNIQUE_SAMPLE_ROWS}
-      ) GROUP BY val ORDER BY cnt DESC LIMIT ?`;
-    } else {
+        SELECT ${groupExpr} as val FROM data ${whereClause} ORDER BY rowid LIMIT ${LARGE_FILE_UNIQUE_SAMPLE_ROWS}
+      ) GROUP BY val ORDER BY ${orderBy}`;
+      if (hasLimit) sql += " LIMIT ?";
+    } else if (hasLimit) {
       // Return the size of the complete value set as metadata instead of making
       // the UI imply that the bounded result is exhaustive.
       sql = `
         SELECT val, cnt, COUNT(*) OVER() AS total_distinct
         FROM (
-          SELECT ${valExpr} AS val, COUNT(*) AS cnt
+          SELECT ${groupExpr} AS val, COUNT(*) AS cnt
           FROM data ${whereClause}
-          GROUP BY ${valExpr}
+          GROUP BY ${groupExpr}
         )
-        ORDER BY cnt DESC
+        ORDER BY ${orderBy}
         LIMIT ?
       `;
+    } else {
+      sql = `
+        SELECT ${groupExpr} AS val, COUNT(*) AS cnt
+        FROM data ${whereClause}
+        GROUP BY ${groupExpr}
+        ORDER BY ${orderBy}
+      `;
     }
-    params.push(limit);
+    if (hasLimit) params.push(limit);
 
-    const rows = db.prepare(sql).all(...params);
-    const totalDistinct = useSample
-      ? rows.length
-      : Number(rows[0]?.total_distinct || 0);
-    return {
-      values: rows.map(({ val, cnt }) => ({ val, cnt })),
-      totalDistinct,
-      truncated: useSample || totalDistinct > rows.length,
-      ...(useSample ? { sampled: true } : {}),
-    };
+    try {
+      const rows = db.prepare(sql).all(...params);
+      const totalDistinct = useSample || !hasLimit
+        ? rows.length
+        : Number(rows[0]?.total_distinct || 0);
+      return {
+        values: rows.map(({ val, cnt }) => ({ val, cnt })),
+        totalDistinct,
+        truncated: useSample || (hasLimit && totalDistinct > rows.length),
+        ...(useSample ? { sampled: true } : {}),
+      };
+    } catch (e) {
+      dbg("DB", `getColumnUniqueValues failed`, { tabId, colName, error: e.message });
+      return { values: [], totalDistinct: 0, truncated: false, error: e.message };
+    }
   }
 
   /**

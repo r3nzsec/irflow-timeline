@@ -439,7 +439,9 @@ export default function AiSecretsModal({ th }) {
       if (notify) toast.error("No source rows available to untag");
       return false;
     }
-    for (const id of ids) await tle.removeTag(modal.tabId, id, tag);
+    // One transaction, not one IPC round trip per finding row.
+    if (tle.setTagOnRows) await tle.setTagOnRows(modal.tabId, ids, tag, false);
+    else for (const id of ids) await tle.removeTag(modal.tabId, id, tag);
     const rowTags = { ...(tab?.rowTags || {}) };
     for (const id of ids) {
       const next = (rowTags[id] || []).filter((t) => t !== tag);
@@ -661,7 +663,7 @@ body{background:#fff;color:#1c1917;font-family:-apple-system,BlinkMacSystemFont,
 .sv{font-size:21px;font-weight:700;line-height:1.1}
 .sl{font-size:9px;text-transform:uppercase;letter-spacing:0.05em;color:#6b6560;margin-top:4px}
 .sevbar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:#eee;margin-bottom:20px}
-h2{font-size:13px;font-weight:700;margin:22px 0 8px;padding:6px 10px;background:#f7f5f3;border-left:3px solid #E85D2A;border-radius:5px}
+h2{font-size:13px;font-weight:700;margin:22px 0 8px;padding:6px 10px;background:#f7f5f3;border-radius:5px}
 table{width:100%;border-collapse:collapse;font-size:11px}
 th{text-align:left;padding:6px 9px;background:#f3f0ec;color:#6b6560;font-weight:700;border-bottom:1px solid #e5e0db;font-size:9.5px;text-transform:uppercase;letter-spacing:0.04em}
 td{padding:6px 9px;border-bottom:1px solid #eee;vertical-align:top;word-break:break-word}
@@ -775,7 +777,7 @@ code{font-family:"SF Mono",Menlo,monospace;font-size:10.5px;background:#f4f1ee;p
     return (
       <div key={g.id} style={glass({ overflow: tagMenuOpen ? "visible" : "hidden", position: "relative", zIndex: tagMenuOpen ? 8 : "auto", borderColor: isOpen ? `${c}66` : th.glassBorder })}>
         <button type="button" onClick={() => patch({ expandedGroup: isOpen ? null : g.id })}
-          style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, padding: "11px 14px 11px 12px", background: "none", border: "none", borderLeft: `3px solid ${c}`, cursor: "pointer", textAlign: "left" }}>
+          style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, padding: "11px 14px 11px 12px", background: "none", border: "none", cursor: "pointer", textAlign: "left" }}>
           <span style={{ ...pill(c, true), flexShrink: 0, width: 58, justifyContent: "center" }}>{SEV_LABEL[g.severity]}</span>
           <ProviderBadge {...pm} />
           <span style={{ minWidth: 0, flex: 1 }}>
@@ -869,7 +871,7 @@ code{font-family:"SF Mono",Menlo,monospace;font-size:10.5px;background:#f4f1ee;p
           return (
             <div key={ckey} style={glass({ overflow: "hidden", borderColor: isCollapsed ? th.glassBorder : `${bc}55` })}>
               <button type="button" onClick={() => patch({ collapsedBuckets: { ...collapsedBuckets, [ckey]: !isCollapsed } })}
-                style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, padding: "10px 14px", background: `${bc}0f`, border: "none", borderLeft: `3px solid ${bc}`, cursor: "pointer", textAlign: "left" }}>
+                style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, padding: "10px 14px", background: `${bc}0f`, border: "none", cursor: "pointer", textAlign: "left" }}>
                 {tm ? <ProviderBadge {...tm} size={24} /> : <span style={{ ...pill(bc, true), width: 54, justifyContent: "center" }}>{SEV_LABEL[b.severity]}</span>}
                 <span style={{ minWidth: 0, flex: 1 }}>
                   <span style={{ fontSize: 13, fontWeight: 700, color: th.text, wordBreak: "break-all" }}>{bucketLabel}</span>

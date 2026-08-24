@@ -126,7 +126,8 @@ export default defineConfig({
             { text: 'Sessions', link: '/workflows/sessions' },
             { text: 'Export & Reports', link: '/workflows/export-reports' },
             { text: 'Multi-Tab Analysis', link: '/workflows/multi-tab' },
-            { text: 'Merging Timelines', link: '/workflows/merge-tabs' }
+            { text: 'Merging Timelines', link: '/workflows/merge-tabs' },
+            { text: 'Diff Tabs', link: '/workflows/diff-tabs' }
           ]
         }
       ],

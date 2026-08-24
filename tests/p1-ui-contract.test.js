@@ -39,7 +39,8 @@ test("search UI explains its minimum and exposes one match-mode control", () => 
 
 test("primary navigation and grid controls are keyboard-operable", () => {
   const tabs = read("src/components/TabBar.jsx");
-  const grid = read("src/components/VirtualGrid.jsx");
+  // Grid markup spans two files since the data row moved into the memoized GridRow.jsx.
+  const grid = read("src/components/VirtualGrid.jsx") + "\n" + read("src/components/GridRow.jsx");
   const status = read("src/components/StatusBar.jsx");
   const overlays = read("src/components/InlineModals.jsx");
 
@@ -53,6 +54,28 @@ test("primary navigation and grid controls are keyboard-operable", () => {
   assert.ok(status.includes('aria-label={ct.filePath ? "Copy timeline file path"'));
   assert.match(overlays, /role="dialog" aria-modal="true"/);
   assert.match(overlays, /trapFocus/);
+});
+
+test("histogram and grid treat FILETIME epoch as an unset timestamp, not a real date", () => {
+  const grid = read("src/components/VirtualGrid.jsx");
+  const dt = read("src/utils/datetime.js");
+  const app = read("src/App.jsx");
+  assert.match(dt, /UNSET_TIMESTAMP_LABEL = "Unset"/);
+  assert.match(grid, /omittedUnset/);
+  assert.match(grid, /unset FILETIME \(1601-01-01\)/);
+  assert.match(app, /Unset timestamp/);
+  assert.match(app, /isUnsetWindowsTimestamp/);
+});
+
+test("column value filter is not hard-capped at a Top 1000 list", () => {
+  const app = read("src/App.jsx");
+  const store = read("electron/db/query-store.js");
+  assert.doesNotMatch(app, /Top \$\{formatNumber\(fdValues\.length\)\} of/);
+  assert.doesNotMatch(app, /search for more/);
+  assert.match(store, /No default cap/);
+  assert.match(store, /hasLimit = Number.isInteger\(limit\) && limit > 0/);
+  assert.match(store, /BIND_IN_MAX/);
+  assert.match(app, /FD_ROW_H/);
 });
 
 test("core theme text tokens meet WCAG AA contrast", () => {

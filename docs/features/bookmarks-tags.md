@@ -22,7 +22,7 @@ Bookmarks let you flag individual rows as important for later review and reporti
 
 ### Bulk Bookmarking
 
-- Open **Actions → Bulk Tag / Bookmark** to bookmark or tag rows by time range
+- Select rows, then click **Tag / bookmark** in the selection bar — or open **Actions → Bulk Tag / Bookmark** and choose a scope (see [Bulk Actions](#bulk-actions))
 - Or `Cmd+Click` a row and use the bookmark option in the context menu
 
 ### Viewing Bookmarks
@@ -48,7 +48,15 @@ Tags are free-form labels you attach to rows for categorization. Each row can ha
 
 ### Multi-Row Tagging
 
-Select multiple rows using checkboxes, then right-click to apply a tag to all selected rows at once. The context menu shows the count (e.g., "Tags (4 rows)") to confirm how many rows will be affected.
+Select multiple rows using checkboxes, then open the context menu on any row **inside** that selection. The **Tags ▸** item shows the count it will affect (e.g. "Tags (4 rows)").
+
+The row you clicked is the anchor. Its ● / ○ state decides the direction, and that one direction is applied to every selected row — so clicking a tag marked ○ applies it everywhere, and clicking one marked ● removes it everywhere. Rows that already matched are left as they are rather than being flipped.
+
+This works with the header **select-all** checkbox too: the whole filtered population is tagged in SQL, honouring any rows you deselected. Opening the menu on a row *outside* the selection targets just that row.
+
+### Keyboard Tagging
+
+`Cmd+Shift+1` through `Cmd+Shift+9` apply the first nine palette tags to the current selection, using the same scope rules as the context menu. Faster than the two-level menu when you are working through a long list.
 
 ### Tag Presets
 
@@ -69,19 +77,27 @@ You can also create custom tags — just type any name. IOC Matching automatical
 
 ### Bulk Actions
 
-Open **Actions → Bulk Tag / Bookmark** for bulk operations on filtered rows:
+Open **Actions → Bulk Tag / Bookmark**, or click **Tag / bookmark** in the selection bar. Both open the same dialog.
+
+**Choose the scope first.** The dialog leads with three options, each showing its true row count:
+
+| Scope | Writes to |
+|-------|-----------|
+| **Selected rows** | Only the rows you selected (the default whenever a selection exists) |
+| **Filtered view** | Every row matching the current filters |
+| **Entire tab** | Every row in the file |
+
+Counts are resolved in SQLite against the exact query the write will use, so the number shown is the number affected. If nothing narrows the scope — no selection and no active filter — the dialog warns you and asks for confirmation before writing to the whole tab.
 
 **Bulk Tagging:**
 
-1. Enter a tag name (with autocomplete from existing tags)
+1. Enter a tag name, or click one of the existing-tag chips (each shows how many rows already carry it)
 2. Pick a tag color
-3. Click **Apply Tag** to tag all rows matching the current filter
-4. Shows "Applies to N filtered rows" count and confirmation ("Tagged N rows as X")
+3. Click **Apply** to add the tag, or **Remove** to take it off the rows in scope
 
 **Bulk Bookmarking:**
 
-1. Click **Bookmark All** to bookmark all filtered rows, or **Remove Bookmarks** to clear bookmarks from filtered rows
-2. Shows result count confirmation
+Click **★ Bookmark** or **☆ Remove bookmarks**. Removing is always allowed; adding to an unscoped view asks for confirmation first.
 
 **By Time Range:**
 
@@ -104,12 +120,25 @@ Several analysis tools automatically create bulk tags:
 
 ### Removing Tags
 
-- `Cmd+Click` a tagged row and select **Remove Tag**
-- Choose which tag to remove (if multiple)
+- Open the row context menu, hover **Tags ▸**, and click any tag showing ● to remove it
+- The submenu lists tags the row actually carries even if they are not in your palette — auto-tags such as `IOC: …`, `VT: …` and Sigma rule tags can be removed the same way
+- To take a tag off many rows at once, use **Remove** in Bulk Tag / Bookmark, or delete the tag outright in Manage Tags
+
+### Managing Tags
+
+**Tags → Manage Tags**, or **Manage Tags…** at the bottom of the Tags submenu. The list is read live from the database, so it shows every tag in the tab — including ones created by analysis tools — with the number of rows carrying each.
+
+- **Row count** — click it to filter the grid to those rows. Tags you have defined but never applied show as *unused*
+- **Rename** — renaming onto an existing tag merges the two; rows carrying both collapse to one
+- **Delete (✕)** — removes the tag from every row that carries it, after telling you how many. A tag filter pointing at the deleted tag is cleared so the grid does not go blank
+- **Merge look-alikes** — when tags differ only by capitalisation or spacing ("Suspicious" / "suspicious" / "Suspicious "), a banner offers to collapse each group into its most-used spelling
+- **Color** — the swatch sets the chip color used in the grid and in HTML reports
+
+Creating a tag here only defines it. No rows are tagged until you apply it from the row menu or Bulk Tag / Bookmark.
 
 ### Tag Colors
 
-Each unique tag is assigned a color from the palette. Colors are consistent within a session and persist when saving/loading sessions.
+New tags are assigned a color from the palette; change any of them from the swatch in [Manage Tags](#managing-tags). Colors are consistent within a session and persist when saving/loading sessions.
 
 ### Tags Column Features
 
@@ -128,6 +157,15 @@ The Tags column behaves as a full grid column with:
 - Use the dropdown checkbox filter to select one or more specific tags
 - Click a tag chip in a row to filter to rows with that tag
 - Combine tag filters with other filter types
+
+### In Exports
+
+CSV, TSV and XLSX exports of the filtered view append two columns when the tab carries any annotation:
+
+- **Tags** — every tag on the row, semicolon-separated and alphabetically ordered
+- **Bookmarked** — `Yes` for bookmarked rows, empty otherwise
+
+Untriaged tabs export exactly as before, with no extra columns.
 
 ### In Reports
 

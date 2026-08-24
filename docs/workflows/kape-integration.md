@@ -101,6 +101,7 @@ IRFlow walks Windows, Linux, and macOS profile layouts and merges discovered AI 
 
 - [Color Rules](/features/color-rules) — KAPE profiles auto-apply color rule presets per tool
 - [Merging Timelines](/workflows/merge-tabs) — merge multiple KAPE tool outputs into a unified timeline
+- [Diff Tabs](/workflows/diff-tabs) — compare two collections or two runs of the same KAPE module
 - [Virtual Grid](/features/virtual-grid) — auto-configured column layouts for each KAPE profile
 - [KAPE Profiles Reference](/reference/kape-profiles) — full list of supported profiles and column mappings
 - [AI Artifacts](/features/ai-artifacts) — collect and review local AI assistant history from KAPE folders

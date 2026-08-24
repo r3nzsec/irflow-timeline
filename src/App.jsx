@@ -1,16 +1,18 @@
 import { lazy, Suspense, useState, useEffect, useRef, useCallback, useMemo, Fragment } from "react";
 import { createPortal } from "react-dom";
 // ── Extracted constants ──────────────────────────────────────────
-import { ROW_HEIGHT, HEADER_HEIGHT, FILTER_HEIGHT, OVERSCAN, VIRTUAL_WINDOW, VIRTUAL_AHEAD, QUERY_DEBOUNCE, DETAIL_PANEL_HEIGHT_DEFAULT, DETAIL_PANEL_MIN_HEIGHT, DETAIL_PANEL_MAX_HEIGHT, TAG_COL_WIDTH_DEFAULT, TAG_COL_WIDTH_MIN, BKMK_COL_WIDTH, CHECKBOX_COL_WIDTH, VT_COL_WIDTH, EVIDENCE_COL_WIDTH, VT_COMPATIBLE_RE, MAX_PHYSICAL_H } from "./constants/grid.js";
+import { ROW_HEIGHT, HEADER_HEIGHT, FILTER_HEIGHT, OVERSCAN, VIRTUAL_WINDOW, VIRTUAL_AHEAD, QUERY_DEBOUNCE, DETAIL_PANEL_HEIGHT_DEFAULT, DETAIL_PANEL_MIN_HEIGHT, DETAIL_PANEL_MAX_HEIGHT, TAG_COL_WIDTH_DEFAULT, TAG_COL_WIDTH_MIN, BKMK_COL_WIDTH, CHECKBOX_COL_WIDTH, VT_COL_WIDTH, EVIDENCE_COL_WIDTH, VT_COMPATIBLE_RE, MAX_PHYSICAL_H, SKELETON_ARM_DELAY } from "./constants/grid.js";
 import { THEMES } from "./constants/themes.js";
 import { DT_FORMATS, TIMEZONES } from "./constants/datetime.js";
 import { TAG_PRESETS } from "./constants/presets.js";
 
 // ── Extracted utilities ──────────────────────────────────────────
 import { formatBytes, formatNumber } from "./utils/format.js";
-import { formatDateTime } from "./utils/datetime.js";
+import { formatDateTime, UNSET_TIMESTAMP_LABEL, UNSET_TIMESTAMP_TITLE } from "./utils/datetime.js";
+import { isUnsetWindowsTimestamp } from "./utils/forensic-normalize.js";
 import { isIpcCancelled, isIpcError, ipcErrorMessage } from "./utils/ipc-result";
 import { compileColorRules, applyColors, buildTimelineColorRules } from "./utils/color-rules.js";
+import { buildDiffColorRules, DIFF_COLUMN_ORDER } from "./utils/diff-tabs.js";
 import { detectKapeProfile, isChainsawDataset, isChainsawProcessDataset, isChainsawLogonDataset } from "./utils/dataset-detect.js";
 import {
   checkboxFilterActive,
@@ -22,19 +24,21 @@ import {
 } from "./utils/ai-history-profile.js";
 import { handleOpenFileDialogResult } from "./utils/open-file-result.js";
 import { IOC_CATEGORY_PATTERNS } from "./utils/ioc-parsing.js";
-import { getGridBodyViewportHeight, getGridContentWidth, getRowScrollTarget, getVisibleRowRange } from "./utils/grid-layout.js";
+import { getColumnGeometry, getColumnWindow, getGridBodyViewportHeight, getGridContentWidth, getRowScrollTarget, getVisibleRowRange, getWindowSlice, planWindowFetch, rowWindowCovers } from "./utils/grid-layout.js";
 import { getSelectedRowCount, isRowSelected, selectRowIds, toggleRowSelection } from "./utils/row-selection.js";
 import { effectiveSearchTerm, isSearchTooShort } from "./utils/search.js";
 
 // ── Extracted components ─────────────────────────────────────────
 import { BkmkIcon, CheckboxIcon } from "./components/icons.jsx";
 import TabBar from "./components/TabBar.jsx";
+import DiffBanner from "./components/DiffBanner.jsx";
 import FilterBar, { SearchOptionsBar } from "./components/FilterBar.jsx";
 import StatusBar from "./components/StatusBar.jsx";
 import SelectionBar from "./components/SelectionBar.jsx";
 import { Overlay, ColorModal, ColModal, ShortModal, SheetModal, ImportProgress, makeModalStyles } from "./components/InlineModals.jsx";
 import { ConfirmDialog, ToastContainer, Loading } from "./components/primitives/index.js";
 import useToastStore, { toast } from "./store/useToastStore.js";
+import { confirm } from "./store/useConfirmStore.js";
 import { ProcessAnalyzerRoot } from "./components/process-analyzer/index.js";
 import {
   openColumnStatsModal,
@@ -46,6 +50,7 @@ import {
   openStackingModal,
   openAiWorkspaceCorrelateModal,
   openAiHistoryProfileScanModal,
+  openDiffExplorerModal,
   updateModal,
 } from "./modals/modalRegistry.js";
 import { HOME_CAPABILITY_LAUNCHERS, buildLateralMovementCols } from "./utils/analyzer-launch.js";
@@ -81,6 +86,7 @@ const ColumnStatsModal = lazy(() => import("./components/modals/ColumnStatsModal
 const PresetsModal = lazy(() => import("./components/modals/PresetsModal.jsx"));
 const EditFilterModal = lazy(() => import("./components/modals/EditFilterModal.jsx"));
 const BulkActionsModal = lazy(() => import("./components/modals/BulkActionsModal.jsx"));
+const TagManagerModal = lazy(() => import("./components/modals/TagManagerModal.jsx"));
 const QuickHelpModal = lazy(() => import("./components/modals/QuickHelpModal.jsx"));
 const SigmaRuleModal = lazy(() => import("./components/modals/SigmaRuleModal.jsx"));
 const RdpBitmapCacheModal = lazy(() => import("./components/modals/RdpBitmapCacheModal.jsx"));
@@ -89,6 +95,8 @@ const AiHistoryExtractModal = lazy(() => import("./components/modals/AiHistoryEx
 const AiWorkspaceCorrelateModal = lazy(() => import("./components/modals/AiWorkspaceCorrelateModal.jsx"));
 const AiHistoryScopeModal = lazy(() => import("./components/modals/AiHistoryScopeModal.jsx"));
 const AiSecretsModal = lazy(() => import("./components/modals/AiSecretsModal.jsx"));
+const DiffTabsModal = lazy(() => import("./components/modals/DiffTabsModal.jsx"));
+const DiffExplorerModal = lazy(() => import("./components/modals/DiffExplorerModal.jsx"));
 
 function ModalChunkFallback({ th }) {
   return (
@@ -159,11 +167,11 @@ function fetchAheadForLimit(limit) {
   return Math.max(100, Math.min(VIRTUAL_AHEAD, Math.floor((limit || VIRTUAL_WINDOW) / 3)));
 }
 
-function rowWindowCovers(rowOffset, rowCount, firstVisibleRow, visibleRowCount) {
-  const start = rowOffset || 0;
-  const end = start + (rowCount || 0);
-  return firstVisibleRow >= start && firstVisibleRow + visibleRowCount <= end;
-}
+// Highlight mark styles. Module scope so `renderCell` can be a stable useCallback —
+// rebuilding these per render would give every <mark> a new style object and defeat the
+// memo on GridRow.
+const HL_STYLE = { background: "rgba(210,153,34,0.5)", color: "inherit", borderRadius: 2, padding: "0 1px" };
+const IOC_STYLE = { background: "rgba(240,136,62,0.45)", color: "inherit", borderRadius: 2, padding: "0 1px", fontWeight: 600 };
 
 // ── Main App ───────────────────────────────────────────────────────
 export default function App() {
@@ -183,6 +191,7 @@ export default function App() {
   const modal = useUIStore((s) => s.modal);
   const setModal = useUIStore((s) => s.setModal);
   const setRefreshCallback = useUIStore((s) => s.setRefreshCallback);
+  const setInvalidateRowMeta = useUIStore((s) => s.setInvalidateRowMeta);
   const dragOver = useUIStore((s) => s.dragOver);
   const setDragOver = useUIStore((s) => s.setDragOver);
   const themeName = useUIStore((s) => s.themeName);
@@ -309,6 +318,15 @@ export default function App() {
   const histogramCache = useRef({}); // { [tabId]: { sig, data } }
   const histDeferUntilRef = useRef({}); // tabId -> epoch ms — defer histogram after large import
   const searchCache = useRef({}); // { [tabId]: { [sig]: { rows, rowOffset, totalFiltered, bookmarkedSet, rowTags } } }
+  // Cached windows carry a SNAPSHOT of bookmarkedSet/rowTags taken at query time.
+  // Tag and bookmark writes therefore have to drop the tab's cached windows —
+  // otherwise the next cache hit (an FL/HL toggle, a filter flip and back, a tab
+  // switch) restores the pre-tag snapshot and the tag visibly "un-applies" even
+  // though SQLite has it. This was one of the ways tagging looked unreliable.
+  const invalidateRowMetaCache = useCallback((tabId) => {
+    if (tabId == null) return;
+    delete searchCache.current[tabId];
+  }, []);
   const histResizeStartY = useRef(0);
   const histResizeStartH = useRef(0);
   const histBrushRef = useRef({ startIdx: null, endIdx: null, active: false });
@@ -330,22 +348,59 @@ export default function App() {
   const [fdSelected, setFdSelected] = useState(new Set());
   const [fdRegex, setFdRegex] = useState(false);
   const [fdValueMeta, setFdValueMeta] = useState({ totalDistinct: 0, truncated: false });
+  const fdListRef = useRef(null);
+  const [fdScrollTop, setFdScrollTop] = useState(0);
+  const [fdListH, setFdListH] = useState(280);
+  const FD_ROW_H = 22;
 
   const scrollRef = useRef(null);
   const scrollTopRef = useRef(0);
+  const scrollLeftRef = useRef(0);
   const [scrollTop, setScrollTop] = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
   const [viewportH, setViewportH] = useState(typeof window !== "undefined" ? window.innerHeight : 800);
+  // Measured width of the scroll container, for the column window. Read from a
+  // ResizeObserver rather than during render so it is correct on first paint — before
+  // it lands, getColumnWindow renders every column instead of guessing.
+  const [gridViewportW, setGridViewportW] = useState(0);
   const rafScroll = useRef(null);
   // Mirrors the per-render scroll mapping (physical<->logical) so callbacks/effects
   // outside the render block can read the current scaleFactor without stale closures.
   const scrollMapRef = useRef({ scaleFactor: 1, logicalScrollTop: 0, pageOffset: 0, physicalH: 0, totalH: 0 });
+  // The scrollTop the tree is currently rendered at. Mirrors state rather than leading it,
+  // so a missed sync only ever costs an extra render — never a skipped one.
+  const renderedScrollTop = useRef(0);
+  useEffect(() => { renderedScrollTop.current = scrollTop; }, [scrollTop]);
+  // Mirrors the column window the tree is rendered at, plus the geometry needed to
+  // recompute it off-render. Same discipline as renderedScrollTop: it follows state, so
+  // a stale read costs an extra render rather than a missed one.
+  const colWindowRef = useRef({ start: 0, end: 0, geom: { offsets: [], totalWidth: 0 }, viewportWidth: 0, frozenWidth: 0 });
   const handleScroll = useCallback((e) => {
     if (rafScroll.current) return;
-    const top = e.target.scrollTop;
-    scrollTopRef.current = top;
+    scrollTopRef.current = e.target.scrollTop;
+    scrollLeftRef.current = e.target.scrollLeft;
     rafScroll.current = requestAnimationFrame(() => {
       rafScroll.current = null;
-      setScrollTop(scrollTopRef.current);
+      const nextTop = scrollTopRef.current;
+      const nextLeft = scrollLeftRef.current;
+      // Below the physical-height cap the browser does the scrolling and rows sit at fixed
+      // absolute offsets, so nothing in the tree changes until the first visible row index
+      // does. Re-rendering App + the grid for sub-row deltas burned frames without moving a
+      // pixel — most visibly on the long tail of small deltas at the end of a trackpad
+      // fling. Above the cap pageOffset shifts with every pixel, so keep updating per frame.
+      const rowUnchanged = scrollMapRef.current.scaleFactor === 1
+        && Math.floor(nextTop / ROW_HEIGHT) === Math.floor(renderedScrollTop.current / ROW_HEIGHT);
+      // Horizontally the same logic applies per column rather than per pixel: only a
+      // change of window puts different cells on screen.
+      const cw = colWindowRef.current;
+      const nextCol = getColumnWindow({
+        offsets: cw.geom.offsets, totalWidth: cw.geom.totalWidth,
+        scrollLeft: nextLeft, viewportWidth: cw.viewportWidth, frozenWidth: cw.frozenWidth,
+      });
+      const colUnchanged = nextCol.start === cw.start && nextCol.end === cw.end;
+      if (rowUnchanged && colUnchanged) return;
+      setScrollTop(nextTop);
+      setScrollLeft(nextLeft);
     });
   }, []);
 
@@ -377,6 +432,8 @@ export default function App() {
     hasEvidencePills: false,
   });
   const rightClickFired = useRef(false);
+  // Assigned every render, just above lastClickedRowData — see the comment there.
+  const rowActionsRef = useRef({});
   const pendingModifiedRightClick = useRef(null);
   const [pendingRestores, setPendingRestores] = useState({});
   // Auto-restore: null = not yet checked; false = no autosave found; object = autosave available
@@ -462,6 +519,8 @@ export default function App() {
 
   // tabId -> source filePath, captured at import-start so a failed import can offer one-click retry.
   const importPathsRef = useRef({});
+  const themeNameRef = useRef(themeName);
+  themeNameRef.current = themeName;
 
   const ct = tabs.find((t) => t.id === activeTab);
   ctRef.current = ct;
@@ -812,15 +871,19 @@ export default function App() {
 
   // Expose fetchData to extracted modals via the UI store
   useEffect(() => { setRefreshCallback(fetchData); }, [fetchData, setRefreshCallback]);
+  useEffect(() => { setInvalidateRowMeta(invalidateRowMetaCache); }, [invalidateRowMetaCache, setInvalidateRowMeta]);
 
   const debouncedFetch = useCallback((tab) => {
     if (queryTimer.current) clearTimeout(queryTimer.current);
     queryTimer.current = setTimeout(() => fetchData(tab), QUERY_DEBOUNCE);
   }, [fetchData]);
 
-  // Cleanup debounce timer on unmount to prevent stale callbacks
+  // Cleanup debounce timers on unmount to prevent stale callbacks. The scroll-window timer
+  // belongs here too: it fires fetchData against a captured tab, so an unmount inside its
+  // 50ms window left a query running with nowhere to deliver.
   useEffect(() => () => {
     if (queryTimer.current) clearTimeout(queryTimer.current);
+    if (scrollFetchTimer.current) clearTimeout(scrollFetchTimer.current);
     if (rafScroll.current) cancelAnimationFrame(rafScroll.current);
   }, []);
 
@@ -855,6 +918,23 @@ export default function App() {
     // in-tab change, not a tab switch (TabBar restores per-tab scroll on switch).
     const sameTab = lastFilterTabId.current === ct.id;
     lastFilterTabId.current = ct.id;
+    // Tab switch: this effect's signatures changed only because `ct` now points at a
+    // different tab, not because that tab's query changed. Refetching at centerRow=0 here
+    // discarded the window the tab already held and reset rowOffset to 0 while TabBar
+    // restored the scroll deep into the dataset — so `visible` was empty for a full IPC
+    // round-trip and the grid flashed skeletons on every reopen of a scrolled tab. Reuse
+    // the loaded window when it still covers the restored viewport; otherwise fetch
+    // centered on where the user actually is, not on row 0.
+    if (!sameTab && !isGrouped) {
+      prevDebouncedDeps.current = debouncedDeps;
+      const scrollRow = Math.floor((scrollMapRef.current.logicalScrollTop || 0) / ROW_HEIGHT);
+      const visibleRows = Math.max(60, Math.ceil((scrollRef.current?.clientHeight || 0) / ROW_HEIGHT) + OVERSCAN);
+      if (rowWindowCovers(ct.rowOffset || 0, ct.rows?.length || 0, scrollRow, visibleRows)) return;
+      if (queryTimer.current) clearTimeout(queryTimer.current);
+      setSearchLoading(true);
+      fetchData(ct, scrollRow);
+      return;
+    }
     if (prevDebouncedDeps.current !== debouncedDeps) {
       prevDebouncedDeps.current = debouncedDeps;
       setSearchLoading(true);
@@ -920,23 +1000,37 @@ export default function App() {
     return () => ro.disconnect();
   }, [histogramVisible]);
 
+  // Measure the scroll container so the column window knows how much is on screen.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = entry.contentRect.width;
+        if (w > 0) setGridViewportW(w);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ct?.dataReady, ct?.id]);
+
   // ── Scroll-driven window fetch (server-side virtual scrolling) ──
   const scrollFetchTimer = useRef(null);
   useEffect(() => {
     if (!ct || !ct.dataReady || isGrouped) return;
     const scrollRow = Math.floor(scrollMapRef.current.logicalScrollTop / ROW_HEIGHT);
-    const rowOffset = ct.rowOffset || 0;
     const loadedRows = ct.rows?.length || 0;
-    const windowEnd = rowOffset + loadedRows;
-    const visibleRows = Math.max(60, Math.ceil((scrollRef.current?.clientHeight || 0) / ROW_HEIGHT) + OVERSCAN);
     const fetchLimit = fetchLimitForTab(ct);
-    const ahead = fetchAheadForLimit(Math.max(loadedRows, fetchLimit));
-    const cacheCoversViewport = rowWindowCovers(rowOffset, loadedRows, scrollRow, visibleRows);
-    const fullZeroBasedCache = rowOffset === 0 && loadedRows >= (ct.totalFiltered || 0);
-    const needsFetch = !cacheCoversViewport
-      || scrollRow < rowOffset + ahead
-      || scrollRow + visibleRows > windowEnd - ahead;
-    if (!needsFetch || fullZeroBasedCache) return;
+    const { needsFetch } = planWindowFetch({
+      scrollRow,
+      rowOffset: ct.rowOffset || 0,
+      loadedRows,
+      totalFiltered: ct.totalFiltered || 0,
+      visibleRows: Math.max(60, Math.ceil((scrollRef.current?.clientHeight || 0) / ROW_HEIGHT) + OVERSCAN),
+      fetchLimit,
+      ahead: fetchAheadForLimit(Math.max(loadedRows, fetchLimit)),
+    });
+    if (!needsFetch) return;
     if (scrollFetchTimer.current) clearTimeout(scrollFetchTimer.current);
     scrollFetchTimer.current = setTimeout(() => fetchData(ct, scrollRow), 50);
   }, [scrollTop, ct?.rowOffset, ct?.rows?.length, ct?.totalFiltered, isGrouped]);
@@ -1129,7 +1223,7 @@ export default function App() {
         },
       }));
     });
-    listen(tle.onImportComplete, ({ tabId, fileName, headers, rowCount, tsColumns, numericColumns, initialRows, totalFiltered, emptyColumns, sourceFormat, evtxMessageMode, messagesDeferred, resolveStats, bookmarkedRowIds, rowTags, tagColors, importWarning, importNotice, isLargeFile, initialRowsDeferred }) => {
+    listen(tle.onImportComplete, ({ tabId, fileName, headers, rowCount, tsColumns, numericColumns, initialRows, totalFiltered, emptyColumns, sourceFormat, evtxMessageMode, messagesDeferred, resolveStats, bookmarkedRowIds, rowTags, tagColors, importWarning, importNotice, isLargeFile, initialRowsDeferred, diffMeta }) => {
       delete importPathsRef.current[tabId];
       if (importWarning) {
         const warnTitle = isAiHistorySourceFormat(sourceFormat) ? "AI history import"
@@ -1160,8 +1254,32 @@ export default function App() {
           messagesDeferred: !!messagesDeferred,
           aiSecretTriage: saved?.aiSecretTriage || {},
           aiSecretSalt: saved?.aiSecretSalt || "",
-          usnResolveStats: sourceFormat === "raw-usnjrnl" ? (resolveStats || null) : null };
+          usnResolveStats: sourceFormat === "raw-usnjrnl" ? (resolveStats || null) : null,
+          diffMeta: diffMeta || saved?.diffMeta || t.diffMeta || null };
         if (!saved) {
+          const isDiffResult = sourceFormat === "tab-diff"
+            || ((headers || []).includes("_Diff") && (headers || []).includes("_Baseline") && (headers || []).includes("_Compare"));
+          if (isDiffResult) {
+            const autoHidden = new Set(emptyColumns || []);
+            if ((headers || []).includes("_DiffDetail")) autoHidden.add("_DiffDetail");
+            const order = DIFF_COLUMN_ORDER.filter((h) => headers.includes(h));
+            const rest = headers.filter((h) => !order.includes(h));
+            const includeUnchanged = !!diffMeta?.includeUnchanged;
+            const thNow = THEMES[themeNameRef.current] || THEMES.dark;
+            return {
+              ...base,
+              _detectedProfile: "Tab Diff",
+              hiddenColumns: autoHidden,
+              columnOrder: [...order, ...rest],
+              pinnedColumns: headers.includes("_Diff") ? ["_Diff"] : [],
+              colorRules: buildDiffColorRules(thNow),
+              checkboxFilters: includeUnchanged ? { _Diff: ["Added", "Removed", "Changed"] } : {},
+              sortCol: headers.includes("datetime") ? "datetime" : (headers.includes("_Diff") ? "_Diff" : null),
+              sortDir: "asc",
+              sourceFormat: sourceFormat || "tab-diff",
+              diffMeta: diffMeta || t.diffMeta || null,
+            };
+          }
           // Auto-detect KAPE / AI history profiles (including ai-history-* imports)
           const kp = detectKapeProfile(headers);
           const autoHidden = kp?.showAllColumns
@@ -1212,9 +1330,20 @@ export default function App() {
           vtEnrichment: saved.vtEnrichment || null,
           aiSecretTriage: saved.aiSecretTriage || {},
           aiSecretSalt: saved.aiSecretSalt || "",
+          sourceFormat: saved.sourceFormat || sourceFormat || null,
+          diffMeta: saved.diffMeta || diffMeta || null,
         };
       }));
       applyTabImport(cw);
+      if (sourceFormat === "tab-diff" && diffMeta) {
+        const s = diffMeta.stats || {};
+        const omitted = !diffMeta.includeUnchanged && (s.unchanged || 0) > 0;
+        toast.success("Diff ready", {
+          detail: `${s.added || 0} added · ${s.removed || 0} removed · ${s.changed || 0} changed${omitted ? ` · ${s.unchanged} unchanged omitted` : ""}`,
+          ttl: 10000,
+        });
+        setModal(openDiffExplorerModal({ tabId }));
+      }
       if (initialRowsDeferred || (isAiHistorySourceFormat(sourceFormat) && rowCount > 0 && (!initialRows || initialRows.length === 0))) {
         const deferLimit = fetchLimitForTab({ sourceFormat });
         tle.queryRows(tabId, {
@@ -1765,13 +1894,23 @@ export default function App() {
     autoFitColumn(col);
   };
 
-  const handleBookmark = async (rowId) => {
+  const handleBookmark = useCallback(async (rowId) => {
+    const { ct, tle } = rowActionsRef.current;
     if (!tle || !ct) return;
     const isNowBookmarked = await tle.toggleBookmark(ct.id, rowId);
+    // safeHandle RESOLVES with {__ipcError} rather than rejecting, and the store
+    // returns null when the tab is gone. Treating either as "false" silently
+    // un-stars a row whose DB state never changed.
+    if (isIpcError(isNowBookmarked)) {
+      toast.error("Bookmark failed", { detail: ipcErrorMessage(isNowBookmarked) });
+      return;
+    }
+    if (typeof isNowBookmarked !== "boolean") return;
     const newSet = new Set(ct.bookmarkedSet);
     isNowBookmarked ? newSet.add(rowId) : newSet.delete(rowId);
+    invalidateRowMetaCache(ct.id);
     up("bookmarkedSet", newSet);
-  };
+  }, [invalidateRowMetaCache, up]);
 
   const handleExport = async () => {
     if (!tle || !ct) return;
@@ -1786,6 +1925,9 @@ export default function App() {
       tagFilter: (ct.disabledFilters || new Set()).has("__tags__") ? null : (ct.tagFilter || null),
       rowIdFilter: ct.rowIdFilter || null,
       dateRangeFilters: ct.dateRangeFilters || {}, advancedFilters: ct.advancedFilters || [],
+      // Carry the triage layer out with the data. The grid renders bookmark and
+      // tag columns, so an export that drops them loses the analyst's work.
+      includeTriage: true,
     });
   };
 
@@ -1861,6 +2003,8 @@ export default function App() {
         vtEnrichment: tab.vtEnrichment || null,
         aiSecretTriage: tab.aiSecretTriage || {},
         aiSecretSalt: tab.aiSecretSalt || "",
+        sourceFormat: tab.sourceFormat || null,
+        diffMeta: tab.diffMeta || null,
       });
     }
     return { version: 1, savedAt: new Date().toISOString(), activeTabIndex: tabs.findIndex((t) => t.id === activeTab), tabs: sessionTabs };
@@ -2076,6 +2220,14 @@ export default function App() {
     return Number.isInteger(rowId) && rowId > 0 ? rowId : null;
   }, [getDataRowAt]);
 
+  // Latest-value mirror for the row interaction handlers below. Those handlers are handed
+  // to every rendered row through one memoized context object; if they took their inputs
+  // as useCallback deps, clicking a row (which moves lastClickedRow and selectedRows)
+  // would give the context a new identity and re-render all ~80 rows — exactly the work
+  // GridRow's memo exists to avoid. Reading through this ref keeps them [] -stable, so a
+  // selection change re-renders only the rows whose own `sel` prop actually flipped.
+  rowActionsRef.current = { ct, isGrouped, tle, getRowIdAt, lastClickedRow, allRowsSelected, currentFilterOptions };
+
   const lastClickedRowData = useMemo(
     () => lastClickedRow === null ? null : getDataRowAt(lastClickedRow),
     [lastClickedRow, getDataRowAt],
@@ -2088,7 +2240,8 @@ export default function App() {
     : null;
   const selectedRowData = selectedRow === null ? null : lastClickedRowData;
 
-  const handleRowClick = async (ai, e) => {
+  const handleRowClick = useCallback(async (ai, e) => {
+    const { ct, isGrouped, tle, getRowIdAt, lastClickedRow, allRowsSelected, currentFilterOptions } = rowActionsRef.current;
     // Skip if this click was a Cmd+Click / Ctrl+Click that triggered the context menu
     if (rightClickFired.current) return;
     const rowId = getRowIdAt(ai);
@@ -2140,15 +2293,16 @@ export default function App() {
       setLastClickedRow(ai);
     }
     setDetailPanelOpen(true);
-  };
+  }, [setSelectionTabId, setSelectedRows, setLastClickedRow, setAllRowsSelected, setSelectAllScopeSignature, setDetailPanelOpen]);
 
-  const handleCheckboxToggle = (ai) => {
+  const handleCheckboxToggle = useCallback((ai) => {
+    const { ct, getRowIdAt, allRowsSelected } = rowActionsRef.current;
     const rowId = getRowIdAt(ai);
     if (rowId === null) return;
     setSelectionTabId(ct.id);
     setSelectedRows((prev) => toggleRowSelection(prev, allRowsSelected, rowId));
     setLastClickedRow(ai);
-  };
+  }, [setSelectionTabId, setSelectedRows, setLastClickedRow]);
 
   const handleGroupSelectAll = (groupHeaderAi) => {
     if (!displayRows) return;
@@ -2228,6 +2382,110 @@ export default function App() {
     }
     return { rowIdFilter: [...selectedRows] };
   }, [selectionCount, currentFilterOptions, allRowsSelected, selectedRows]);
+
+  // ── Tagging ────────────────────────────────────────────────────
+  // What a tag click in the row context menu targets, resolved in one place.
+  // `anchorRowId` is the right-clicked row; it is the row the ●/○ state in the
+  // menu describes, so it is also the row that decides add-vs-remove.
+  const resolveTagTarget = useCallback((anchorRowId) => {
+    const anchor = Number(anchorRowId);
+    // In both modes the clicked row must itself be part of the selection, or the
+    // click means "just this row" — right-clicking outside a selection should never
+    // silently write to it.
+    if (allRowsSelected && selectionCount > 0 && selectionFilterOptions && isRowSelected(selectedRows, true, anchor)) {
+      // Select-all is an INVERTED selection: `selectedRows` holds exclusions and the
+      // member IDs are never materialized, so the write has to go through SQL.
+      // Looping the loaded rows here tagged one row while the UI claimed a million
+      // were selected — the "multi-row tagging silently does nothing" case.
+      return { mode: "filtered", options: selectionFilterOptions, count: selectionCount };
+    }
+    if (!allRowsSelected && selectionCount > 1 && selectedRows.has(anchor)) {
+      return { mode: "rows", rowIds: [...selectedRows], count: selectedRows.size };
+    }
+    return { mode: "rows", rowIds: [anchor], count: 1 };
+  }, [allRowsSelected, selectionCount, selectionFilterOptions, selectedRows]);
+
+  /**
+   * Add or remove ONE tag across the resolved target, uniformly.
+   *
+   * `add` is decided once by the caller from the anchor row and applied to every
+   * target row. Deciding per row (the old behaviour) meant a single click on a
+   * mixed selection tagged some rows and untagged others.
+   */
+  const applyTagToRows = useCallback(async (tag, anchorRowId, add) => {
+    if (!tle || !ct || !tag) return;
+    const target = resolveTagTarget(anchorRowId);
+    try {
+      if (target.mode === "filtered") {
+        const write = (opts) => (add
+          ? tle.bulkTagFiltered(ct.id, tag, opts)
+          : tle.bulkUntagFiltered(ct.id, tag, opts));
+        let res = await write(target.options);
+        if (isIpcError(res)) throw new Error(ipcErrorMessage(res));
+        // "Select all" with no filter active resolves to the entire tab, and the
+        // store refuses an unscoped write until it is confirmed. Ask, then retry —
+        // the DB decides what counts as unscoped, so the prompt can never be skipped
+        // by a filter shape the renderer misjudged.
+        if (res?.wholeTab) {
+          const ok = await confirm({
+            title: `${add ? "Tag" : "Untag"} every row?`,
+            message: `Nothing narrows the selection, so this ${add ? "tags" : "untags"} all ${formatNumber(res.rowCount || ct.totalRows || 0)} rows in "${ct.name}".`,
+            confirmLabel: add ? "Tag all rows" : "Untag all rows",
+            destructive: true,
+          });
+          if (!ok) return;
+          res = await write({ ...target.options, confirmWholeTab: true });
+          if (isIpcError(res)) throw new Error(ipcErrorMessage(res));
+        }
+        if (res?.error) throw new Error(res.error);
+        invalidateRowMetaCache(ct.id);
+        await fetchData(ct);
+        const n = add ? res.tagged : res.untagged;
+        toast.success(add ? `Tagged ${formatNumber(n)} rows` : `Removed tag from ${formatNumber(n)} rows`, { detail: tag });
+        return;
+      }
+
+      // One transaction for the whole selection. The previous per-row `addTag`
+      // loop cost one IPC round trip per row and froze the UI on large selections.
+      const res = await tle.setTagOnRows(ct.id, target.rowIds, tag, add);
+      if (isIpcError(res)) throw new Error(ipcErrorMessage(res));
+      if (!res || res.ok === false) throw new Error(res?.error || "Tag write failed");
+
+      const canonical = res.tag || tag;
+      invalidateRowMetaCache(ct.id);
+
+      if (target.count > 1) {
+        // A selection can reach far outside the loaded window, and `rowTags` only
+        // covers loaded rows — patching it row by row would invent entries for rows
+        // whose real tag set we have never seen. The write is already confirmed, so
+        // just re-read the window.
+        await fetchData(ct);
+        toast.success(
+          add
+            ? `Tagged ${formatNumber(res.changed)} of ${formatNumber(target.count)} rows`
+            : `Removed tag from ${formatNumber(res.changed)} of ${formatNumber(target.count)} rows`,
+          { detail: canonical },
+        );
+        return;
+      }
+
+      // Single row: patch in place so the pill appears without a round trip.
+      const newTags = { ...(ct.rowTags || {}) };
+      const rid = target.rowIds[0];
+      const existing = newTags[rid] || [];
+      if (add) {
+        if (!existing.includes(canonical)) newTags[rid] = [...existing, canonical];
+      } else {
+        const next = existing.filter((t) => t !== canonical);
+        if (next.length) newTags[rid] = next;
+        else delete newTags[rid];
+      }
+      up("rowTags", newTags);
+    } catch (err) {
+      toast.error(add ? "Tagging failed" : "Untagging failed", { detail: String(err?.message || err) });
+    }
+  }, [tle, ct, resolveTagTarget, invalidateRowMetaCache, up, fetchData]);
+
   const rowOffset = ct?.rowOffset || 0;
   const totalH = totalCount * ROW_HEIGHT;
   // The scroll container has already shrunk around the detail panel. Only remove
@@ -2257,15 +2515,50 @@ export default function App() {
   });
   const si = Math.max(0, Math.floor(logicalScrollTop / ROW_HEIGHT) - OVERSCAN);
   const ei = Math.min(totalCount, Math.ceil((logicalScrollTop + vh) / ROW_HEIGHT) + OVERSCAN);
+
+  // ── Horizontal window ──
+  // Columns are windowed the same way rows are. Without this, every visible column
+  // rendered for every visible row: 40-80 columns on a Plaso/EVTX tab put thousands of
+  // styled cells in the tree and rebuilt them on each scroll re-render, whatever was
+  // actually on screen. The frozen block (structural + pinned columns) always renders —
+  // it is sticky, and it is what `frozenWidth` accounts for.
+  const colGeom = useMemo(
+    () => getColumnGeometry(scrollH, ct?.columnWidths),
+    [scrollH, ct?.columnWidths],
+  );
+  const frozenWidth = pinnedOffsets.totalWidth;
+  const colWindow = useMemo(() => getColumnWindow({
+    offsets: colGeom.offsets,
+    totalWidth: colGeom.totalWidth,
+    scrollLeft,
+    viewportWidth: gridViewportW,
+    frozenWidth,
+  }), [colGeom, scrollLeft, gridViewportW, frozenWidth]);
+  colWindowRef.current = { start: colWindow.start, end: colWindow.end, geom: colGeom, viewportWidth: gridViewportW, frozenWidth };
   // For grouped mode: direct slice. For flat mode: map to windowed cache via rowOffset.
+  const windowSlice = getWindowSlice({ si, ei, rowOffset, rowCount: rows.length });
   const visible = useMemo(() => isGrouped
     ? displayRows.slice(si, ei)
-    : rows.slice(Math.max(0, si - rowOffset), Math.max(0, ei - rowOffset)),
-    [isGrouped, displayRows, rows, si, ei, rowOffset]);
+    : rows.slice(windowSlice.start, windowSlice.end),
+    [isGrouped, displayRows, rows, si, ei, windowSlice.start, windowSlice.end]);
+  // Absolute index of visible[0] — see getWindowSlice. It diverges from `si` when the
+  // loaded window starts after si, and anchoring the render to `si` there shifted every
+  // row up by the difference, painting real rows over the skeletons covering the same band.
+  const visibleStart = isGrouped ? si : windowSlice.visibleStart;
 
-  // Skeleton rows for positions outside the cached window (shown during fast scroll)
+  // Skeleton rows for positions outside the cached window (shown during fast scroll).
+  // Armed on a short delay: a window fetch that resolves quickly would otherwise paint
+  // grey bars for a frame or two and immediately replace them — the flash reads as
+  // flicker. A gap that outlives the delay still gets its placeholders.
+  const hasUncoveredRows = !isGrouped && visible.length < (ei - si);
+  const [skeletonsArmed, setSkeletonsArmed] = useState(false);
+  useEffect(() => {
+    if (!hasUncoveredRows) { setSkeletonsArmed(false); return; }
+    const timer = setTimeout(() => setSkeletonsArmed(true), SKELETON_ARM_DELAY);
+    return () => clearTimeout(timer);
+  }, [hasUncoveredRows]);
   const skeletonIndices = useMemo(() => {
-    if (isGrouped || visible.length >= (ei - si)) return [];
+    if (!hasUncoveredRows || !skeletonsArmed) return [];
     const cacheStart = rowOffset;
     const cacheEnd = rowOffset + rows.length;
     const indices = [];
@@ -2273,11 +2566,20 @@ export default function App() {
       if (i < cacheStart || i >= cacheEnd) indices.push(i);
     }
     return indices;
-  }, [isGrouped, visible.length, si, ei, rowOffset, rows.length]);
+  }, [hasUncoveredRows, skeletonsArmed, si, ei, rowOffset, rows.length]);
 
   const compiledColors = useMemo(() => compileColorRules(ct?.colorRules || []), [ct?.colorRules]);
-  const gw = (col) => ct?.columnWidths[col] || 150;
-  const fmtCell = (h, val) => (dateTimeFormat && ct?.tsColumns?.has(h)) ? formatDateTime(val, dateTimeFormat, timezone) : (val || "");
+  // gw / fmtCell / renderCell / getRowBg are passed down into every rendered cell. They
+  // are memoized so GridRow's React.memo can hold across a scroll frame: recreated per
+  // render they would change identity 60×/second and force all ~80 rows to re-render.
+  const gw = useCallback((col) => ct?.columnWidths?.[col] || 150, [ct?.columnWidths]);
+  const fmtCell = useCallback(
+    (h, val) => {
+      if (ct?.tsColumns?.has(h) && isUnsetWindowsTimestamp(val)) return UNSET_TIMESTAMP_LABEL;
+      return (dateTimeFormat && ct?.tsColumns?.has(h)) ? formatDateTime(val, dateTimeFormat, timezone) : (val || "");
+    },
+    [dateTimeFormat, timezone, ct?.tsColumns],
+  );
   const copyCell = useCallback((val, colName) => {
     const text = colName != null && colName !== "" ? fmtCell(colName, val) : (val || "");
     navigator.clipboard?.writeText(text);
@@ -2314,9 +2616,20 @@ export default function App() {
     if (!hlRegex || !iocRegex) return null;
     try { return new RegExp(`${iocRegex.source}|${hlRegex.source}`, "gi"); } catch { return null; }
   }, [hlRegex, iocRegex]);
-  const _hlStyle = { background: "rgba(210,153,34,0.5)", color: "inherit", borderRadius: 2, padding: "0 1px" };
-  const _iocStyle = { background: "rgba(240,136,62,0.45)", color: "inherit", borderRadius: 2, padding: "0 1px", fontWeight: 600 };
-  const renderCell = (h, val) => {
+  const renderCell = useCallback((h, val) => {
+    if (ct?.tsColumns?.has(h) && isUnsetWindowsTimestamp(val)) {
+      return <span style={{ color: th.warning, fontStyle: "italic" }} title={UNSET_TIMESTAMP_TITLE}>{UNSET_TIMESTAMP_LABEL}</span>;
+    }
+    if (h === "_Diff" && val) {
+      const color = val === "Added" ? th.success : val === "Removed" ? th.danger : val === "Changed" ? th.warning : th.textMuted;
+      return (
+        <span style={{
+          display: "inline-flex", alignItems: "center", padding: "1px 7px", borderRadius: 999,
+          fontSize: 10, fontWeight: 700, letterSpacing: "0.03em", color,
+          background: `${color}22`, border: `1px solid ${color}44`,
+        }}>{val}</span>
+      );
+    }
     const text = fmtCell(h, val);
     if (!text || (!hlRegex && !iocRegex)) return text;
     // Single highlight source — use fast split path
@@ -2324,7 +2637,7 @@ export default function App() {
       const splits = text.split(hlRegex);
       if (splits.length <= 1) return text;
       return <>{splits.map((seg, i) => i % 2 === 1
-        ? <mark key={i} style={_hlStyle}>{seg}</mark>
+        ? <mark key={i} style={HL_STYLE}>{seg}</mark>
         : seg
       )}</>;
     }
@@ -2332,7 +2645,7 @@ export default function App() {
       const splits = text.split(iocRegex);
       if (splits.length <= 1) return text;
       return <>{splits.map((seg, i) => i % 2 === 1
-        ? <mark key={i} style={_iocStyle}>{seg}</mark>
+        ? <mark key={i} style={IOC_STYLE}>{seg}</mark>
         : seg
       )}</>;
     }
@@ -2345,14 +2658,14 @@ export default function App() {
     while ((m = combinedHlRegex.exec(text)) !== null) {
       if (m.index > lastIndex) parts.push(text.slice(lastIndex, m.index));
       const isIoc = iocTestRegex.test(m[0]);
-      parts.push(<mark key={m.index} style={isIoc ? _iocStyle : _hlStyle}>{m[0]}</mark>);
+      parts.push(<mark key={m.index} style={isIoc ? IOC_STYLE : HL_STYLE}>{m[0]}</mark>);
       lastIndex = combinedHlRegex.lastIndex;
       if (m[0].length === 0) { combinedHlRegex.lastIndex++; }
     }
     if (lastIndex === 0) return text;
     if (lastIndex < text.length) parts.push(text.slice(lastIndex));
     return <>{parts}</>;
-  };
+  }, [fmtCell, hlRegex, iocRegex, combinedHlRegex, iocTestRegex, ct?.tsColumns, th.warning, th.success, th.danger, th.textMuted]);
   const tw = useMemo(() => getGridContentWidth({
     visibleColumns: allVisH,
     columnWidths: ct?.columnWidths,
@@ -2690,6 +3003,7 @@ export default function App() {
       setFdRegex(false);
       setFdSampled(false);
       setFdValueMeta({ totalDistinct: 0, truncated: false });
+      setFdScrollTop(0);
       return;
     }
     setFdSampled(false);
@@ -2742,9 +3056,24 @@ export default function App() {
   useEffect(() => {
     if (!filterDropdown) return;
     if (filterDropdown.colName === "__tags__" || filterDropdown.colName === "__vt__") return; // Tags/VT don't support search-while-typing
+    setFdScrollTop(0);
+    if (fdListRef.current) fdListRef.current.scrollTop = 0;
     const t = setTimeout(() => loadFilterValues(filterDropdown.colName, fdSearch, false, fdRegex), 300);
     return () => clearTimeout(t);
   }, [fdSearch, fdRegex]);
+
+  useEffect(() => {
+    const el = fdListRef.current;
+    if (!el || !filterDropdown) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentRect.height > 0) setFdListH(entry.contentRect.height);
+      }
+    });
+    ro.observe(el);
+    setFdListH(el.clientHeight || 280);
+    return () => ro.disconnect();
+  }, [filterDropdown]);
 
   const applyCheckboxFilter = () => {
     if (!filterDropdown) return;
@@ -2922,6 +3251,24 @@ export default function App() {
       if (mod && e.key === "e") { e.preventDefault(); handleExport(); }
       if (mod && e.key === "b") { e.preventDefault(); if (ct) up("showBookmarkedOnly", !ct.showBookmarkedOnly); }
       if (mod && e.key === "r") { e.preventDefault(); resetColumnWidthsRef.current?.(); }
+      // ⌘⇧1..9 — apply palette tag N to the current selection. Triage is a
+      // hundreds-of-rows-per-hour job; a two-level context menu per row is the
+      // slowest possible way to do it. Same scope rules as the menu, so the
+      // shortcut can never write wider than the menu would.
+      if (mod && e.shiftKey && !isTextControl && /^[1-9]$/.test(e.code?.replace("Digit", "") || "") && ct) {
+        const anchorId = lastClickedRowData?.__idx
+          ?? (selectedRows.size === 1 && !allRowsSelected ? [...selectedRows][0] : null);
+        if (anchorId != null) {
+          const slot = Number(e.code.replace("Digit", "")) - 1;
+          const tagAt = Object.keys(ct.tagColors || {})[slot];
+          if (tagAt) {
+            e.preventDefault();
+            const anchorTags = (ct.rowTags || {})[anchorId] || [];
+            void applyTagToRows(tagAt, anchorId, !anchorTags.includes(tagAt));
+            return;
+          }
+        }
+      }
       if (mod && (e.key === "?" || e.key === "/")) { e.preventDefault(); setModal(openSimpleModal("shortcuts")); return; }
       // ⌘⇧A / Ctrl+Shift+A — select an entire column (toggle). Targets the open column
       // menu's column, else the sorted column, else the first visible column.
@@ -3015,7 +3362,7 @@ export default function App() {
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [ct, activeTab, selectedRows, allRowsSelected, selectionCount, lastClickedRow, ct?.totalFiltered, isGrouped, getRowAt, searchMatchIdx, navigateSearch, selectedColumn, setSelectedColumn, copyColumnValues, copySelectedRows, contextMenu, clearRowSelection]);
+  }, [ct, activeTab, selectedRows, allRowsSelected, selectionCount, lastClickedRow, lastClickedRowData, applyTagToRows, ct?.totalFiltered, isGrouped, getRowAt, searchMatchIdx, navigateSearch, selectedColumn, setSelectedColumn, copyColumnValues, copySelectedRows, contextMenu, clearRowSelection]);
 
 
 
@@ -3023,12 +3370,12 @@ export default function App() {
   const ms = makeModalStyles(th);
 
   // ── Helper: compute row background ───────────────────────────────
-  const getRowBg = (ai, _row, sel, cm, bm) => {
+  const getRowBg = useCallback((ai, _row, sel, cm, bm) => {
     if (sel) return th.selection;
     if (cm) return cm.bg;
     if (bm) return th.bookmark;
     return ai % 2 === 0 ? th.rowEven : th.rowOdd;
-  };
+  }, [th]);
 
 
   // ── Empty state ──────────────────────────────────────────────────
@@ -3519,13 +3866,15 @@ export default function App() {
         onClear={clearRowSelection}
       />
 
+      {ct && <DiffBanner th={th} ct={ct} up={up} />}
+
       {/* ── VirtualGrid (histogram + grid + detail panel) ──────── */}
       <Suspense fallback={<Loading label="Loading grid…" size="md" />}>
         <VirtualGrid
           th={th} ct={ct} tle={tle} up={up} tabs={tabs}
           isGrouped={isGrouped} isImporting={isImporting} importingTabs={importingTabs} importQueue={importQueue}
           displayRows={displayRows} rows={rows} visible={visible} skeletonIndices={skeletonIndices}
-          totalCount={totalCount} totalH={totalH} physicalH={physicalH} pageOffset={pageOffset} si={si} tw={tw} rowOffset={rowOffset}
+          totalCount={totalCount} totalH={totalH} physicalH={physicalH} pageOffset={pageOffset} si={si} visibleStart={visibleStart} tw={tw} rowOffset={rowOffset} colWindow={colWindow}
           allVisH={allVisH} pinnedH={pinnedH} scrollH={scrollH} pinnedOffsets={pinnedOffsets}
           selectedRows={selectedRows} allRowsSelected={allRowsSelected} selectionCount={selectionCount}
           lastClickedRow={lastClickedRow} setLastClickedRow={setLastClickedRow}
@@ -3717,10 +4066,10 @@ export default function App() {
                 {APP_DESCRIPTION}
               </p>
               <p style={{ margin: "0 0 8px", fontSize: 12, color: th.text, lineHeight: 1.6, fontFamily: "-apple-system, sans-serif" }}>
-                Native ingestion covers CSV, TSV, XLS/XLSX, Plaso, raw $MFT and $UsnJrnl, plus EVTX through bounded 64 KiB chunk reads up to the format's approximately 4 GiB limit. AI evidence includes prompts, responses, tool calls, shell commands, and bounded tool output from supported assistants, plus ChatGPT Computer History — the macOS interaction-event stream, the activity summaries derived from it, and the consolidated memory those summaries feed.
+                Ingest CSV, TSV, XLSX, Plaso, $MFT, USN Journal, and EVTX (chunked, to ~4 GiB). Collect AI prompts, responses, tool calls, and shell output — plus ChatGPT Computer History: interaction events, activity summaries, and consolidated memory.
               </p>
               <p style={{ margin: 0, fontSize: 12, color: th.text, lineHeight: 1.6, fontFamily: "-apple-system, sans-serif" }}>
-                Built-in investigation includes Sigma and Hayabusa detection, process trees, lateral movement, persistence, ransomware and NTFS analytics, AI secret exposure hunting, IOC and VirusTotal enrichment, RDP bitmap recovery, tagging, and reporting. Computer History adds per-application capture-fidelity tiering, credential-entry and deletion detection, recovery of cleared summaries, and host attribution.
+                Investigate with Sigma and Hayabusa, process trees, lateral movement, persistence, ransomware and NTFS analytics, secret hunting, IOC and VirusTotal, RDP bitmap cache, tags, and reports. Computer History adds fidelity tiers, credential-entry timing, deletion recovery, and host attribution.
               </p>
             </div>
             <div style={{ marginBottom: 16 }}>
@@ -3740,38 +4089,11 @@ export default function App() {
         </Overlay>
       )}
       {modal?.type === "sheets" && <SheetModal th={th} ms={ms} tle={tle} />}
+      {/* Manage Tags — backed by live SQLite tag counts (see TagManagerModal). */}
       {modal?.type === "tags" && ct && (
-        <Overlay th={th}>
-          <h3 style={ms.mh}>Manage Tags</h3>
-          <div style={{ maxHeight: "50vh", overflow: "auto", marginBottom: 12 }}>
-            {Object.entries(ct.tagColors || {}).map(([tag, color]) => (
-              <div key={tag} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: `1px solid ${th.bgAlt}` }}>
-                <input type="color" value={color} onChange={(e) => up("tagColors", { ...ct.tagColors, [tag]: e.target.value })}
-                  style={{ width: 20, height: 16, border: "none", cursor: "pointer", borderRadius: 3, padding: 0 }} />
-                <span style={{ flex: 1, color: th.text, fontSize: 12 }}>{tag}</span>
-                <button onClick={() => { const tc = { ...ct.tagColors }; delete tc[tag]; up("tagColors", tc); }}
-                  style={{ background: "none", border: "none", color: th.danger, cursor: "pointer", fontSize: 12 }}>✕</button>
-              </div>
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: 6 }}>
-            <input id="new-tag-input" placeholder="New tag name..." style={ms.ip} onKeyDown={(e) => {
-              if (e.key === "Enter" && e.target.value.trim()) {
-                const name = e.target.value.trim();
-                if (!ct.tagColors[name]) up("tagColors", { ...ct.tagColors, [name]: th.sev.low });
-                e.target.value = "";
-              }
-            }} />
-            <button onClick={() => {
-              const inp = document.getElementById("new-tag-input");
-              const name = inp?.value?.trim();
-              if (name && !ct.tagColors[name]) { up("tagColors", { ...ct.tagColors, [name]: th.sev.low }); inp.value = ""; }
-            }} style={ms.bp}>Add</button>
-          </div>
-          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
-            <button onClick={() => setModal(null)} style={ms.bp}>Done</button>
-          </div>
-        </Overlay>
+        <Suspense fallback={<ModalChunkFallback th={th} />}>
+          <TagManagerModal />
+        </Suspense>
       )}
 
       {/* Cross-tab Find */}
@@ -3992,8 +4314,9 @@ export default function App() {
       {cellPopup && (() => {
         // Timestamp converter: detect if value is a valid date
         const cpVal = cellPopup.value || "";
+        const cpUnset = Boolean(ct?.tsColumns?.has(cellPopup.column) && isUnsetWindowsTimestamp(cpVal));
         const cpDate = cpVal ? new Date(cpVal) : null;
-        const cpIsTs = cpDate && !isNaN(cpDate.getTime()) && ct?.tsColumns?.has(cellPopup.column);
+        const cpIsTs = !cpUnset && cpDate && !isNaN(cpDate.getTime()) && ct?.tsColumns?.has(cellPopup.column);
         // PowerShell Base64 decoder: detect -enc/-EncodedCommand
         const cpEncMatch = cpVal.match(/(?:\s|^)(?:-e|-enc|-encodedcommand|-en|-ec)\s+([A-Za-z0-9+/=]{20,})/i);
         let cpDecoded = null;
@@ -4021,7 +4344,16 @@ export default function App() {
               </div>
             </div>
             <div style={{ padding: "16px", overflow: "auto", maxHeight: "calc(80vh - 50px)" }}>
-              <pre style={{ color: th.text, fontSize: 12, fontFamily: "'SF Mono', Menlo, monospace", whiteSpace: "pre-wrap", wordBreak: "break-all", margin: 0, lineHeight: 1.5 }}>{fmtCell(cellPopup.column, cpVal) || <span style={{ color: th.textMuted, fontStyle: "italic" }}>(empty)</span>}</pre>
+              <pre style={{ color: th.text, fontSize: 12, fontFamily: "'SF Mono', Menlo, monospace", whiteSpace: "pre-wrap", wordBreak: "break-all", margin: 0, lineHeight: 1.5 }}>{cpVal || <span style={{ color: th.textMuted, fontStyle: "italic" }}>(empty)</span>}</pre>
+              {cpUnset && (
+                <div style={{ marginTop: 12, padding: "10px 12px", background: `${th.warning}14`, border: `1px solid ${th.warning}33`, borderRadius: 8 }}>
+                  <div style={{ fontSize: 11, color: th.warning, fontWeight: 600, fontFamily: "-apple-system, sans-serif", marginBottom: 4 }}>Unset timestamp</div>
+                  <div style={{ fontSize: 11, color: th.textDim, fontFamily: "-apple-system, sans-serif", lineHeight: 1.45 }}>
+                    Windows FILETIME epoch (<span style={{ fontFamily: "'SF Mono', Menlo, monospace" }}>1601-01-01 00:00:00</span>).
+                    EvtxECmd writes this when TimeCreated is 0. It is not a real event time.
+                  </div>
+                </div>
+              )}
               {/* Timestamp Converter */}
               {cpIsTs && (() => {
                 const epoch = Math.floor(cpDate.getTime() / 1000);
@@ -4132,25 +4464,49 @@ export default function App() {
                 {fdSampled
                   ? `${formatNumber(fdValues.length)} sampled values`
                   : fdValueMeta.truncated
-                  ? `Top ${formatNumber(fdValues.length)} of ${formatNumber(fdValueMeta.totalDistinct)}${fdSearch ? " — refine search" : " — search for more"}`
+                  ? `${formatNumber(fdValues.length)} of ${formatNumber(fdValueMeta.totalDistinct)}${fdSearch ? " — refine search" : " — search to narrow"}`
                   : `${formatNumber(fdValueMeta.totalDistinct)} values`}
               </span>
             </div>
-            <div style={{ flex: 1, overflow: "auto", padding: "0 4px" }}>
+            <div
+              ref={fdListRef}
+              style={{ flex: 1, overflow: "auto", padding: "0 4px" }}
+              onScroll={(e) => {
+                setFdScrollTop(e.currentTarget.scrollTop);
+                setFdListH(e.currentTarget.clientHeight);
+              }}
+            >
               {fdLoading ? (
                 <Loading />
               ) : fdValues.length === 0 ? (
                 <div style={{ padding: 16, textAlign: "center", color: th.textMuted, fontSize: 11 }}>No values found</div>
-              ) : (
-                fdValues.map((v) => (
-                  <label key={v.val ?? "__empty"} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 4px", cursor: "pointer", borderRadius: 3, fontSize: 11, color: th.text }}>
-                    <input type="checkbox" checked={fdSelected.has(v.val)} onChange={() => { const s = new Set(fdSelected); s.has(v.val) ? s.delete(v.val) : s.add(v.val); setFdSelected(s); }}
-                      style={{ accentColor: th.borderAccent, width: 18, height: 18, flexShrink: 0 }} />
-                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.val || "(empty)"}</span>
-                    <span style={{ color: th.textMuted, fontSize: 10, flexShrink: 0 }}>{formatNumber(v.cnt)}</span>
-                  </label>
-                ))
-              )}
+              ) : (() => {
+                const overscan = 8;
+                const start = Math.max(0, Math.floor(fdScrollTop / FD_ROW_H) - overscan);
+                const visibleCount = Math.ceil((fdListH || 280) / FD_ROW_H) + overscan * 2;
+                const end = Math.min(fdValues.length, start + visibleCount);
+                const fdCol = filterDropdown.colName;
+                const fdIsTs = ct?.tsColumns?.has(fdCol);
+                return (
+                  <div style={{ height: fdValues.length * FD_ROW_H, position: "relative" }}>
+                    {fdValues.slice(start, end).map((v, i) => {
+                      const idx = start + i;
+                      const raw = v.val;
+                      const label = raw == null || raw === ""
+                        ? "(empty)"
+                        : (fdIsTs && dateTimeFormat) ? (formatDateTime(raw, dateTimeFormat, timezone) || String(raw)) : String(raw);
+                      return (
+                        <label key={`${idx}:${raw ?? "__empty"}`} style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 4px", cursor: "pointer", borderRadius: 3, fontSize: 11, color: th.text, position: "absolute", top: idx * FD_ROW_H, left: 0, right: 0, height: FD_ROW_H, boxSizing: "border-box" }}>
+                          <input type="checkbox" checked={fdSelected.has(raw)} onChange={() => { const s = new Set(fdSelected); s.has(raw) ? s.delete(raw) : s.add(raw); setFdSelected(s); }}
+                            style={{ accentColor: th.borderAccent, width: 18, height: 18, flexShrink: 0 }} />
+                          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={label}>{label}</span>
+                          <span style={{ color: th.textMuted, fontSize: 10, flexShrink: 0 }}>{formatNumber(v.cnt)}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, padding: "6px 8px", borderTop: `1px solid ${th.border}` }}>
               <button onClick={() => {
@@ -4211,6 +4567,11 @@ export default function App() {
 
         {/* Burst Detection Modal */}
         {modal?.type === "burstAnalysis" && ct && <BurstAnalysisModal />}
+      </Suspense>
+
+      <Suspense fallback={<ModalChunkFallback th={th} />}>
+        {modal?.type === "diffTabs" && <DiffTabsModal />}
+        {modal?.type === "diffExplorer" && <DiffExplorerModal selectedRowData={selectedRowData} />}
       </Suspense>
 
       {/* Merge Tabs Modal */}
@@ -4513,10 +4874,19 @@ export default function App() {
             <div style={{ height: 1, background: themeName === "dark" ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)", margin: "4px 8px" }} />
             {/* Tags — collapsible submenu */}
             {(() => {
-              const tagEntries = Object.entries(ct?.tagColors || {});
-              const hasExplicitMultiSelection = !allRowsSelected
-                && selectionCount > 1
-                && selectedRows.has(Number(rowContextMenu.rowId));
+              // The palette is the tag vocabulary, but a row can carry tags no
+              // palette entry ever registered (Sigma / IOC: / VT: / analyzer tags
+              // written straight through bulkTagFiltered). Union them in, or those
+              // tags can be seen in the grid and never removed from the row menu.
+              const palette = ct?.tagColors || {};
+              const tagEntries = [
+                ...Object.entries(palette),
+                ...(rowContextMenu.currentTags || [])
+                  .filter((t) => !(t in palette))
+                  .map((t) => [t, th.textMuted]),
+              ];
+              const tagTarget = resolveTagTarget(rowContextMenu.rowId);
+              const targetsManyRows = tagTarget.count > 1;
               return (
                 <div style={{ position: "relative" }}
                   onMouseEnter={(e) => { const sub = e.currentTarget.querySelector("[data-tag-sub]"); if (sub) sub.style.display = "block"; }}
@@ -4526,7 +4896,7 @@ export default function App() {
                     onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                     style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "6px 14px", background: "none", border: "none", color: th.text, fontSize: 12, cursor: "pointer", textAlign: "left", fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif", borderRadius: 6, margin: "0 4px", maxWidth: "calc(100% - 8px)" }}>
                     <span style={{ width: 16, textAlign: "center", fontSize: 11 }}>🏷</span>
-                    Tags{hasExplicitMultiSelection ? ` (${selectionCount} rows)` : ""}
+                    Tags{targetsManyRows ? ` (${formatNumber(tagTarget.count)} rows)` : ""}
                     <span style={{ marginLeft: "auto", color: th.textMuted, fontSize: 11 }}>▸</span>
                   </button>
                   {/* Tags submenu */}
@@ -4534,31 +4904,19 @@ export default function App() {
                     {tagEntries.map(([tag, color]) => {
                       const hasTg = rowContextMenu.currentTags.includes(tag);
                       return (
-                        <button key={tag} onClick={async () => {
-                          // Collect target row IDs — all selected rows if multi-selected, otherwise just the clicked row
-                          const targetIds = [];
-                          if (hasExplicitMultiSelection) {
-                            targetIds.push(...selectedRows);
-                          } else {
-                            targetIds.push(rowContextMenu.rowId);
-                          }
-                          const newTags = { ...ct.rowTags };
-                          for (const rid of targetIds) {
-                            const rowTags = newTags[rid] || [];
-                            const rowHas = rowTags.includes(tag);
-                            if (rowHas) {
-                              await tle.removeTag(ct.id, rid, tag);
-                              newTags[rid] = rowTags.filter((t) => t !== tag);
-                            } else {
-                              await tle.addTag(ct.id, rid, tag);
-                              newTags[rid] = [...rowTags, tag];
-                            }
-                          }
-                          up("rowTags", newTags);
+                        <button key={tag} onClick={() => {
+                          // The ●/○ shown here describes the right-clicked row, so that
+                          // row decides the direction — and the SAME direction is applied
+                          // to every target row. (Toggling per row turned one click on a
+                          // mixed selection into a partial tag + partial untag.)
                           setRowContextMenu(null);
+                          void applyTagToRows(tag, rowContextMenu.rowId, !hasTg);
                         }}
                           onMouseEnter={(e) => { e.currentTarget.style.background = `${th.accent}22`; }}
                           onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                          title={targetsManyRows
+                            ? `${hasTg ? "Remove" : "Apply"} "${tag}" on ${formatNumber(tagTarget.count)} selected rows`
+                            : `${hasTg ? "Remove" : "Apply"} "${tag}" on this row`}
                           style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "5px 14px", background: "none", border: "none", color: th.text, fontSize: 12, cursor: "pointer", textAlign: "left", fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif", borderRadius: 6, margin: "0 4px", maxWidth: "calc(100% - 8px)" }}>
                           <span style={{ color, fontSize: 14 }}>{hasTg ? "●" : "○"}</span>
                           <span>{tag}</span>

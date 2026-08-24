@@ -21,11 +21,12 @@ function loadRendererMirror() {
   const ctx = {};
   vm.createContext(ctx);
   vm.runInContext(
-    munged + "\n;Object.assign(globalThis, { normalizeTimestamp, compareTimestamps, normalizeGuid, normalizePid, normalizeLogonId, normalizeHost, normalizeUser });",
+    munged + "\n;Object.assign(globalThis, { normalizeTimestamp, isUnsetWindowsTimestamp, compareTimestamps, normalizeGuid, normalizePid, normalizeLogonId, normalizeHost, normalizeUser });",
     ctx,
   );
   return {
     normalizeTimestamp: ctx.normalizeTimestamp,
+    isUnsetWindowsTimestamp: ctx.isUnsetWindowsTimestamp,
     compareTimestamps: ctx.compareTimestamps,
     normalizeGuid: ctx.normalizeGuid,
     normalizePid: ctx.normalizePid,
@@ -59,6 +60,10 @@ bothEq("Unix millis",      (m) => m.normalizeTimestamp("1773360000123"),        
 bothEq("empty → NaN",      (m) => Number.isNaN(m.normalizeTimestamp("")),        true);
 bothEq("null → NaN",       (m) => Number.isNaN(m.normalizeTimestamp(null)),      true);
 bothEq("garbage → NaN",    (m) => Number.isNaN(m.normalizeTimestamp("nope")),    true);
+bothEq("FILETIME epoch is unset", (m) => m.isUnsetWindowsTimestamp("1601-01-01 00:00:00"), true);
+bothEq("FILETIME epoch Z is unset", (m) => m.isUnsetWindowsTimestamp("1601-01-01T00:00:00.0000000Z"), true);
+bothEq("real TimeCreated is not unset", (m) => m.isUnsetWindowsTimestamp("2025-04-02 02:37:03"), false);
+bothEq("FILETIME epoch → NaN", (m) => Number.isNaN(m.normalizeTimestamp("1601-01-01 00:00:00")), true);
 
 // ---------- compareTimestamps ----------
 

@@ -28,3 +28,6 @@ tools/artemis/
 !tests/fixtures/**/.claude/**
 *.bak
 *.code-workspace
+
+# Internal security audit output — kept locally, never published to the public repo.
+security_best_practices_report.md

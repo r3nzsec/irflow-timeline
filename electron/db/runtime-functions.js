@@ -1,4 +1,4 @@
-const { registerForensicUDFs, normalizeTimestamp } = require("../utils/forensic-normalize");
+const { registerForensicUDFs, normalizeTimestamp, isUnsetWindowsTimestamp } = require("../utils/forensic-normalize");
 const { compileSafeRegex, MAX_VALUE_LEN, MAX_PATTERN_LEN } = require("../utils/safe-regex");
 
 // Canonical, lexicographically-sortable UTC form ("YYYY-MM-DD HH:MM:SS.fff") for a value
@@ -11,6 +11,20 @@ function zonedToCanonicalUtc(s) {
   if (!Number.isFinite(ms)) return null;
   const iso = new Date(ms).toISOString(); // YYYY-MM-DDTHH:MM:SS.fffZ
   return iso.slice(0, 10) + " " + iso.slice(11, 23);
+}
+
+// Windows FILETIME 0 and .NET DateTime.MinValue show up as 1601-01-01 / 0001-01-01
+// in EvtxECmd/Hayabusa output. They are "timestamp not set", not real event times —
+// including them in extract_date makes the histogram start in the 17th century.
+function rejectUnsetWindowsTs(extracted) {
+  if (extracted == null) return null;
+  const s = String(extracted);
+  if (/^(1600|1601|0001)-/.test(s)) return null;
+  return extracted;
+}
+
+function hasExplicitZone(s) {
+  return /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s);
 }
 
 const MONTH_MAP = {
@@ -92,7 +106,13 @@ function registerRuntimeFunctions(db) {
     if (val == null) return null;
     const s = String(val).trim();
     if (s.length >= 10 && s.charCodeAt(4) === 45 && s.charCodeAt(7) === 45 && s.charCodeAt(0) >= 48 && s.charCodeAt(0) <= 57) {
-      return s.substring(0, 10);
+      // Zoned timestamps must bucket on the UTC date so the histogram matches
+      // the TimeCreated column (which the grid renders in the selected TZ, default UTC).
+      if (hasExplicitZone(s)) {
+        const canonical = zonedToCanonicalUtc(s);
+        if (canonical) return rejectUnsetWindowsTs(canonical.slice(0, 10));
+      }
+      return rejectUnsetWindowsTs(s.substring(0, 10));
     }
     let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
     if (m) return `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`;
@@ -133,10 +153,26 @@ function registerRuntimeFunctions(db) {
     const s = String(val).trim();
     if (s.length >= 16 && s.charCodeAt(4) === 45 && s.charCodeAt(7) === 45 && s.charCodeAt(0) >= 48 && s.charCodeAt(0) <= 57) {
       const sep = s.charCodeAt(10);
-      if ((sep === 32 || sep === 84) && s.charCodeAt(13) === 58) return `${s.substring(0, 10)} ${s.substring(11, 16)}`;
+      if ((sep === 32 || sep === 84) && s.charCodeAt(13) === 58) {
+        if (hasExplicitZone(s)) {
+          const canonical = zonedToCanonicalUtc(s);
+          if (canonical) {
+            const day = rejectUnsetWindowsTs(canonical.slice(0, 10));
+            if (!day) return null;
+            return `${day} ${canonical.slice(11, 16)}`;
+          }
+        }
+        const day = rejectUnsetWindowsTs(s.substring(0, 10));
+        if (!day) return null;
+        return `${day} ${s.substring(11, 16)}`;
+      }
     }
     let m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
-    if (m) return `${m[1]} ${m[2]}`;
+    if (m) {
+      const day = rejectUnsetWindowsTs(m[1]);
+      if (!day) return null;
+      return `${day} ${m[2]}`;
+    }
     m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?/i);
     if (m) {
       let hh = parseInt(m[4], 10);
@@ -204,6 +240,7 @@ function registerRuntimeFunctions(db) {
   db.function("sort_datetime", { deterministic: true }, (val) => {
     if (val == null || val === "") return null;
     const s = String(val).trim();
+    if (isUnsetWindowsTimestamp(s)) return null;
     if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(s)) {
       // Honor an explicit timezone so the value sorts on the same true-instant basis the
       // grid display uses. A naive string keeps its wall clock (treated as UTC) at full

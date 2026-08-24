@@ -61,7 +61,6 @@ export default function ToastContainer() {
               padding: "10px 12px 10px 14px",
               background: th.modalBg + "f2",
               border: `1px solid ${color}55`,
-              borderLeft: `3px solid ${color}`,
               borderRadius: 10,
               backdropFilter: "blur(40px) saturate(1.6)",
               WebkitBackdropFilter: "blur(40px) saturate(1.6)",

@@ -110,7 +110,7 @@ Standard layout for an analysis/results surface (see `AiSecretsModal.jsx`):
 ├ TOOLBAR (one row) ───────────────────────────────────┤  ← 1–2 key controls only
 │  All Crit High … | Group▾ |  🔍search  Filters▾  ⤓    │     advanced filters behind "Filters"
 ├ LIST (severity-sorted cards) ────────────────────────┤  ← scannable; ~2 lines each
-│  ▎●CRIT  [AI] OpenAI Key   sk-…FJ   Claude ×3   ▸     │
+│  ●CRIT  [AI] OpenAI Key   sk-…FJ   Claude ×3   ▸      │
 │     └ expand → value+reveal, evidence, triage, actions│  ← detail only on demand
 └ FOOTER ──────────────────────────────────────────────┘  ← status + New scan / Done
 ```
@@ -118,7 +118,7 @@ Standard layout for an analysis/results surface (see `AiSecretsModal.jsx`):
 Rules:
 - **Hero** answers "how bad?" before any scrolling; color it by the worst severity (`clean` green when nothing found).
 - **Toolbar** holds only the most-used controls (severity filter, search, group-by). Everything else (per-field filters, column tools) goes behind a `Filters`/disclosure toggle.
-- **List** rows are compact: a severity pill + provenance badge + title + redacted value + a count/where hint + a chevron. The whole row toggles expansion.
+- **List** rows are compact: a severity pill + provenance badge + title + redacted value + a count/where hint + a chevron. The whole row toggles expansion. Do **not** add a colored left accent stripe on cards, metric boxes, or list rows — severity lives in pills, not a vertical bar.
 - **Expansion** is where heavy detail lives — evidence, notes/triage, secondary actions.
 - **Group-by lenses** (Incident / Tool / Session, etc.) re-bucket the *same filtered set*; they're views, not new queries.
 - **Reach for the shared shell**: `DraggableResizableModal` (draggable/resizable glass modal), `primitives/Modal`, or `Overlay`+`makeModalStyles` (`InlineModals.jsx`). Don't hand-roll overlays/backdrops.

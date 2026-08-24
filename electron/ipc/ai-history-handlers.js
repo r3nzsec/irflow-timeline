@@ -517,6 +517,8 @@ module.exports = function registerAiHistoryHandlers(safeHandle, safeSend, ctx) {
           cursor: { syntheticTimestamps: !!rows._cursorSyntheticTimestamps, composer: rows._cursorComposerStats },
           windsurf: rows._windsurfStats,
           codexStateSqlite: rows._codexStateSqliteStats,
+          codexAuxSqlite: rows._codexAuxSqliteStats,
+          codexLocalEvidence: rows._codexLocalEvidenceStats,
           windsurfCascade: rows._windsurfCascadeStats,
           parseErrors: rows._parseErrors,
         }) || null,

@@ -25,4 +25,5 @@ test("parseTimestampMs unchanged for existing inputs", () => {
   assert.equal(parseTimestampMs(null), null);
   // A 4-digit year alone must NOT be treated as a (too-short) epoch and must stay unparseable.
   assert.equal(parseTimestampMs("2026"), null);
+  assert.equal(parseTimestampMs("1601-01-01 00:00:00"), null);
 });

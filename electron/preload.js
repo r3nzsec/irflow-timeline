@@ -119,6 +119,7 @@ contextBridge.exposeInMainWorld("tle", {
   rdpBitmapPreviewImage: (imagePath, options) => ipcRenderer.invoke("rdp-bitmap-preview-image", { imagePath, options }),
   bulkTagByTimeRange: (tabId, colName, ranges) => ipcRenderer.invoke("bulk-tag-by-time-range", { tabId, colName, ranges }),
   mergeTabs: (mergedTabId, sources) => ipcRenderer.invoke("merge-tabs", { mergedTabId, sources }),
+  diffTabs: (diffTabId, spec) => ipcRenderer.invoke("diff-tabs", { diffTabId, spec }),
   getEmptyColumns: (tabId) => ipcRenderer.invoke("get-empty-columns", { tabId }),
 
   // Tag operations
@@ -130,7 +131,16 @@ contextBridge.exposeInMainWorld("tle", {
   getBookmarkedIds: (tabId) => ipcRenderer.invoke("get-bookmarked-ids", { tabId }),
   bulkAddTags: (tabId, tagMap) => ipcRenderer.invoke("bulk-add-tags", { tabId, tagMap }),
   bulkTagFiltered: (tabId, tag, options) => ipcRenderer.invoke("bulk-tag-filtered", { tabId, tag, options }),
+  bulkUntagFiltered: (tabId, tag, options) => ipcRenderer.invoke("bulk-untag-filtered", { tabId, tag, options }),
   bulkBookmarkFiltered: (tabId, add, options) => ipcRenderer.invoke("bulk-bookmark-filtered", { tabId, add, options }),
+  // Apply/remove ONE tag across an explicit row-ID list in a single transaction.
+  // Multi-row tagging must use this, never a per-row addTag loop.
+  setTagOnRows: (tabId, rowIds, tag, add) => ipcRenderer.invoke("set-tag-on-rows", { tabId, rowIds, tag, add }),
+  getTagsForRows: (tabId, rowIds) => ipcRenderer.invoke("get-tags-for-rows", { tabId, rowIds }),
+  renameTag: (tabId, from, to) => ipcRenderer.invoke("rename-tag", { tabId, from, to }),
+  deleteTag: (tabId, tag) => ipcRenderer.invoke("delete-tag", { tabId, tag }),
+  mergeDuplicateTags: (tabId) => ipcRenderer.invoke("merge-duplicate-tags", { tabId }),
+  countFilteredRows: (tabId, options) => ipcRenderer.invoke("count-filtered-rows", { tabId, options }),
 
   // IOC matching
   loadIocFile: () => ipcRenderer.invoke("load-ioc-file"),

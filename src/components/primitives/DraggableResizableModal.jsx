@@ -33,12 +33,15 @@ import Modal from "./Modal.jsx";
 export default function DraggableResizableModal({
   defaultWidth = 720,
   defaultHeight,
+  defaultX,
+  defaultY,
   minWidth = 420,
   minHeight = 280,
   onClose,
   closeOnOverlay = false,
   closeOnEscape = true,
   zIndex = 100,
+  clickThrough = false,
   ariaLabel = "Analysis dialog",
   ariaLabelledBy,
   children,
@@ -47,10 +50,12 @@ export default function DraggableResizableModal({
   const [rect, setRect] = useState(() => {
     const w = defaultWidth;
     const h = defaultHeight ?? Math.round((typeof window !== "undefined" ? window.innerHeight : 800) * 0.88);
+    const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
+    const vh = typeof window !== "undefined" ? window.innerHeight : 800;
     return {
       w, h,
-      x: Math.round(((typeof window !== "undefined" ? window.innerWidth : 1200) - w) / 2),
-      y: Math.round(((typeof window !== "undefined" ? window.innerHeight : 800) - h) / 2),
+      x: defaultX != null ? defaultX : Math.round((vw - w) / 2),
+      y: defaultY != null ? defaultY : Math.round((vh - h) / 2),
     };
   });
 
@@ -98,7 +103,7 @@ export default function DraggableResizableModal({
   const edgeStyle = (cursor, pos) => ({ position: "absolute", ...pos, zIndex: 2, cursor });
 
   return (
-    <Modal bare onClose={onClose} closeOnOverlay={closeOnOverlay} closeOnEscape={closeOnEscape} zIndex={zIndex}>
+    <Modal bare onClose={onClose} closeOnOverlay={closeOnOverlay} closeOnEscape={closeOnEscape} zIndex={zIndex} clickThrough={clickThrough}>
       <div
         role="dialog"
         aria-modal="true"
@@ -106,6 +111,7 @@ export default function DraggableResizableModal({
         aria-labelledby={ariaLabelledBy}
         onClick={(e) => e.stopPropagation()} style={{
         WebkitAppRegion: "no-drag",
+        pointerEvents: "auto",
         position: "absolute", left: rect.x, top: rect.y, width: rect.w, height: rect.h,
         background: th.modalBg + "f2", border: `1px solid ${th.glassBorder}`,
         borderRadius: 14, display: "flex", flexDirection: "column",

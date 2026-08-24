@@ -8,10 +8,18 @@
 // grouping, and the Process Inspector evidence pipeline so that timestamp parsing,
 // GUID matching, and host scoping behave the same on both sides of IPC.
 
+export function isUnsetWindowsTimestamp(value) {
+  if (value == null || value === "") return false;
+  const s = String(value).trim();
+  if (!s) return false;
+  return /^(1600|1601|0001)[-/T]/.test(s);
+}
+
 export function normalizeTimestamp(value) {
   if (value == null || value === "") return NaN;
   const s = String(value).trim();
   if (!s) return NaN;
+  if (isUnsetWindowsTimestamp(s)) return NaN;
 
   if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(s)) {
     const iso = s.replace(" ", "T");

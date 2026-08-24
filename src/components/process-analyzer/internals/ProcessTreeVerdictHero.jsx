@@ -41,7 +41,6 @@ export default function ProcessTreeVerdictHero({
       padding: "12px 20px 10px",
       borderBottom: `1px solid ${th.border}44`,
       background: th.modalBg,
-      borderLeft: `3px solid ${th.accent}`,
       flexShrink: 0,
     }}>
       {scoring && (

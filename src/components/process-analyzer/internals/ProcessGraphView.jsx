@@ -447,7 +447,6 @@ export default function ProcessGraphView({
                     strokeWidth={isSel ? 2.2 : 1.2}
                   />
                   <g clipPath={`url(#${clipId})`}>
-                    <rect x={0} y={0} width={4} height={n.height} fill={stroke} opacity={n.level > 0 || isSel || isAncestry || isDownstream ? 1 : 0.35} />
                     <foreignObject
                       x={contentX}
                       y={0}

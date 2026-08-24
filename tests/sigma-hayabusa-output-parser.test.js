@@ -50,6 +50,23 @@ test("parseHayabusaCsv: clean file parses rows, aggregates rule matches, extract
   assert.deepEqual([...rm.hosts].sort(), ["HOST1", "HOST2"]);
 });
 
+test("parseHayabusaCsv: normalizes Hayabusa abbreviated severity levels", async (t) => {
+  const csv = tmpFile(t, "levels.csv", [
+    CSV_HEADER,
+    "2026-01-01T00:00:00Z,Critical Rule,crit,HOST1,Security,1,,,,1,,,rules/crit.yml,rule-crit,/case/Security.evtx",
+    "2026-01-01T00:01:00Z,Medium Rule,med,HOST1,Security,2,,,,2,,,rules/med.yml,rule-med,/case/Security.evtx",
+    "2026-01-01T00:02:00Z,Info Rule,info,HOST1,Security,3,,,,3,,,rules/info.yml,rule-info,/case/Security.evtx",
+    "",
+  ].join("\n"));
+
+  const parsed = await parseHayabusaCsv(csv, null, null, { resultStore: null, previewLimit: 2000 });
+
+  assert.deepEqual(parsed.eventRows.map((row) => row.Level), ["critical", "medium", "informational"]);
+  assert.equal(parsed.ruleMatches.get("rule-crit").level, "critical");
+  assert.equal(parsed.ruleMatches.get("rule-med").level, "medium");
+  assert.equal(parsed.ruleMatches.get("rule-info").level, "informational");
+});
+
 test("parseHayabusaCsv: a file cut off mid-row sets truncatedTail", async (t) => {
   // Last row has only 3 of 15 columns and the file does NOT end with a newline —
   // exactly what a Hayabusa crash mid-write produces.

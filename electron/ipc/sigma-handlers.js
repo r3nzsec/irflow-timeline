@@ -434,13 +434,15 @@ module.exports = function registerSigmaHandlers(safeHandle, safeSend, ctx) {
     let importedTagColors = null;
     if (postAction.tag && result.rowCount > 0) {
       const tagResult = db.bulkTagFiltered
-        ? db.bulkTagFiltered(tabId, postAction.tag, {})
+        // Every row in this tab IS the Sigma match set — tagging the whole tab is the
+        // intent here, so opt past bulkTagFiltered's unscoped-write guard explicitly.
+        ? db.bulkTagFiltered(tabId, postAction.tag, { confirmWholeTab: true })
         : db.bulkAddTagToRows(tabId, _allImportedRowIds(result.rowCount), postAction.tag);
       importedTagColors = postAction.tagColor ? { [postAction.tag]: postAction.tagColor } : null;
       emit("importing-tab", total, `Applied tag "${postAction.tag}" to ${(tagResult?.tagged || result.rowCount).toLocaleString()} imported rows`);
     }
     if (postAction.bookmark && result.rowCount > 0) {
-      if (db.bulkBookmarkFiltered) db.bulkBookmarkFiltered(tabId, true, {});
+      if (db.bulkBookmarkFiltered) db.bulkBookmarkFiltered(tabId, true, { confirmWholeTab: true });
       else db.setBookmarks(tabId, _allImportedRowIds(result.rowCount), true);
       emit("importing-tab", total, `Bookmarked ${result.rowCount.toLocaleString()} imported rows`);
     }

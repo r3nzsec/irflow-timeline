@@ -173,6 +173,32 @@ function readStatsigStore(plistPath) {
   return { stableId, contexts, filePath: plistPath };
 }
 
+/**
+ * ChatGPT Desktop StatsigService.plist — account id, user id and email without touching auth.json.
+ *
+ * This file is not a token store. It survives token expiry and is the cheapest local binding of
+ * email → account UUID besides the RemoteFeatureFlags filename. Missing from the 1.0.10/1.0.11
+ * attribution table because those releases only walked CUAService / auth.json / Analytics.db.
+ */
+function readChatgptStatsigServicePlist(plistPath) {
+  if (!plistPath || !fs.existsSync(plistPath)) return null;
+  const accountId = readPlistKey(plistPath, "accountID") || "";
+  const userId = readPlistKey(plistPath, "userID") || "";
+  const email = readPlistKey(plistPath, "userEmail") || "";
+  const paidRaw = readPlistKey(plistPath, "hasAnyPaidPlanAccount");
+  const totalAccounts = readPlistKey(plistPath, "totalAccounts");
+  if (!accountId && !userId && !email) return null;
+  const paid = paidRaw === "true" || paidRaw === true || paidRaw === "1";
+  return {
+    filePath: plistPath,
+    accountId: String(accountId),
+    userId: String(userId),
+    email: String(email),
+    paid,
+    totalAccounts: totalAccounts != null && totalAccounts !== "" ? String(totalAccounts) : "",
+  };
+}
+
 /* -------------------------------------------------------------- analytics.db */
 
 /**
@@ -311,6 +337,7 @@ module.exports = {
   readAnalyticsDb,
   readAuthIdentity,
   readCodexIdentity,
+  readChatgptStatsigServicePlist,
   STRENGTH_DIRECT,
   STRENGTH_VENDOR,
   STRENGTH_DEVICE,

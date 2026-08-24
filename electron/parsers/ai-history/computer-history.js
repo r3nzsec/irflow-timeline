@@ -22,7 +22,7 @@
  *
  * Event kinds observed in the live 2026 schema: session.started, session.ended, window.changed,
  * mouse.click, mouse.context_menu, mouse.drag, selection.changed, keyboard.text_input,
- * keyboard.submit, keyboard.shortcut.
+ * keyboard.submit, keyboard.shortcut, terminal.value_changed.
  *
  * Notes for the analyst:
  *   - `.id` is a monotonic counter that continues ACROSS segment files but RESTARTS AT 1 on every
@@ -56,8 +56,15 @@ const { dbg } = require("../../logger");
 const { readJsonlBounded } = require("./jsonl-reader");
 const { findMemoriesGitDir, findDeletedSummaries, isUsableRepo } = require("./skysight-git-recovery");
 const {
+  TERMINAL_VALUE_KIND,
+  isTerminalValueChanged,
+  extractTerminalBuffer,
+  describeTerminalActivity,
+  terminalBufferNote,
+} = require("./computer-history-terminal");
+const {
   findIdentityRoot, listAccountPlists, readStatsigStore, readAnalyticsDb,
-  readAuthIdentity, readCodexIdentity,
+  readAuthIdentity, readCodexIdentity, readChatgptStatsigServicePlist,
   STRENGTH_DIRECT, STRENGTH_VENDOR, STRENGTH_DEVICE, STRENGTH_TIMELINE,
 } = require("./skysight-identity");
 const { processFilesConcurrently } = require("./file-batch");
@@ -105,10 +112,22 @@ const TYPING_CONTINUATION_PREFIX_RATIO = 0.7;
 /* ------------------------------------------------------------------ helpers */
 
 function capText(text, maxChars) {
-  const value = String(text ?? "");
+  // iTerm2 AX values embed NUL after prompt glyphs. Those bytes are not content, and they
+  // make CSV/RFC4180 exports unreadable (`line contains NUL`).
+  const value = String(text ?? "").replace(/\u0000/g, "");
   if (value.length <= maxChars) return value;
   const dropped = value.length - maxChars;
   return `${value.slice(0, maxChars)}\n…[truncated ${dropped} chars over ${maxChars}-char cap]`;
+}
+
+/** Body of a TOML table, stopping at the next table header. `[^[]*` cannot be used: values like
+ *  `args = ["mcp"]` contain `[` and would truncate before `enabled`. */
+function tomlTableBody(text, headerPattern) {
+  const m = String(text || "").match(headerPattern);
+  if (!m) return null;
+  const rest = text.slice(m.index + m[0].length);
+  const next = rest.search(/\n\[/);
+  return next < 0 ? rest : rest.slice(0, next);
 }
 
 function firstNonEmpty(...values) {
@@ -441,6 +460,7 @@ function describeActivity(kind, ev, bundleId, destBundleId, targetSubrole = "") 
     case "keyboard.text_input": return "Text Input";
     case "keyboard.submit": return "Submit";
     case "keyboard.shortcut": return "Shortcut";
+    case "terminal.value_changed": return describeTerminalActivity(ev);
     default: return kind ? kind.replace(/[._]/g, " ") : "Event";
   }
 }
@@ -618,6 +638,9 @@ function parseSkysightEvent(ev, sourceFile, ctx = {}, attribution = {}, options 
     case "mouse.drag":
       content = firstNonEmpty(ev.mouse?.origin?.element?.value, ev.mouse?.origin?.element?.title);
       break;
+    case "terminal.value_changed":
+      content = extractTerminalBuffer(ev).content;
+      break;
     default:
       content = "";
   }
@@ -653,7 +676,7 @@ function parseSkysightEvent(ev, sourceFile, ctx = {}, attribution = {}, options 
     ? Number(options.screenTextMaxChars)
     : DEFAULT_SCREEN_TEXT_MAX_CHARS;
 
-  return makeComputerHistoryRow({
+  const row = makeComputerHistoryRow({
     timestamp: formatTimestampUtc(ms),
     eventClass: resolveEventClass(kind, bundleId, url),
     appClass: resolveAppClass(bundleId, url),
@@ -704,6 +727,12 @@ function parseSkysightEvent(ev, sourceFile, ctx = {}, attribution = {}, options 
     user: attribution.user || "",
     host: attribution.host || "",
   });
+  if (isTerminalValueChanged(kind)) {
+    for (const note of terminalBufferNote(ev)) {
+      row.Description += ` | ${note}`;
+    }
+  }
+  return row;
 }
 
 /* ------------------------------------------------------------- coalescing */
@@ -724,6 +753,7 @@ const SCROLLBACK_MIN_CHARS = 2000;
  * whole command/output timeline would collapse into a single row.
  */
 function isScrollbackSnapshot(row) {
+  if (row.EventKind === TERMINAL_VALUE_KIND) return true;
   if (row.AppClass === CLASS_TERMINAL) return true;
   return row.TargetRole === "AXTextArea" && (row.Content || "").length >= SCROLLBACK_MIN_CHARS;
 }
@@ -1347,6 +1377,26 @@ function collectSkysightDerivedMemory(target, attribution = {}) {
   return rows;
 }
 
+function findComputerHistoryPluginManifest(root) {
+  if (!root) return null;
+  const cache = path.join(root, CODEX_DIR_NAME, "plugins", "cache", "openai-bundled", "computer-history");
+  if (!fs.existsSync(cache)) return null;
+  let versions;
+  try { versions = fs.readdirSync(cache, { withFileTypes: true }); } catch { return null; }
+  const dirs = versions.filter((e) => e.isDirectory()).map((e) => e.name).sort();
+  if (!dirs.length) return null;
+  const latest = dirs[dirs.length - 1];
+  const filePath = path.join(cache, latest, ".codex-plugin", "plugin.json");
+  if (!fs.existsSync(filePath)) return null;
+  let parsed = null;
+  try { parsed = JSON.parse(fs.readFileSync(filePath, "utf8")); } catch { /* keep the path */ }
+  return {
+    filePath,
+    version: parsed && typeof parsed.version === "string" ? parsed.version : latest,
+    description: parsed && typeof parsed.description === "string" ? parsed.description : "",
+  };
+}
+
 /* --------------------------------------------------------- feature state */
 
 /**
@@ -1359,6 +1409,7 @@ function collectSkysightDerivedMemory(target, attribution = {}) {
 function collectFeatureState(target, attribution = {}) {
   const rows = [];
   const stamp = (mtime) => formatTimestampUtc(mtime);
+  const identityRoot = findIdentityRoot(target);
 
   const addRow = (filePath, activity, content) => {
     let st;
@@ -1383,7 +1434,14 @@ function collectFeatureState(target, attribution = {}) {
   // it listed a single bundle while the recorder captured 38, and its mtime predated the Computer
   // History release by three months. Recorded for what it is (which apps the agent could control),
   // never as a coverage map.
-  const approvals = findFileBelow(target, "ComputerUseAppApprovals.json");
+  const cuaApprovals = identityRoot
+    ? path.join(
+      identityRoot, "Library", "Group Containers", CUA_GROUP_DIR_NAME,
+      "Library", "Application Support", "Software", "ComputerUseAppApprovals.json",
+    )
+    : null;
+  const approvals = findFileBelow(target, "ComputerUseAppApprovals.json")
+    || (cuaApprovals && fs.existsSync(cuaApprovals) ? cuaApprovals : null);
   if (approvals) {
     let parsed = null;
     try { parsed = JSON.parse(fs.readFileSync(approvals, "utf8")); } catch { /* keep the path */ }
@@ -1403,14 +1461,16 @@ function collectFeatureState(target, attribution = {}) {
     );
   }
 
-  // Whether the feature was switched on at all.
-  const configToml = findFileBelow(target, "config.toml");
-  if (configToml) {
+  // Whether the feature was switched on at all. Search the extract target AND the home-shaped
+  // identity root — selecting the CUAService container used to miss ~/.codex/config.toml.
+  const configToml = findFileBelow(target, "config.toml")
+    || (identityRoot ? path.join(identityRoot, CODEX_DIR_NAME, "config.toml") : null);
+  if (configToml && fs.existsSync(configToml)) {
     let text = "";
     try { text = fs.readFileSync(configToml, "utf8"); } catch { /* ignore */ }
-    const m = text.match(/\[plugins\."computer-history@[^"]*"\][^[]*/);
-    if (m) {
-      const enabled = /enabled\s*=\s*true/.test(m[0]);
+    const pluginBody = tomlTableBody(text, /\[plugins\."computer-history@[^"]*"\]/);
+    if (pluginBody != null) {
+      const enabled = /enabled\s*=\s*true/.test(pluginBody);
       addRow(
         configToml,
         enabled ? "Feature Enabled" : "Feature Disabled",
@@ -1418,6 +1478,29 @@ function collectFeatureState(target, attribution = {}) {
           + "last written — it is not the time the feature was first switched on.",
       );
     }
+    const cuaBody = tomlTableBody(text, /\[mcp_servers\.computer-use\]/);
+    if (cuaBody != null) {
+      const cuaEnabled = /enabled\s*=\s*true/.test(cuaBody);
+      addRow(
+        configToml,
+        cuaEnabled ? "Computer Use Agent MCP Enabled" : "Computer Use Agent MCP Disabled",
+        `[mcp_servers.computer-use] enabled=${cuaEnabled}. Computer Use (agent driving the Mac) is `
+          + "independent of Computer History (recording). On a measured host Computer History was "
+          + "on while this MCP server was off.",
+      );
+    }
+  }
+
+  const pluginManifest = findComputerHistoryPluginManifest(identityRoot || target);
+  if (pluginManifest) {
+    addRow(
+      pluginManifest.filePath,
+      "Computer History Plugin Installed",
+      `computer-history plugin version ${pluginManifest.version || "unknown"}`
+        + `${pluginManifest.description ? ` — ${pluginManifest.description}` : ""}. `
+        + "Presence of the bundled plugin cache is not by itself proof recording ran; combine with "
+        + "the Feature Enabled row and the event stream.",
+    );
   }
 
   // The prompt that governs what the summariser records — user-writable, so also a tamper surface.
@@ -1484,6 +1567,32 @@ function collectIdentityArtifacts(target, attribution = {}, options = {}) {
             + "ChatGPT account has been used on this host." : ""}`,
       sourceFile: acc.filePath,
       recordedSourcePath: acc.filePath,
+    });
+  }
+
+  const statsigAccount = readChatgptStatsigServicePlist(
+    path.join(prefsDir, "com.openai.chat.StatsigService.plist"),
+  );
+  if (statsigAccount) {
+    const parts = [
+      statsigAccount.email ? `email=${statsigAccount.email}` : "",
+      statsigAccount.userId ? `user=${statsigAccount.userId}` : "",
+      statsigAccount.accountId ? `account=${statsigAccount.accountId}` : "",
+      statsigAccount.paid ? "paid_plan=true" : "",
+      statsigAccount.totalAccounts ? `totalAccounts=${statsigAccount.totalAccounts}` : "",
+    ].filter(Boolean).join(", ");
+    push({
+      timestamp: mtime(statsigAccount.filePath),
+      eventClass: CLASS_IDENTITY,
+      eventKind: "identity.statsig_account",
+      activity: `ChatGPT Statsig Account (${STRENGTH_DIRECT})`,
+      targetRole: "StatsigService",
+      targetLabel: statsigAccount.email || statsigAccount.accountId || "StatsigService",
+      identifier: statsigAccount.accountId || statsigAccount.userId || "",
+      content: `${parts}. Taken from com.openai.chat.StatsigService.plist — no tokens. Survives `
+        + "auth.json expiry. Compare account= against the RemoteFeatureFlags filename.",
+      sourceFile: statsigAccount.filePath,
+      recordedSourcePath: statsigAccount.filePath,
     });
   }
 
@@ -1847,7 +1956,7 @@ function dedupeRows(rows) {
     // EventId is session-global and unique; segment id disambiguates re-collected/overlapping dumps.
     const key = r.EventId
       ? `${r.SegmentId}\x1e${r.EventId}`
-      : `${r.SourceFile}\x1e${r.Timestamp}\x1e${r.EventKind}\x1e${r.LineNumber}`;
+      : `${r.SourceFile}\x1e${r.Timestamp}\x1e${r.EventKind}\x1e${r.Activity}\x1e${r.LineNumber}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(r);
@@ -2114,5 +2223,10 @@ module.exports = {
   extractSegmentFile,
   extractComputerHistoryDir,
   extractComputerHistoryPath,
+  dedupeRows,
   TOOL_COMPUTER_HISTORY,
+  TERMINAL_VALUE_KIND,
+  isTerminalValueChanged,
+  extractTerminalBuffer,
+  describeTerminalActivity,
 };

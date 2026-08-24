@@ -220,7 +220,8 @@ What the parser adds beyond the raw events:
 - Gemini macOS desktop app history is not parsed; Gemini CLI local sessions are supported.
 - Proprietary Windsurf Cascade protobuf bundles are preserved as inventory unless decoders are available.
 - Secret detection is intentionally conservative and should be reviewed by an analyst before reporting.
-- Computer History raw events are purged after about 48 hours, so on a stale image the derived summaries are often the only surviving record — and they are model-generated interpretation, not primary evidence.
+- Computer History raw events are advertised as a ~48 hour rolling window while the recorder is running. A stopped recorder can leave recent segments on disk longer. On a truly stale image the derived summaries and `~/.codex/memories/` are still the copies that outlive a running purge, and they are model-generated interpretation, not primary evidence.
+- Computer History `terminal.value_changed` events carry visible terminal scrollback (often during SSH/sudo password prompts). They time-anchor that a command opened a password prompt; they do not recover the password.
 - Computer History activity summaries can be self-redacting; the generator omits content it judges sensitive, so a summary may understate what the raw events showed.
 - The local ChatGPT analytics event store is uploaded and cleared, with freed pages zeroed. Expect it empty on anything but a fast live acquisition, and treat its absence as normal rather than as evidence the feature was unused.
 

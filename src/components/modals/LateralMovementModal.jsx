@@ -1715,7 +1715,7 @@ export default function LateralMovementModal() {
                               {wList.map((w, i) => {
                                 const c = w.level === "error" ? th.sev.critical : w.level === "warn" ? th.sev.med : th.textMuted;
                                 return (
-                                  <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: LM_TYPOGRAPHY.meta, color: th.textDim, padding: "3px 6px", background: c + "08", borderLeft: `2px solid ${c}`, borderRadius: 3 }}>
+                                  <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: LM_TYPOGRAPHY.meta, color: th.textDim, padding: "3px 6px", background: c + "08", borderRadius: 3 }}>
                                     <span style={{ color: c, fontWeight: 700, fontSize: LM_TYPOGRAPHY.badge, textTransform: "uppercase", flexShrink: 0 }}>{w.level}</span>
                                     <span>{w.text}</span>
                                   </div>
@@ -3218,7 +3218,7 @@ export default function LateralMovementModal() {
                                 <div>
                                   <div style={{ fontSize: LM_TYPOGRAPHY.badge, color: th.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600, marginBottom: 4 }}>Why It Matters</div>
                                   {narrative.map((n, ni) => (
-                                    <div key={ni} style={{ fontSize: LM_TYPOGRAPHY.meta, color: th.textDim, marginBottom: 2, lineHeight: 1.4, paddingLeft: 8, borderLeft: `2px solid ${th.accent}22` }}>{n}</div>
+                                    <div key={ni} style={{ fontSize: LM_TYPOGRAPHY.meta, color: th.textDim, marginBottom: 2, lineHeight: 1.4, paddingLeft: 8 }}>{n}</div>
                                   ))}
                                 </div>
                               )}

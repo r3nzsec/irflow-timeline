@@ -15,6 +15,7 @@ const {
   decodeUuidV7,
   findIdentityRoot,
   listAccountPlists,
+  readChatgptStatsigServicePlist,
 } = require("../electron/parsers/ai-history/skysight-identity");
 
 const {
@@ -52,6 +53,7 @@ const {
   extractSegmentFile,
   extractComputerHistoryDir,
   extractComputerHistoryPath,
+  dedupeRows,
 } = require("../electron/parsers/ai-history/computer-history");
 const {
   COMPUTER_HISTORY_COLUMNS,
@@ -968,6 +970,51 @@ test("the Computer Use approvals file is not presented as the recording scope", 
   assert.doesNotMatch(approvals.Activity, /^App Approvals$/);
 });
 
+test("collectFeatureState records Computer History plugin vs Computer Use MCP independently", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ch-feat-"));
+  try {
+    const codex = path.join(home, ".codex");
+    fs.mkdirSync(codex, { recursive: true });
+    fs.mkdirSync(path.join(home, "Library/Group Containers"), { recursive: true });
+    fs.writeFileSync(path.join(codex, "config.toml"), [
+      `[plugins."computer-history@openai-bundled"]`,
+      `enabled = true`,
+      ``,
+      `[mcp_servers.computer-use]`,
+      `enabled = false`,
+      ``,
+    ].join("\n"));
+    const pluginDir = path.join(
+      codex, "plugins/cache/openai-bundled/computer-history/1.0.1000761/.codex-plugin",
+    );
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, "plugin.json"), JSON.stringify({
+      name: "computer-history",
+      version: "1.0.1000761",
+      description: "Ask ChatGPT about what you were doing recently",
+    }));
+
+    const rows = collectFeatureState(home, {});
+    const enabled = rows.find((r) => r.Activity === "Feature Enabled");
+    const cua = rows.find((r) => r.Activity === "Computer Use Agent MCP Disabled");
+    const plugin = rows.find((r) => r.Activity === "Computer History Plugin Installed");
+    assert.ok(enabled);
+    assert.ok(cua);
+    assert.match(cua.Content, /independent of Computer History/);
+    assert.ok(plugin);
+    assert.match(plugin.Content, /1\.0\.1000761/);
+
+    const kept = dedupeRows(rows);
+    assert.equal(
+      kept.filter((r) => r.EventKind === "feature.state").length,
+      rows.filter((r) => r.EventKind === "feature.state").length,
+      "two config.toml feature.state rows must not collapse",
+    );
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("parseSummaryFile emits a Narrative row timestamped from the filename", () => {
   const row = parseSummaryFile(FIXTURE_SUMMARY, { user: "subject" }, {});
   assert.equal(row.EventClass, CLASS_NARRATIVE);
@@ -1117,6 +1164,17 @@ function buildIdentityHome() {
     fs.writeFileSync(path.join(prefs, `com.openai.chat.RemoteFeatureFlags.${id}.plist`), "");
   }
   fs.writeFileSync(path.join(codex, "installation_id"), "5e8ebfa2-4d11-49fd-9da4-07d9c4f199c5\n");
+  fs.writeFileSync(path.join(prefs, "com.openai.chat.StatsigService.plist"), [
+    `<?xml version="1.0" encoding="UTF-8"?>`,
+    `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`,
+    `<plist version="1.0"><dict>`,
+    `<key>accountID</key><string>9097b427-4a0c-4a3b-b588-c8eeb7312c08</string>`,
+    `<key>userEmail</key><string>subject@example.test</string>`,
+    `<key>userID</key><string>user-TESTID</string>`,
+    `<key>hasAnyPaidPlanAccount</key><true/>`,
+    `<key>totalAccounts</key><integer>1</integer>`,
+    `</dict></plist>`,
+  ].join("\n"));
 
   const claims = {
     email: "subject@example.test", name: "Test Subject", sub: "auth0|abc123",
@@ -1171,6 +1229,25 @@ test("account UUIDs are read from preference filenames, and two files mean two a
   assert.equal(acct.length, 2);
   assert.match(acct[0].Activity, /direct/, "attribution strength is stated on the row");
   assert.match(acct[0].Content, /more than one ChatGPT account has been used/);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("StatsigService.plist binds email to the account UUID without reading auth.json", () => {
+  const home = buildIdentityHome();
+  const parsed = readChatgptStatsigServicePlist(
+    path.join(home, "Library/Preferences/com.openai.chat.StatsigService.plist"),
+  );
+  assert.equal(parsed.email, "subject@example.test");
+  assert.equal(parsed.accountId, "9097b427-4a0c-4a3b-b588-c8eeb7312c08");
+  assert.equal(parsed.userId, "user-TESTID");
+  assert.equal(parsed.paid, true);
+
+  const rows = collectIdentityArtifacts(home, { user: "subject" }, {});
+  const sig = rows.find((r) => r.EventKind === "identity.statsig_account");
+  assert.ok(sig);
+  assert.match(sig.Activity, /direct/);
+  assert.match(sig.Content, /email=subject@example\.test/);
+  assert.match(sig.Content, /no tokens/);
   fs.rmSync(home, { recursive: true, force: true });
 });
 

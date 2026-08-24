@@ -29,7 +29,7 @@ export const PROCESS_GRAPH_DEFAULTS = {
   // Approx monospace advance (px) — SF Mono / Menlo at the sizes above.
   titleCharWidth: 7.2,
   subCharWidth: 5.5,
-  // Inner horizontal padding: accent bar + gutters + icon column.
+  // Inner horizontal padding: gutters + icon column.
   contentPadX: 36,
   contentPadY: 12,
   maxTitleLines: 6,

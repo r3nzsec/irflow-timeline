@@ -1,4 +1,7 @@
-import { normalizeTimestamp } from "./forensic-normalize.js";
+import { isUnsetWindowsTimestamp, normalizeTimestamp } from "./forensic-normalize.js";
+
+export const UNSET_TIMESTAMP_LABEL = "Unset";
+export const UNSET_TIMESTAMP_TITLE = "Unset timestamp (Windows FILETIME epoch 1601-01-01 — not a real event time)";
 
 const _dtfCache = {};
 function _getCachedDtf(tz) {
@@ -12,7 +15,9 @@ function _getCachedDtf(tz) {
 }
 
 export function formatDateTime(raw, fmt, tz) {
-  if (!fmt || !raw) return raw || "";
+  if (!raw && raw !== 0) return raw || "";
+  if (isUnsetWindowsTimestamp(raw)) return UNSET_TIMESTAMP_LABEL;
+  if (!fmt) return raw || "";
   // Parse via the canonical normalizer so naive (zone-less) timestamps are read as
   // UTC — the convention the backend and every analysis modal use. Plain new Date(raw)
   // treats them as host-local, showing grid times shifted from the analysis panels.

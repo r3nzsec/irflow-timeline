@@ -232,7 +232,7 @@ Use this workflow when AI-assisted activity may be relevant evidence: pasted sec
 
 **Inputs:** a `segments/` directory of `<YYYY-MM-DDTHH-MM-SSZ>/events.jsonl` + `metadata.json` buckets, and/or a `skysight/resources/` directory of `*-(10min|6h)-*.md` activity summaries. A `.codex` folder, a CUAService group container, or a triage root containing either will also resolve.
 
-Imported through **Tools → Analysis → AI Artifacts → AI Apps → OpenAI Codex → ChatGPT Computer History**. This is **not** AI conversation history — it is macOS user-activity telemetry (app focus, clicks, keystrokes, shortcuts, selections, drags, window and URL context), so it opens in its own tab with a dedicated 54-column schema rather than the AI Query History columns.
+Imported through **Tools → Analysis → AI Artifacts → AI Apps → OpenAI Codex → ChatGPT Computer History**. This is **not** AI conversation history — it is macOS user-activity telemetry (app focus, clicks, keystrokes, shortcuts, selections, drags, terminal buffer changes, window and URL context), so it opens in its own tab with a dedicated 54-column schema rather than the AI Query History columns.
 
 | Path | Retention |
 |------|-----------|

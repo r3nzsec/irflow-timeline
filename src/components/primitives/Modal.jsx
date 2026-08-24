@@ -45,6 +45,7 @@ export default function Modal({
   closeOnEscape = true,
   zIndex = 100,
   bare = false,
+  clickThrough = false,
   children,
 }) {
   const { th } = useTheme();
@@ -79,11 +80,12 @@ export default function Modal({
         style={{
           position: "fixed",
           inset: 0,
-          background: th.overlay,
+          background: clickThrough ? "transparent" : th.overlay,
           zIndex,
-          backdropFilter: "blur(4px)",
-          WebkitBackdropFilter: "blur(4px)",
-          WebkitAppRegion: "drag",
+          backdropFilter: clickThrough ? "none" : "blur(4px)",
+          WebkitBackdropFilter: clickThrough ? "none" : "blur(4px)",
+          WebkitAppRegion: clickThrough ? "no-drag" : "drag",
+          pointerEvents: clickThrough ? "none" : undefined,
           animation: "tle-overlay-in var(--m-fast) var(--ease-out-soft)",
           outline: "none",
         }}

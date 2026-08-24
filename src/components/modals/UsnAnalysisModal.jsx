@@ -1530,7 +1530,7 @@ export default function UsnAnalysisModal() {
                 </div>
                 <div style={{ display: "grid", gap: 3, maxHeight: 240, overflow: "auto" }}>
                   {focusedLifecycle.slice(0, 200).map((ev, i) => (
-                    <div key={ev.key || i} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 10, fontFamily: "-apple-system, sans-serif", borderLeft: `2px solid ${th.accent}44`, paddingLeft: 8, paddingBottom: 1 }}>
+                    <div key={ev.key || i} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 10, fontFamily: "-apple-system, sans-serif", paddingLeft: 8, paddingBottom: 1 }}>
                       <span style={{ color: th.textDim, fontFamily: "'SF Mono',Menlo,monospace", fontSize: 9, flexShrink: 0, width: 132 }}>{(ev.timestamp || "").slice(0, 19)}</span>
                       <span style={{ color: th.accent, flexShrink: 0, minWidth: 92, fontWeight: 600 }}>{ev.reasonLabel || "Activity"}</span>
                       <span style={{ color: th.text, fontFamily: "'SF Mono',Menlo,monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 240 }}>{ev.displayName || ev.name || ""}</span>

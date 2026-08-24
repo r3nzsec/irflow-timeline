@@ -84,6 +84,7 @@ Merging very large tabs (millions of rows each) creates a proportionally large m
 
 ## See Also
 
+- [Diff Tabs](/workflows/diff-tabs) — compare two tabs instead of unioning them
 - [Multi-Tab Analysis](/workflows/multi-tab) — open and manage tabs before merging
 - [Histogram](/features/histogram) — merged timelines show multi-source coloring in the histogram
 - [Lateral Movement Tracker](/features/lateral-movement) — trace lateral movement across merged host timelines

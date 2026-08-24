@@ -38,6 +38,8 @@ The menu bar provides access to all application features through five dropdown m
 | **Filter Presets** | Save and load named filter configurations |
 | **Edit Filter** | Open the advanced filter editor for the active tab |
 | **Merge Tabs** | Combine multiple tabs into a unified super-timeline |
+| **Diff Tabs** | Compare any two imported tabs and open an interactive Added / Removed / Changed result |
+| **Diff Explorer** | Status counts, schema delta, and field-level before/after on a Diff result tab |
 
 ### Actions
 

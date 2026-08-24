@@ -15,12 +15,23 @@
 
 // ---------- Timestamp ----------
 
+// Windows FILETIME 0 and .NET DateTime.MinValue. EvtxECmd/Hayabusa render a zero
+// TimeCreated as 1601-01-01 (or 1600-12-31 if a positive offset was applied).
+// These are "timestamp not set", not real event times.
+function isUnsetWindowsTimestamp(value) {
+  if (value == null || value === "") return false;
+  const s = String(value).trim();
+  if (!s) return false;
+  return /^(1600|1601|0001)[-/T]/.test(s);
+}
+
 // Returns epoch milliseconds for any timestamp value the importer might see.
 // Returns NaN if unparseable. Mirrors the format coverage of sort_datetime in db.js.
 function normalizeTimestamp(value) {
   if (value == null || value === "") return NaN;
   const s = String(value).trim();
   if (!s) return NaN;
+  if (isUnsetWindowsTimestamp(s)) return NaN;
 
   // Fast path: ISO 8601 (most forensic data)
   if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(s)) {
@@ -171,6 +182,7 @@ function registerForensicUDFs(db) {
 
 module.exports = {
   normalizeTimestamp,
+  isUnsetWindowsTimestamp,
   compareTimestamps,
   normalizeGuid,
   normalizePid,

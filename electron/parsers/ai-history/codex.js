@@ -825,6 +825,29 @@ async function extractCodexDir(codexRoot, attribution = {}, options = {}) {
   const { rows: sqliteRows, stats: sqliteStats } = supplementCodexFromStateSqlite(codexRoot, attribution, options);
   if (sqliteRows.length) emitBatch(sqliteRows);
 
+  // Auxiliary stores (sqlite/codex-dev.db, logs*.sqlite) and flat-file evidence
+  // (memories/rollout_summaries, hooks.json). Both resolve strictly inside codexRoot, so a triage
+  // folder stays scope-confined. Failures are contained per-store and must not fail the import.
+  const { supplementCodexFromAuxSqlite } = require("./codex-aux-sqlite");
+  let auxSqliteStats = null;
+  try {
+    const { rows: auxRows, stats } = supplementCodexFromAuxSqlite(codexRoot, attribution, options);
+    if (auxRows.length) emitBatch(auxRows);
+    auxSqliteStats = stats;
+  } catch (e) {
+    dbg("AIHIST", "codex aux sqlite supplement failed", { err: e.message });
+  }
+
+  const { supplementCodexFromLocalEvidence } = require("./codex-local-evidence");
+  let localEvidenceStats = null;
+  try {
+    const { rows: localRows, stats } = supplementCodexFromLocalEvidence(codexRoot, attribution, options);
+    if (localRows.length) emitBatch(localRows);
+    localEvidenceStats = stats;
+  } catch (e) {
+    dbg("AIHIST", "codex local evidence supplement failed", { err: e.message });
+  }
+
   let vscodeAgentStats = null;
   // VS Code is a separate evidence root. Only consult directories explicitly supplied by the
   // caller; never probe the examiner workstation's global VS Code locations from a Codex import.
@@ -858,6 +881,8 @@ async function extractCodexDir(codexRoot, attribution = {}, options = {}) {
   if (onExtractedRows) {
     const out = [];
     if (sqliteStats) out._codexStateSqliteStats = sqliteStats;
+    if (auxSqliteStats) out._codexAuxSqliteStats = auxSqliteStats;
+    if (localEvidenceStats) out._codexLocalEvidenceStats = localEvidenceStats;
     if (vscodeAgentStats) out._codexVsCodeAgentStats = vscodeAgentStats;
     if (parseStats.errors) out._parseErrors = parseStats.errors;
     return out;
@@ -865,6 +890,8 @@ async function extractCodexDir(codexRoot, attribution = {}, options = {}) {
 
   const finalized = finalizeAiHistoryRows(filterSidechainRows(rows, options), options);
   if (sqliteStats) finalized._codexStateSqliteStats = sqliteStats;
+  if (auxSqliteStats) finalized._codexAuxSqliteStats = auxSqliteStats;
+  if (localEvidenceStats) finalized._codexLocalEvidenceStats = localEvidenceStats;
   if (vscodeAgentStats) finalized._codexVsCodeAgentStats = vscodeAgentStats;
   if (parseStats.errors) finalized._parseErrors = parseStats.errors;
   return finalized;

@@ -79,6 +79,14 @@ const useUIStore = create((set) => ({
   refreshCallback: null,
   setRefreshCallback: (fn) => set({ refreshCallback: fn }),
 
+  // ── Row-metadata cache invalidator (registered by App.jsx) ────────
+  // App caches each query window keyed by filter signature, and that cache
+  // carries a SNAPSHOT of bookmarkedSet/rowTags. Anything that writes tags or
+  // bookmarks must call this before refreshCallback, or the refresh serves the
+  // pre-write snapshot back and the change appears to have been discarded.
+  invalidateRowMeta: null,
+  setInvalidateRowMeta: (fn) => set({ invalidateRowMeta: fn }),
+
   // ── Cross-tab search ──────────────────────────────────────────────
   crossFind: null,           // { term, results: [{tabId, name, count}] }
   crossTabCounts: null,      // auto inline: { term, mode, results }

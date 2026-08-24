@@ -26,6 +26,52 @@ const { dbg } = require("./logger");
 const { registerRuntimeFunctions } = require("./db/runtime-functions");
 const { safeRegexTester } = require("./utils/safe-regex");
 
+/**
+ * Attach the tab's write statements to `meta` as memoized lazy properties.
+ *
+ * Each one compiles on first access and then replaces itself with a plain data property,
+ * so callers keep using `meta.insertStmt` / `meta.tagInsertStmt` unchanged and a tab that
+ * only ever reads never compiles them at all. Properties stay writable and configurable
+ * so tests can substitute stubs.
+ */
+function lazyWriteStatements(meta, { colList, placeholders }) {
+  const hasCols = meta.safeCols.length > 0;
+  const define = (name, build) => {
+    Object.defineProperty(meta, name, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        const value = build();
+        Object.defineProperty(meta, name, { value, writable: true, configurable: true, enumerable: true });
+        return value;
+      },
+      set(value) {
+        Object.defineProperty(meta, name, { value, writable: true, configurable: true, enumerable: true });
+      },
+    });
+  };
+
+  define("insertStmt", () => (hasCols
+    ? meta.db.prepare(`INSERT INTO data (${colList}) VALUES (${placeholders})`)
+    : null));
+  define("multiInsertStmt", () => {
+    if (!hasCols || meta.multiRowCount <= 1) return null;
+    const singleRow = `(${placeholders})`;
+    return meta.db.prepare(`INSERT INTO data (${colList}) VALUES ${Array(meta.multiRowCount).fill(singleRow).join(",")}`);
+  });
+  // Sized against multiInsertStmt: null whenever there is no multi-row insert to fill.
+  define("insertFlat", () => (hasCols && meta.multiRowCount > 1
+    ? new Array(meta.multiRowCount * meta.safeCols.length)
+    : null));
+  define("bmCheckStmt", () => meta.db.prepare("SELECT rowid FROM bookmarks WHERE rowid = ?"));
+  define("bmInsertStmt", () => meta.db.prepare("INSERT OR IGNORE INTO bookmarks (rowid) VALUES (?)"));
+  define("bmDeleteStmt", () => meta.db.prepare("DELETE FROM bookmarks WHERE rowid = ?"));
+  define("bmCountStmt", () => meta.db.prepare("SELECT COUNT(*) as cnt FROM bookmarks"));
+  define("tagInsertStmt", () => meta.db.prepare("INSERT OR IGNORE INTO tags (rowid, tag) VALUES (?, ?)"));
+  define("tagDeleteStmt", () => meta.db.prepare("DELETE FROM tags WHERE rowid = ? AND tag = ?"));
+  return meta;
+}
+
 class TimelineDB {
   constructor() {
     this.databases = new Map(); // tabId -> { db, dbPath, headers, rowCount, tsColumns }
@@ -93,7 +139,7 @@ class TimelineDB {
     db.pragma("mmap_size = 0"); // disable mmap during import (write-only)
     // EXCLUSIVE locking is only safe in a worker thread, which closes its connection
     // cleanly after import (releasing the lock). In the main process, in-process imports
-    // (sigma "Open as Tab", mergeTabs) keep the connection open for queries, so the
+    // (sigma "Open as Tab", mergeTabs, diffTabs) keep the connection open for queries, so the
     // lock would never release and the index/FTS worker (separate worker_threads
     // connection) would hang at "database is locked". Detected via isMainThread.
     const { isMainThread } = require("worker_threads");
@@ -398,28 +444,13 @@ class TimelineDB {
     const safeCols = headers.map((h, i) => ({ original: h, safe: `c${i}` }));
     const colList = safeCols.map((c) => c.safe).join(", ");
     const placeholders = safeCols.map(() => "?").join(", ");
-    const insertStmt = safeCols.length > 0
-      ? db.prepare(`INSERT INTO data (${colList}) VALUES (${placeholders})`)
-      : null;
     const multiRowCount = safeCols.length > 0 ? Math.max(1, Math.floor(32766 / safeCols.length)) : 1;
-    let multiInsertStmt = null;
-    if (insertStmt && multiRowCount > 1) {
-      const singleRow = `(${placeholders})`;
-      multiInsertStmt = db.prepare(`INSERT INTO data (${colList}) VALUES ${Array(multiRowCount).fill(singleRow).join(",")}`);
-    }
 
     let detectedFtsCreated = !!ftsCreated;
     try {
       const fts = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'data_fts'").get();
       detectedFtsCreated = detectedFtsCreated || !!fts;
     } catch {}
-
-    const bmCheckStmt = db.prepare("SELECT rowid FROM bookmarks WHERE rowid = ?");
-    const bmInsertStmt = db.prepare("INSERT OR IGNORE INTO bookmarks (rowid) VALUES (?)");
-    const bmDeleteStmt = db.prepare("DELETE FROM bookmarks WHERE rowid = ?");
-    const bmCountStmt = db.prepare("SELECT COUNT(*) as cnt FROM bookmarks");
-    const tagInsertStmt = db.prepare("INSERT OR IGNORE INTO tags (rowid, tag) VALUES (?, ?)");
-    const tagDeleteStmt = db.prepare("DELETE FROM tags WHERE rowid = ? AND tag = ?");
 
     const meta = {
       tabId,
@@ -437,19 +468,18 @@ class TimelineDB {
       indexesBuilding: false,
       indexedCols: new Set(indexedCols),
       isLargeFile: !!isLargeFile,
-      insertStmt,
-      multiInsertStmt,
       multiRowCount,
-      insertFlat: multiInsertStmt ? new Array(multiRowCount * safeCols.length) : null,
-      bmCheckStmt,
-      bmInsertStmt,
-      bmDeleteStmt,
-      bmCountStmt,
-      tagInsertStmt,
-      tagDeleteStmt,
       colMap: Object.fromEntries(safeCols.map((c) => [c.original, c.safe])),
       reverseColMap: Object.fromEntries(safeCols.map((c) => [c.safe, c.original])),
     };
+
+    // Write statements are prepared on first use, not on adopt. Adoption is not only the
+    // main process taking over an imported tab — every scroll-window query spawns a
+    // worker that adopts the same tab, runs one SELECT, and exits. Preparing the whole
+    // write surface there compiled an INSERT with up to 32,766 placeholders (a SQL string
+    // tens of KB wide) plus six bookmark/tag statements for a connection that never
+    // writes, paying that cost on the latency path of every fetch during a fast scroll.
+    lazyWriteStatements(meta, { colList, placeholders });
 
     this.databases.set(tabId, meta);
     dbg("DB", `adoptTabFromFile OK`, { tabId, dbPath, rowCount, headerCount: headers.length });
@@ -858,7 +888,13 @@ class TimelineDB {
 
   /**
    * Check if background builds (indexes/FTS) are running on a tab.
-   * Bookmark/tag mutations are blocked during builds to avoid write contention.
+   *
+   * NOTE: this must NOT be used to block bookmark/tag writes. Both builds run on
+   * THIS connection, on the main thread, chunked between event-loop turns, and
+   * they only touch `data`/`data_fts` — a write to the tiny `tags`/`bookmarks`
+   * tables in between chunks is safe. Gating on it silently discarded everything
+   * an analyst tagged during the minutes-long index build that follows a large
+   * import, while the UI showed the tag as applied.
    */
   _isBuilding(tabId) {
     const meta = this.databases.get(tabId);
@@ -1431,7 +1467,6 @@ class TimelineDB {
     };
   }
 
-
   // ── Delegated analyzers (extracted to electron/analyzers/) ────────
 
   scanRansomwareExtensions(tabId, progressCb) {
@@ -1520,5 +1555,6 @@ function applyMixin(target, source) {
 applyMixin(TimelineDB.prototype, require("./db/query-store"));
 applyMixin(TimelineDB.prototype, require("./db/tag-store"));
 applyMixin(TimelineDB.prototype, require("./db/timeline-analytics"));
+TimelineDB.prototype.diffTabs = require("./db/diff-tabs").diffTabs;
 
 module.exports = TimelineDB;

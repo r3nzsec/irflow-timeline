@@ -143,7 +143,11 @@ test("unique-value queries expose the complete distinct count and truncation", (
     truncated: true,
   });
   assert.match(captured.sql, /COUNT\(\*\) OVER\(\) AS total_distinct/);
-  assert.match(captured.sql, /GROUP BY c0/);
+  // Grouped on the column, but through the empty-bucket expression: NULL, '' and
+  // whitespace-only all have to land in the single "(empty)" entry the checkbox filter
+  // acts on, so the GROUP BY is the CASE wrapper rather than the bare column.
+  assert.match(captured.sql, /GROUP BY CASE WHEN TRIM\(COALESCE\(c0, ''\)/);
+  assert.match(captured.sql, /ELSE c0 END/);
   assert.deepEqual(captured.params, ["Security", 2]);
 });
 
