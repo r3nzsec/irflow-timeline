@@ -41,6 +41,9 @@ const config = {
     entitlementsInherit: "entitlements.mac.plist",
   },
   afterSign: "scripts/notarize.js",
+  // Notarizes + staples the DMG itself. afterSign only reaches the .app, which
+  // left the downloaded disk image unsigned and Gatekeeper-rejected.
+  afterAllArtifactBuild: "scripts/notarize-dmg.js",
   electronUpdaterCompatibility: ">=2.16",
   dmg: {
     title: "IRFlow Timeline",
