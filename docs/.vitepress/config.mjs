@@ -17,13 +17,13 @@ export default defineConfig({
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/irflow-timeline/logo.svg' }],
     ['meta', { property: 'og:title', content: 'IRFlow Timeline' }],
-    ['meta', { property: 'og:description', content: 'IRFlow Timeline 1.0.11 verifies Computer History against a live capture and adds the Grok Build and Claude Desktop stores that outlive the conversation — deletion tombstones, staged uploads, and session search indexes.' }],
+    ['meta', { property: 'og:description', content: 'IRFlow Timeline 1.0.12 adds Diff Tabs — compare any two imported files into an Added / Removed / Changed timeline with field-level before/after — and fixes a tag and bookmark layer that was silently discarding annotations.' }],
     ['meta', { property: 'og:image', content: 'https://r3nzsec.github.io/irflow-timeline/IRFlow-Timeline-Home.png' }],
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:url', content: 'https://r3nzsec.github.io/irflow-timeline/' }],
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
     ['meta', { name: 'twitter:title', content: 'IRFlow Timeline' }],
-    ['meta', { name: 'twitter:description', content: 'IRFlow Timeline 1.0.11 verifies Computer History against a live capture and adds the Grok Build and Claude Desktop stores that outlive the conversation — deletion tombstones, staged uploads, and session search indexes.' }],
+    ['meta', { name: 'twitter:description', content: 'IRFlow Timeline 1.0.12 adds Diff Tabs — compare any two imported files into an Added / Removed / Changed timeline with field-level before/after — and fixes a tag and bookmark layer that was silently discarding annotations.' }],
     ['meta', { name: 'twitter:image', content: 'https://r3nzsec.github.io/irflow-timeline/IRFlow-Timeline-Home.png' }],
     ['script', { 'data-goatcounter': 'https://irflowtimeline.goatcounter.com/count', async: '', src: '//gc.zgo.at/count.js' }],
     ['script', { type: 'application/ld+json' }, JSON.stringify({
@@ -31,11 +31,11 @@ export default defineConfig({
       '@type': 'SoftwareApplication',
       name: 'IRFlow Timeline',
       description: 'Native macOS DFIR timeline analysis with local AI application forensics for Grok Build, Claude, Codex, ChatGPT, Copilot, Gemini, Cursor, and other assistants.',
-      softwareVersion: '1.0.11',
+      softwareVersion: '1.0.12',
       operatingSystem: 'macOS',
       applicationCategory: 'SecurityApplication',
       url: 'https://r3nzsec.github.io/irflow-timeline/',
-      downloadUrl: 'https://github.com/r3nzsec/irflow-timeline/releases/tag/v1.0.11',
+      downloadUrl: 'https://github.com/r3nzsec/irflow-timeline/releases/tag/v1.0.12',
       author: {
         '@type': 'Person',
         name: 'Renzon Cruz',
@@ -61,11 +61,11 @@ export default defineConfig({
       { text: 'Reference', link: '/reference/keyboard-shortcuts' },
       { text: 'Author', link: '/about/author' },
       {
-        text: 'v1.0.11',
+        text: 'v1.0.12',
         items: [
+          { text: 'What’s New in v1.0.12', link: '/blog/v1.0.12-diff-tabs-and-triage' },
           { text: 'What’s New in v1.0.11', link: '/blog/v1.0.11-computer-history-verified' },
           { text: 'What’s New in v1.0.10', link: '/blog/v1.0.10-computer-history' },
-          { text: 'What’s New in v1.0.9', link: '/blog/v1.0.9-large-evtx-imports' },
           { text: 'Changelog', link: '/about/changelog' },
           { text: 'Roadmap', link: '/about/roadmap' },
           { text: 'Credits', link: '/about/credits' }
@@ -177,6 +177,7 @@ export default defineConfig({
           text: 'IRFlow Timeline Blog',
           items: [
             { text: 'All Posts', link: '/blog/' },
+            { text: 'v1.0.12 — Diff Tabs & Triage', link: '/blog/v1.0.12-diff-tabs-and-triage' },
             { text: 'v1.0.11 — Computer History Verified', link: '/blog/v1.0.11-computer-history-verified' },
             { text: 'v1.0.10 — ChatGPT Computer History', link: '/blog/v1.0.10-computer-history' },
             { text: 'v1.0.9 — Large EVTX Reliability', link: '/blog/v1.0.9-large-evtx-imports' },

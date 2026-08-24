@@ -34,6 +34,12 @@ The 1.0.10 catalog and the 1.0.11 verification both missed a later recorder kind
 - **Computer History plugin vs Computer Use MCP** are recorded separately. They share a container; they are not the same feature
 - **48-hour purge caveat.** Advertised rolling window applies while the recorder is running. A stopped recorder left 90 segment buckets on disk three days after the last write
 
+### Signed and notarized disk image
+
+Every release through v1.0.11 shipped a DMG that was **never signed or submitted to Apple**. The application inside was notarized and stapled, so it ran cleanly once installed — but the downloaded disk image itself failed Gatekeeper (`no usable signature`), which is the *"Apple could not verify…"* dialog on first open and the reason the install page advised right-click → Open.
+
+Notarization ran as an `afterSign` step, which fires on the `.app` before any DMG exists; the build then wrapped that stapled app in a disk image and did nothing further to the wrapper. The build now signs, notarizes and staples the DMG itself, and asserts with `spctl` that Gatekeeper accepts it before the build is allowed to succeed.
+
 ### Hayabusa v2 / v3 / v4 compatibility
 
 Hayabusa v4 merged `csv-timeline` and `json-timeline` into a single `dfir-timeline` subcommand with an explicit `-t` output type, and rejects the old form before scanning a single event.

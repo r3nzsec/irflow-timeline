@@ -27,7 +27,9 @@ IRFlow Timeline is distributed as a **Universal Binary** that runs natively on b
 4. Launch IRFlow Timeline from Applications or Spotlight
 
 ::: tip First Launch
-Official [GitHub release](https://github.com/r3nzsec/irflow-timeline/releases) builds are signed and notarized. If macOS still quarantines the download, right-click **IRFlow Timeline** in Applications and choose **Open** once, or use **System Settings → Privacy & Security → Open Anyway**.
+From **v1.0.12** the disk image itself is signed, notarized and stapled, alongside the application inside it — so the DMG opens and the app launches with no Gatekeeper prompt.
+
+Earlier releases shipped an unsigned disk image. If you are installing v1.0.11 or older, macOS will warn on first open: right-click **IRFlow Timeline** in Applications and choose **Open** once, or use **System Settings → Privacy & Security → Open Anyway**.
 :::
 
 ## Build from Source

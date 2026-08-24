@@ -50,9 +50,12 @@ features:
 ## What's New · v1.0.12
 
 - **Diff Tabs** — View → Diff Tabs compares any two imported files (EVTX, MFT, Prefetch, AI history, Computer History, or any CSV). The result is a color-coded Added / Removed / Changed timeline with field-level before/after and clickable status counts. Merge is a union; Diff is a comparison.
+- **Tags and bookmarks stopped losing work** — annotations written during the post-import index build were being silently discarded; bulk tagging from the Actions menu ignored your selection and could tag the whole file; multi-row tagging untagged half a mixed selection; and select-all tagged exactly one row. Bulk Tag / Bookmark now leads with an explicit scope and its real row count, Manage Tags can rename, merge and truly delete a tag, and tags now survive CSV/XLSX export.
+- **Signed disk image** — the DMG itself is now signed, notarized and stapled. Every release through 1.0.11 shipped an unsigned image that tripped Gatekeeper on download; that workaround is no longer needed.
+- **Hayabusa v2 / v3 / v4** — the Sigma scanner detects the installed binary's version and builds the matching command line. Plus Select All / Clear for multi-source tab pickers, contributed by [@Yuds16](https://github.com/Yuds16).
 - **Computer History re-audit** — `terminal.value_changed` (visible iTerm2 scrollback), Statsig account identity, and a corrected 48-hour purge caveat.
 
-[Diff Tabs workflow →](/workflows/diff-tabs) · [Full changelog →](/about/changelog)
+[Read the v1.0.12 announcement →](/blog/v1.0.12-diff-tabs-and-triage) · [Diff Tabs workflow →](/workflows/diff-tabs) · [Full changelog →](/about/changelog)
 
 ## What's New · v1.0.11
 
