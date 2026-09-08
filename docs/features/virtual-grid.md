@@ -6,7 +6,7 @@ description: Virtual scrolling data grid with SQLite pagination — view and int
 
 The data grid is the primary interface for viewing and interacting with timeline data. It uses virtual scrolling backed by SQLite pagination to handle millions of rows without performance degradation.
 
-![Virtual Grid on the WKS2390 EvtxECmd timeline (214,100 rows) with histogram, $MFT and $J tabs, and the File / View / Actions / Tools / Help capsule](/dfir-tips/Virtual-Grid.png)
+![Virtual Grid on the WKS2390 EvtxECmd sample timeline with 214,100 rows and the v1.0.13 File / View / Actions / Tools / Help toolbar](/dfir-tips/Virtual-Grid.png)
 
 ## Menu Bar
 
