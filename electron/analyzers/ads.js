@@ -175,7 +175,13 @@ function analyzeADS(meta, opts = {}) {
     if (!meta) return empty;
 
     const db = meta.db;
-    const col = (name) => meta.colMap[name];
+    // Only accept internally-generated safe identifiers (e.g. "c3") before they are
+    // ever interpolated into SQL strings below — closes off SQL injection if colMap
+    // is ever populated from an untrusted source.
+    const col = (name) => {
+      const v = meta.colMap[name];
+      return v && /^c\d+$/.test(v) ? v : undefined;
+    };
     const hasAds = col("HasAds"), isAds = col("IsAds"), zoneId = col("ZoneIdContents");
     const fn = col("FileName"), ext = col("Extension"), pp = col("ParentPath");
     const entry = col("EntryNumber"), created = col("Created0x10"), fs = col("FileSize");
@@ -189,7 +195,7 @@ function analyzeADS(meta, opts = {}) {
     const evtxMeta = opts.evtxMeta || null;
     if (!hasAds && !isAds && !zoneId) return { ...empty, error: "No ADS columns found (HasAds, IsAds, ZoneIdContents)." };
 
-    const notDir = isDir ? `AND (${isDir} IS NULL OR ${isDir} = '' OR ${isDir} = 'False')` : "";
+    const notDir = isDir ? "AND (" + isDir + " IS NULL OR " + isDir + " = '' OR " + isDir + " = 'False')" : "";
 
     // Helper to parse Zone.Identifier content
     const parseZoneId = (content) => {
@@ -255,9 +261,9 @@ function analyzeADS(meta, opts = {}) {
 
     try {
       // Q1: Summary counts
-      const totalWithAds = hasAds ? (db.prepare(`SELECT COUNT(*) as cnt FROM data WHERE ${hasAds} = 'True' ${notDir}`).get()?.cnt || 0) : 0;
-      const totalAdsEntries = isAds ? (db.prepare(`SELECT COUNT(*) as cnt FROM data WHERE ${isAds} = 'True'`).get()?.cnt || 0) : 0;
-      const totalWithZoneId = zoneId ? (db.prepare(`SELECT COUNT(*) as cnt FROM data WHERE ${zoneId} IS NOT NULL AND ${zoneId} != ''`).get()?.cnt || 0) : 0;
+      const totalWithAds = hasAds ? (db.prepare("SELECT COUNT(*) as cnt FROM data WHERE " + hasAds + " = 'True' " + notDir).get()?.cnt || 0) : 0;
+      const totalAdsEntries = isAds ? (db.prepare("SELECT COUNT(*) as cnt FROM data WHERE " + isAds + " = 'True'").get()?.cnt || 0) : 0;
+      const totalWithZoneId = zoneId ? (db.prepare("SELECT COUNT(*) as cnt FROM data WHERE " + zoneId + " IS NOT NULL AND " + zoneId + " != ''").get()?.cnt || 0) : 0;
 
       if (totalWithAds === 0 && totalAdsEntries === 0 && totalWithZoneId === 0) return { ...empty };
 
@@ -272,13 +278,13 @@ function analyzeADS(meta, opts = {}) {
       if (zoneId && totalWithZoneId > 0) {
         const zc = zoneId;
         const zr = db.prepare(
-          `WITH z AS (
-             SELECT CASE WHEN instr(${zc}, 'ZoneId=') > 0 THEN substr(${zc}, instr(${zc}, 'ZoneId=') + 7, 1) ELSE '' END AS d,
-                    (instr(${zc}, 'HostUrl=') = 0 AND instr(${zc}, 'ReferrerUrl=') = 0) AS nourl
-             FROM data WHERE ${zc} IS NOT NULL AND ${zc} != ''
-           )
-           SELECT SUM(d='0') as local, SUM(d='1') as intranet, SUM(d='2') as trusted, SUM(d='3') as internet,
-                  SUM(d='4') as restricted, SUM(d NOT IN ('0','1','2','3','4')) as unknown, SUM(nourl) as noUrl FROM z`
+          "WITH z AS (" +
+          " SELECT CASE WHEN instr(" + zc + ", 'ZoneId=') > 0 THEN substr(" + zc + ", instr(" + zc + ", 'ZoneId=') + 7, 1) ELSE '' END AS d," +
+          "        (instr(" + zc + ", 'HostUrl=') = 0 AND instr(" + zc + ", 'ReferrerUrl=') = 0) AS nourl" +
+          " FROM data WHERE " + zc + " IS NOT NULL AND " + zc + " != ''" +
+          " )" +
+          " SELECT SUM(d='0') as local, SUM(d='1') as intranet, SUM(d='2') as trusted, SUM(d='3') as internet," +
+          "        SUM(d='4') as restricted, SUM(d NOT IN ('0','1','2','3','4')) as unknown, SUM(nourl) as noUrl FROM z"
         ).get() || {};
         zoneBreakdown = { local: zr.local || 0, intranet: zr.intranet || 0, trusted: zr.trusted || 0, internet: zr.internet || 0, restricted: zr.restricted || 0, unknown: zr.unknown || 0 };
         zoneNoUrlCount = zr.noUrl || 0;
@@ -347,12 +353,12 @@ function analyzeADS(meta, opts = {}) {
       let totalAdsExecStreams = 0;
       let nonBenignStreamCarriers = 0; // carriers excluding rows whose only stream is a known-benign OS/app stream
       if (hasAds) {
-        const noZone = zoneId ? `AND (${zoneId} IS NULL OR ${zoneId} = '')` : "";
-        totalStreamCarriers = db.prepare(`SELECT COUNT(*) as cnt FROM data WHERE ${hasAds} = 'True' ${noZone} ${notDir}`).get()?.cnt || 0;
+        const noZone = zoneId ? "AND (" + zoneId + " IS NULL OR " + zoneId + " = '')" : "";
+        totalStreamCarriers = db.prepare("SELECT COUNT(*) as cnt FROM data WHERE " + hasAds + " = 'True' " + noZone + " " + notDir).get()?.cnt || 0;
         if (totalStreamCarriers > 0) {
           const orderBy = created ? `sort_datetime(${created}) DESC` : "rowid DESC";
           streamCarriers = db.prepare(
-            `SELECT ${entry ? entry + " as entryNumber" : "rowid as entryNumber"}, ${fn ? fn + " as fileName" : "'' as fileName"}, ${ext ? ext + " as extension" : "'' as extension"}, ${pp ? pp + " as parentPath" : "'' as parentPath"}, ${created ? created + " as created" : "'' as created"}, ${fs ? fs + " as fileSize" : "'' as fileSize"}, ${siFn ? siFn + " as siFn" : "'' as siFn"}, ${uSec ? uSec + " as uSecZeros" : "'' as uSecZeros"}, ${adsStreamsCol ? adsStreamsCol + " as adsStreams" : "'' as adsStreams"} FROM data WHERE ${hasAds} = 'True' ${noZone} ${notDir} ORDER BY ${orderBy} LIMIT 500`
+            "SELECT " + (entry ? entry + " as entryNumber" : "rowid as entryNumber") + ", " + (fn ? fn + " as fileName" : "'' as fileName") + ", " + (ext ? ext + " as extension" : "'' as extension") + ", " + (pp ? pp + " as parentPath" : "'' as parentPath") + ", " + (created ? created + " as created" : "'' as created") + ", " + (fs ? fs + " as fileSize" : "'' as fileSize") + ", " + (siFn ? siFn + " as siFn" : "'' as siFn") + ", " + (uSec ? uSec + " as uSecZeros" : "'' as uSecZeros") + ", " + (adsStreamsCol ? adsStreamsCol + " as adsStreams" : "'' as adsStreams") + " FROM data WHERE " + hasAds + " = 'True' " + noZone + " " + notDir + " ORDER BY " + orderBy + " LIMIT 500"
           ).all();
           // T5: parse the parser's "<flag>name(size)" descriptors so the analyst sees the actual stream
           // NAME(s) (e.g. invoice.pdf -> "payload.exe"), not just "has a stream". The leading flag char is
@@ -384,7 +390,7 @@ function analyzeADS(meta, opts = {}) {
           if (adsStreamsCol) {
             const conds = [`${adsStreamsCol} LIKE '!%'`, `${adsStreamsCol} LIKE '%|!%'`];
             for (const e of EXEC_EXTS) conds.push(`${adsStreamsCol} LIKE '%${e}(%'`);
-            totalAdsExecStreams = db.prepare(`SELECT COUNT(*) as cnt FROM data WHERE ${hasAds} = 'True' ${noZone} ${notDir} AND (${conds.join(" OR ")})`).get()?.cnt || 0;
+            totalAdsExecStreams = db.prepare("SELECT COUNT(*) as cnt FROM data WHERE " + hasAds + " = 'True' " + noZone + " " + notDir + " AND (" + conds.join(" OR ") + ")").get()?.cnt || 0;
           } else {
             totalAdsExecStreams = streamCarriers.filter((f) => f.execLike).length;
           }
@@ -398,7 +404,7 @@ function analyzeADS(meta, opts = {}) {
             try {
               const adsCountCol = col("AdsStreamCount");
               const benignConds = [...BENIGN_STREAMS].map((n) => `${adsStreamsCol} LIKE '.${n}(%'`);
-              const benignOnly = db.prepare(`SELECT COUNT(*) as cnt FROM data WHERE ${hasAds} = 'True' ${noZone} ${notDir}${adsCountCol ? ` AND ${adsCountCol} = '1'` : ""} AND (${benignConds.join(" OR ")})`).get()?.cnt || 0;
+              const benignOnly = db.prepare("SELECT COUNT(*) as cnt FROM data WHERE " + hasAds + " = 'True' " + noZone + " " + notDir + (adsCountCol ? " AND " + adsCountCol + " = '1'" : "") + " AND (" + benignConds.join(" OR ") + ")").get()?.cnt || 0;
               nonBenignStreamCarriers = Math.max(0, totalStreamCarriers - benignOnly);
             } catch { nonBenignStreamCarriers = totalStreamCarriers; }
           }
@@ -423,7 +429,7 @@ function analyzeADS(meta, opts = {}) {
           const susConds = [];
           if (siFn) susConds.push(`${siFn} = 'True'`);
           if (uSec) susConds.push(`${uSec} = 'True'`);
-          siReliability.suspectStreamCarriers = db.prepare(`SELECT COUNT(*) as cnt FROM data WHERE ${hasAds} = 'True' ${noZone} ${notDir} AND (${susConds.join(" OR ")})`).get()?.cnt || 0;
+          siReliability.suspectStreamCarriers = db.prepare("SELECT COUNT(*) as cnt FROM data WHERE " + hasAds + " = 'True' " + noZone + " " + notDir + " AND (" + susConds.join(" OR ") + ")").get()?.cnt || 0;
           if (siReliability.suspectStreamCarriers > 0) siReliability.note = `${siReliability.suspectStreamCarriers} of ${totalStreamCarriers} stream carrier(s) have $SI timestamps that look timestomped ($SI<$FN or sub-second-zeroed) — their stream timing is unreliable; corroborate with USN/EVTX.`;
         } catch { /* SI columns absent or unreadable — leave 0 */ }
       } else if (!siFn && !uSec) {
