@@ -9,11 +9,11 @@ on:
       from_tag:
         description: "Previous release tag whose ZIP blockmap must remain available"
         required: true
-        default: "v1.0.10"
+        default: "v1.0.12"
       to_tag:
         description: "Current release tag whose ZIP blockmap must be published"
         required: true
-        default: "v1.0.11"
+        default: "v1.0.13"
 
 permissions:
   contents: write
@@ -248,10 +248,10 @@ jobs:
             fi
           done
 
-          if ! grep -Eq '^useMultipleRangeRequest:[[:space:]]*false$' "${app_update_yml}"; then
-            echo "::error::Packaged updater is not configured for S3-compatible single-range downloads"
-            exit 1
-          fi
+          node scripts/verify-app-update-config.cjs \
+            "${app_update_yml}" \
+            "${IRFLOW_UPDATE_BASE_URL}" \
+            "${channel}"
 
           # Stapling changes the DMG bytes. Refuse to publish unless the update feed
           # contains the final post-staple SHA-512 and size for both downloadable files.
@@ -382,6 +382,18 @@ jobs:
           aws_s3_cp "${{ steps.artifacts.outputs.yml }}" "${destination}/${yml_name}" \
             --cache-control "no-cache, no-store, must-revalidate" \
             --content-type "text/yaml"
+
+      - name: Verify public updater feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/verify-published-update-feed.cjs \
+            "${IRFLOW_UPDATE_BASE_URL}" \
+            "${{ steps.artifacts.outputs.yml }}" \
+            "${{ steps.artifacts.outputs.dmg }}" \
+            "${{ steps.artifacts.outputs.zip }}" \
+            "${{ steps.artifacts.outputs.dmg_blockmap }}" \
+            "${{ steps.artifacts.outputs.zip_blockmap }}"
 
   repair-blockmaps:
     if: github.event_name == 'workflow_dispatch'
