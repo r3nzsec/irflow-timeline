@@ -35,7 +35,7 @@ export default defineConfig({
       operatingSystem: 'macOS',
       applicationCategory: 'SecurityApplication',
       url: 'https://r3nzsec.github.io/irflow-timeline/',
-      downloadUrl: 'https://github.com/r3nzsec/irflow-timeline/releases/tag/v1.0.13',
+      downloadUrl: 'https://github.com/r3nzsec/irflow-timeline/releases',
       author: {
         '@type': 'Person',
         name: 'Renzon Cruz',
