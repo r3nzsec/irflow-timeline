@@ -41,9 +41,11 @@ const config = {
     entitlementsInherit: "entitlements.mac.plist",
   },
   afterSign: "scripts/notarize.js",
-  // Notarizes + staples the DMG itself. afterSign only reaches the .app, which
-  // left the downloaded disk image unsigned and Gatekeeper-rejected.
-  afterAllArtifactBuild: "scripts/notarize-dmg.js",
+  // Notarizes + staples the DMG itself. This must run as artifactBuildCompleted:
+  // electron-builder creates the DMG blockmap before this hook and writes
+  // latest-mac.yml afterward, so the hook can replace event.updateInfo with the
+  // post-staple hash that the updater metadata will consume.
+  artifactBuildCompleted: "scripts/notarize-dmg.js",
   electronUpdaterCompatibility: ">=2.16",
   dmg: {
     title: "IRFlow Timeline",

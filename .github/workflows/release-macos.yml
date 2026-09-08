@@ -172,7 +172,7 @@ jobs:
           echo "Bundled Sigma rule count: $(find hayabusa/rules/sigma -name '*.yml' | wc -l | tr -d ' ')"
 
       # electron-builder imports CSC_LINK into a keychain it creates and tears down
-      # itself, which the afterAllArtifactBuild hook cannot see — on v1.0.12 the DMG
+      # itself, which the artifactBuildCompleted hook cannot see — on v1.0.12 the DMG
       # signing step logged "no Developer ID Application identity found in the
       # keychain" and shipped an unsigned disk image. Importing into a keychain on
       # the search list makes the identity and its private key available to every
@@ -252,6 +252,10 @@ jobs:
             echo "::error::Packaged updater is not configured for S3-compatible single-range downloads"
             exit 1
           fi
+
+          # Stapling changes the DMG bytes. Refuse to publish unless the update feed
+          # contains the final post-staple SHA-512 and size for both downloadable files.
+          node scripts/verify-update-metadata.cjs "${yml_path}" "${dmg_path}" "${zip_path}"
 
           echo "dmg=${dmg_path}" >> "${GITHUB_OUTPUT}"
           echo "zip=${zip_path}" >> "${GITHUB_OUTPUT}"
