@@ -21,7 +21,7 @@ The manual check lives under **Help** in the menu bar:
 
 Selecting **Check for Updates…** opens an in-app status popup that reports whether you are up to date, shows download progress when an update is available, and prompts you to restart when the package is ready to install.
 
-![Check for Updates result dialog showing update status after a manual check](/dfir-tips/Check-For-Updates.png)
+The version and message in that popup come from the configured release feed, so they change with each published release.
 
 ## Generic HTTPS Feed
 

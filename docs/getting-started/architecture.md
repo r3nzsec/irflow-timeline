@@ -152,7 +152,7 @@ Streaming parsers convert source files into batched SQLite inserts:
 - **`plaso.js`** — Plaso SQLite databases via ATTACH + zlib
 - **`mft.js`** — two-pass raw `$MFT` parser (pass 1 builds directory + FN attribute maps, pass 2 reconstructs full paths); outputs **34 columns** matching MFTECmd, with SI-vs-FN timestamp comparison and resident-data detection
 - **`usn.js`** — raw `$UsnJrnl:$J` parser with reason-flag decoding and file-reference extraction
-- **`ai-history/`** — per-app parsers (Claude Code/Desktop/Cowork, Codex, Grok Build, ChatGPT, Gemini CLI, Cursor, Copilot, Windsurf, Continue) merged by profile scan or folder import into **AI Query History** tabs. JSONL is streamed with bounded line and evidence sizes; SQLite sources are snapshotted with available WAL/SHM companions. ChatGPT Computer History (Skysight) is a separate family: OS-level interaction telemetry that opens in its own 54-column tab rather than AI Query History.
+- **`ai-history/`** — per-app parsers (Claude Code/Desktop/Cowork, Codex, Grok Build, Grok Bot, ChatGPT, Gemini CLI, Cursor, Copilot, Windsurf, Continue) merged by profile scan or folder import into **AI Query History** tabs. JSONL is streamed with bounded line and evidence sizes; SQLite sources are snapshotted with available WAL/SHM companions. ChatGPT Computer History (Skysight) is a separate family: OS-level interaction telemetry that opens in its own 54-column tab rather than AI Query History.
 - **`vhdx.js` + `ntfs-reader.js` + `vhdx-triage.js`** — read-only dynamic/fixed VHDX access, in-memory log replay, MBR/GPT/bare NTFS discovery, `$MFT` traversal, and selective extraction into the triage-collection pipeline
 
 ## Data Flow

@@ -30,12 +30,12 @@ IRFlow Timeline is inspired by Eric Zimmerman's Timeline Explorer but adds capab
 - IOC Matching with 17+ indicator types
 - Gap & Burst Analysis for anomaly detection
 - Log Source Coverage heatmap
-- **AI Artifacts** — collect local AI assistant history (including Grok Build) into timeline evidence; **ChatGPT Computer History** for macOS interaction telemetry; **AI Secret Hunt** for exposed keys, tokens, and credentials
+- **AI Artifacts** — collect local AI assistant history (including Grok Build and Grok Bot) into timeline evidence; **ChatGPT Computer History** for macOS interaction telemetry; **AI Secret Hunt** for exposed keys, tokens, and credentials
 - Handles 30GB+ files via SQLite streaming (no row limits)
 
 ### Can I analyze local AI assistant history?
 
-Yes. **Tools → Analysis → AI Artifacts → Collect AI Artifacts** discovers and merges local stores from Claude Code, OpenAI Codex, Grok Build, ChatGPT Desktop, Gemini CLI, Cursor, GitHub Copilot, Windsurf, and Continue — from this Mac or a KAPE/triage folder. On the resulting **AI Query History** tab, run **Tools → Detection → AI Secret Hunt** to review possible credential exposure (redacted by default).
+Yes. **Tools → Analysis → AI Artifacts → Collect AI Artifacts** discovers and merges local stores from Claude Code, OpenAI Codex, Grok Build, Grok Bot, ChatGPT Desktop, Gemini CLI, Cursor, GitHub Copilot, Windsurf, and Continue — from this Mac or a KAPE/triage folder. On the resulting **AI Query History** tab, run **Tools → Detection → AI Secret Hunt** to review possible credential exposure (redacted by default).
 
 ChatGPT **Computer History** (Skysight) is a separate artifact family — macOS interaction telemetry, not conversation history. Import it from **Tools → Analysis → AI Artifacts → AI Apps → OpenAI Codex → ChatGPT Computer History**. It opens in its own 54-column tab.
 

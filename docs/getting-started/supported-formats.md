@@ -230,7 +230,7 @@ Extracted files are scratch data (removed when the app quits) and land on the Te
 
 AI app evidence is handled through **Tools → Analysis → AI Artifacts → Collect AI Artifacts** or by opening a supported app-data folder directly (**AI Apps** submenu for single-tool imports). IRFlow Timeline parses local AI history into a normal timeline tab so prompts, responses, tool calls, session IDs, workspace paths, source evidence, and possible secret exposure can be searched, tagged, and exported.
 
-![Tools → Analysis → AI Artifacts with Collect AI Artifacts, nested OpenAI Codex / ChatGPT Computer History, and Grok Build](/dfir-tips/Tools-Menu-AI-Artifacts.png)
+![Tools → Analysis → AI Artifacts with the v1.0.13 AI Apps list and nested Grok Build / Grok Bot entries](/dfir-tips/Tools-Menu-AI-Artifacts.png)
 
 Supported AI app families include:
 

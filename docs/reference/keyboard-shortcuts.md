@@ -73,7 +73,7 @@ description: Keyboard shortcuts reference for IRFlow Timeline — file operation
 
 Analysis tools in the **in-app Tools** menu are grouped in four sections: **Analysis** (Stack Values, Gap Analysis, Log Sources, Burst Detection, **AI Artifacts**), **Detection** (Sigma Scan and **AI Secret Hunt**), **Platforms** (active Windows tools plus one collapsed **Coming soon** group for planned Linux, macOS, and cloud analyzers), and **Export** (AI history package, source manifest, Generate Report).
 
-![Tools → Analysis → AI Artifacts with Collect AI Artifacts, nested OpenAI Codex / ChatGPT Computer History, and Grok Build](/dfir-tips/Tools-Menu-AI-Artifacts.png)
+![Tools → Analysis → AI Artifacts with the v1.0.13 AI Apps list and nested Grok Build / Grok Bot entries](/dfir-tips/Tools-Menu-AI-Artifacts.png)
 
 Windows platform tools include Process Inspector, Lateral Movement Tracker, Persistence Analyzer, RDP Bitmap Cache, plus **Master File Table** and **USN Journal** submenus for raw NTFS analysis. See [Virtual Grid — Tools](/features/virtual-grid#tools) and [NTFS Analysis](/features/ntfs-analysis).
 

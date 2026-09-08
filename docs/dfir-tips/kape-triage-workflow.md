@@ -32,7 +32,7 @@ Before starting, ensure you have KAPE output collected with one of the common ta
 | **!SANS_Triage** | Extended parsing with timeline generation | All EZParser modules plus Hayabusa, mini-timeline creation |
 
 ::: tip AI app evidence
-For AI investigations, also collect local AI app history paths from user profiles before scanning the collection in IRFlow Timeline. Prioritize ChatGPT Desktop, Claude Code, OpenAI Codex, Grok Build, Cursor, GitHub Copilot, Gemini CLI, Windsurf, and Continue paths such as `.claude`, `.codex`, `.grok`, `.cursor`, `.gemini`, `.continue`, ChatGPT app-data folders, and VS Code-family `User/workspaceStorage/*/chatSessions/`.
+For AI investigations, also collect local AI app history paths from user profiles before scanning the collection in IRFlow Timeline. Prioritize ChatGPT Desktop, Claude Code, OpenAI Codex, Grok Build, Grok Bot, Cursor, GitHub Copilot, Gemini CLI, Windsurf, and Continue paths such as `.claude`, `.codex`, `.grok`, `.grokbot`, `.cursor`, `.gemini`, `.continue`, `Application Support/Grok Bot`, ChatGPT app-data folders, and VS Code-family `User/workspaceStorage/*/chatSessions/`.
 
 After collection, open **Tools → Analysis → AI Artifacts → Collect AI Artifacts** and choose the KAPE output, triage root, mounted disk, or copied profile folder. IRFlow walks Windows, Linux, and macOS profile layouts and merges discovered AI history into one **AI Query History** tab.
 

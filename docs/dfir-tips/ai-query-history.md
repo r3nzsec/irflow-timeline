@@ -12,7 +12,7 @@ This page is the high-level workflow. Per-app artifact paths, parser coverage, a
 |-------|----------------|
 | [Claude Desktop](/dfir-tips/ai-apps/claude-desktop) | Claude Code CLI, Desktop/Cowork sessions, deletion tombstones, staged uploads, usage windows |
 | [ChatGPT / Codex](/dfir-tips/ai-apps/chatgpt-codex) | ChatGPT Desktop/Atlas, OpenAI Codex rollouts, and ChatGPT Computer History (Skysight) |
-| [Grok AI](/dfir-tips/ai-apps/grok-ai) | Grok Build sessions, search index, app log, and stores that outlive a deleted chat |
+| [Grok AI](/dfir-tips/ai-apps/grok-ai) | Grok Build sessions and out-of-tree stores; Grok Bot transcript replicas, local-tool requests, approvals, journals, daemon state, and attachment references |
 | [Cursor](/dfir-tips/ai-apps/cursor) | Agent transcripts, composer/workspace SQLite, and `conversation-search.db` |
 | [Gemini](/dfir-tips/ai-apps/gemini) | Gemini CLI chats, shell history, checkpoints, and nested subagents |
 
@@ -28,7 +28,7 @@ IRFlow collects more than prompts. A typical row can carry the user or assistant
 
 That is what makes the tab usable as evidence: did someone paste credentials, ask for help with suspicious commands, generate code in a sensitive workspace, or receive output that exposed secrets?
 
-`Tool` is the AI app family (Claude Code, OpenAI Codex, Grok Build, Cursor). `InvokedTool` is a tool/action **inside** that app (a shell command, editor operation, or model tool call). `Summary` is the grid preview. `FullText` retains the parser body for a single-app import; merged worker imports bound very large bodies to 8 KiB per row and report every truncation in extraction coverage.
+`Tool` is the AI app family (Claude Code, OpenAI Codex, Grok Build, Grok Bot, Cursor). `InvokedTool` is a tool/action **inside** that app (a shell command, editor operation, or model tool call). `Summary` is the grid preview. `FullText` retains the parser body for a single-app import; merged worker imports bound very large bodies to 8 KiB per row and report every truncation in extraction coverage.
 
 ## Supported apps
 
@@ -39,6 +39,7 @@ That is what makes the tab usable as evidence: did someone paste credentials, as
 | **ChatGPT Desktop / Atlas** | Parsed LevelDB/SQLite when present; v2/v3 bundles inventoried only | [ChatGPT / Codex](/dfir-tips/ai-apps/chatgpt-codex) |
 | **ChatGPT Computer History** | Separate 54-column tab — OS interaction telemetry, not chat | [ChatGPT / Codex](/dfir-tips/ai-apps/chatgpt-codex#chatgpt-computer-history-skysight) |
 | **Grok Build** | Parsed sessions plus search index, app log, and open-session record | [Grok AI](/dfir-tips/ai-apps/grok-ai) |
+| **Grok Bot** | Parsed macOS transcript replicas, requests and decisions, journals, daemon/app state, link previews, and attachment references; Windows/Linux layouts are discovery-tested but not natively qualified | [Grok AI](/dfir-tips/ai-apps/grok-ai#grok-bot) |
 | **Cursor** | Parsed transcripts, composer/workspace SQLite, conversation search index | [Cursor](/dfir-tips/ai-apps/cursor) |
 | **Gemini CLI** | Parsed JSONL chats, shell history, checkpoints, nested subagents | [Gemini](/dfir-tips/ai-apps/gemini) |
 | **GitHub Copilot** | Parsed CLI sessions and VS Code-family `chatSessions/` | below |
@@ -49,7 +50,7 @@ Evidence is one of **parsed history** (rows in the grid), **inventory-only** (de
 
 ## Collect AI Artifacts
 
-![Tools → Analysis → AI Artifacts with Collect AI Artifacts, nested OpenAI Codex / ChatGPT Computer History, and Grok Build](/dfir-tips/Tools-Menu-AI-Artifacts.png)
+![Tools → Analysis → AI Artifacts with the v1.0.13 AI Apps list and nested Grok Build / Grok Bot entries](/dfir-tips/Tools-Menu-AI-Artifacts.png)
 
 **Tools → Analysis → AI Artifacts → Collect AI Artifacts** merges every discovered store into one tab.
 
@@ -62,7 +63,7 @@ After discovery, choose **main sessions only** (faster triage) or **include suba
 
 After the tab opens, use **Tools → Export → View AI Extraction Coverage** for the durable per-source ledger. It distinguishes parsed, empty, partial, malformed, unsupported, excluded, and unavailable sources, shows row-cap and parse-error state, identifies credential stores inventoried without copying values, and states the Grok Bot attachment-recovery scope.
 
-Use a single **AI Apps** entry when you already know the root (`.claude`, `.codex`, `.grok`, `.cursor`, `.gemini`). **File → Open…** on those folders does the same thing.
+Use a single **AI Apps** entry when you already know the root (`.claude`, `.codex`, `.grok`, `.grokbot`, `.cursor`, `.gemini`). **File → Open…** on those folders does the same thing.
 
 **Empty collection:** the modal lists expected paths and flags `Users\` / `home/` trees that have no AI stores. **Stale app session:** if discovery falls back to an older IPC channel, quit and restart so preload loads `discoverAiHistoryProfile`.
 

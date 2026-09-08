@@ -20,7 +20,7 @@ IRFlow Timeline will automatically detect the file format and begin streaming th
 
 When no timeline tab is active, the home view shows **capability cards** — shortcuts into the main investigation workflows without hunting through menus first.
 
-![Capability launcher with cards for Process Inspector, Lateral Movement, Persistence, Sigma · Hayabusa, Collect AI Artifacts, Master File Table, USN Journal, and Open & Explore](/dfir-tips/Home-Capability-Launcher-v107.png)
+![Capability launcher with cards for Process Inspector, Lateral Movement, Persistence, Sigma · Hayabusa, Collect AI Artifacts, Master File Table, USN Journal, and Open & Explore](/dfir-tips/Home-Capability-Launcher.png)
 
 Each card opens the relevant analyzer or file dialog. Cards that need an imported tab (for example Process Inspector or Persistence) guide you to load data first; **Collect AI Artifacts**, **Sigma · Hayabusa**, and **Open & Explore** work immediately.
 
@@ -99,13 +99,13 @@ Click the **histogram toggle** button in the toolbar to open the timeline visual
 
 Open the **Tools** menu to run analysis. Tools are grouped into four sections — **Analysis** (timeline-wide analytics and **AI Artifacts**), **Detection** (Sigma Scan and **AI Secret Hunt** on AI history tabs), **Platforms** (OS-specific forensics), and **Export** (HTML report and AI history packages).
 
-![Tools → Analysis → AI Artifacts with Collect AI Artifacts, nested OpenAI Codex / ChatGPT Computer History, and Grok Build](/dfir-tips/Tools-Menu-AI-Artifacts.png)
+![Tools → Analysis → AI Artifacts with the v1.0.13 AI Apps list and nested Grok Build / Grok Bot entries](/dfir-tips/Tools-Menu-AI-Artifacts.png)
 
 ![Tools → Detection with Sigma Scan and AI Secret Hunt (enabled on an AI Query History tab)](/dfir-tips/Tools-Menu-Detection-AI-Secret-Hunt.png)
 
 Under **Platforms → Windows** you will find Process Inspector, Lateral Movement Tracker, Persistence Analyzer, RDP Bitmap Cache, and nested **Master File Table** / **USN Journal** menus for raw NTFS artifacts. Linux, macOS, and Cloud groups list upcoming analyzers as placeholders.
 
-For AI-assisted activity, use **Tools → Analysis → AI Artifacts → Collect AI Artifacts** to merge local assistant stores into one tab, or open a single app under **AI Apps** (Claude Code, OpenAI Codex, Grok Build, ChatGPT Desktop, Gemini CLI, Cursor, Copilot, Windsurf, Continue). ChatGPT Computer History lives under **AI Apps → OpenAI Codex → ChatGPT Computer History** and opens in its own tab. After an AI Query History import, run **Tools → Detection → AI Secret Hunt** on that tab. See [AI Query History](/dfir-tips/ai-query-history).
+For AI-assisted activity, use **Tools → Analysis → AI Artifacts → Collect AI Artifacts** to merge local assistant stores into one tab, or open a single app under **AI Apps** (Claude Code, OpenAI Codex, Grok Build, Grok Bot, ChatGPT Desktop, Gemini CLI, Cursor, Copilot, Windsurf, Continue). ChatGPT Computer History lives under **AI Apps → OpenAI Codex → ChatGPT Computer History** and opens in its own tab; Grok Build and Grok Bot live under **AI Apps → Grok**. After an AI Query History import, run **Tools → Detection → AI Secret Hunt** on that tab. See [AI Query History](/dfir-tips/ai-query-history).
 
 For a fast first pass on event logs, choose **Tools → Detection → Sigma Scan**. Point it at a folder of raw `.evtx` files (bundled Hayabusa engine) or at your current timeline tab (in-app JS Sigma engine), pick the **Fast high-confidence only** preset, and run — findings open in a MITRE ATT&CK-mapped triage dashboard. See [Sigma Detection](/features/sigma-detection) for the full workflow.
 

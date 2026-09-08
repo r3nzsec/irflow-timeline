@@ -64,7 +64,7 @@ Select a row, then choose **Actions → Pivot ±N Minutes** to open the proximit
 
 The **Tools** menu is organized into four sections so timeline-wide analytics stay separate from platform-specific forensics as IRFlow scales beyond Windows.
 
-![Tools → Analysis → AI Artifacts with Collect AI Artifacts, the AI Apps submenu, nested OpenAI Codex / ChatGPT Computer History, and Grok Build](/dfir-tips/Tools-Menu-AI-Artifacts.png)
+![Tools → Analysis → AI Artifacts with the v1.0.13 AI Apps list and nested Grok Build / Grok Bot entries](/dfir-tips/Tools-Menu-AI-Artifacts.png)
 
 #### Analysis
 
@@ -77,7 +77,7 @@ Timeline-wide analytics that work on any imported tab (CSV, EVTX, XLSX, Plaso, e
 | **Tools → Analysis → Log Sources** | Gantt-style heatmap of log source coverage across time |
 | **Tools → Analysis → Burst Detection** | Identify abnormal spikes in event volume |
 | **Tools → Analysis → AI Artifacts → Collect AI Artifacts** | Discover and merge local AI assistant stores (this Mac or a KAPE/triage folder) into one **AI Query History** tab |
-| **Tools → Analysis → AI Artifacts → AI Apps → …** | Per-app import for Claude Code, OpenAI Codex (**Codex AI History** and nested **ChatGPT Computer History**), Grok Build, ChatGPT Desktop, Gemini CLI, Cursor, Copilot, Windsurf, and Continue |
+| **Tools → Analysis → AI Artifacts → AI Apps → …** | Per-app import for Claude Code, OpenAI Codex (**Codex AI History** and nested **ChatGPT Computer History**), Grok (**Grok Build** and **Grok Bot**), ChatGPT Desktop, Gemini CLI, Cursor, Copilot, Windsurf, and Continue |
 
 #### Detection
 

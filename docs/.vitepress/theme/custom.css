@@ -283,12 +283,31 @@
 
 .vp-doc th,
 .vp-doc td {
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .vp-doc td code,
 .vp-doc th code {
-  white-space: pre-wrap;
-  word-break: break-all;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+/* Keep identifier-heavy evidence tables readable instead of squeezing their
+   first columns until inline code wraps one character at a time. The table
+   itself remains horizontally scrollable on narrow screens. */
+.vp-doc #what-a-transcript-replica-gives-you + table th:nth-child(1),
+.vp-doc #what-a-transcript-replica-gives-you + table td:nth-child(1) {
+  min-width: 15rem;
+}
+
+.vp-doc #what-a-transcript-replica-gives-you + table th:nth-child(2),
+.vp-doc #what-a-transcript-replica-gives-you + table td:nth-child(2) {
+  min-width: 14rem;
+}
+
+.vp-doc #what-a-transcript-replica-gives-you + table th:nth-child(3),
+.vp-doc #what-a-transcript-replica-gives-you + table td:nth-child(3) {
+  min-width: 34rem;
 }

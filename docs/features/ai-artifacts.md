@@ -35,16 +35,16 @@ attached to it. All of them survive deleting the chat — see
 ## Opening AI Artifacts
 
 - **Menu:** **Tools → Analysis → AI Artifacts → Collect AI Artifacts**
-- **Per-app import:** **Tools → Analysis → AI Artifacts → AI Apps → …** (Claude Code, OpenAI Codex → **Codex AI History** / **ChatGPT Computer History**, Grok Build, ChatGPT Desktop, Gemini CLI, Cursor, Copilot, Windsurf, Continue)
+- **Per-app import:** **Tools → Analysis → AI Artifacts → AI Apps → …** (Claude Code, OpenAI Codex → **Codex AI History** / **ChatGPT Computer History**, Grok → **Grok Build** / **Grok Bot**, ChatGPT Desktop, Gemini CLI, Cursor, Copilot, Windsurf, Continue)
 - **Home launcher:** **Collect AI Artifacts** tile on the capability launcher
 - **Single artifact:** **File → Open…** on a supported AI app folder or file
 - **Output:** one **AI Query History** timeline tab
 
-![Tools → Analysis → AI Artifacts with Collect AI Artifacts, nested OpenAI Codex / ChatGPT Computer History, and Grok Build](/dfir-tips/Tools-Menu-AI-Artifacts.png)
+![Tools → Analysis → AI Artifacts with the v1.0.13 AI Apps list and nested Grok Build / Grok Bot entries](/dfir-tips/Tools-Menu-AI-Artifacts.png)
 
-Use **Collect AI Artifacts** for live Mac triage, KAPE collections, mounted disks, copied profile folders, or external triage packages. Use **AI Apps** or **File → Open…** when you already know the specific AI artifact root, such as `.claude`, `.codex`, `.grok`, `.cursor`, `.gemini`, or a supported app data directory.
+Use **Collect AI Artifacts** for live Mac triage, KAPE collections, mounted disks, copied profile folders, or external triage packages. Use **AI Apps** or **File → Open…** when you already know the specific AI artifact root, such as `.claude`, `.codex`, `.grok`, `.grokbot`, `.cursor`, `.gemini`, or a supported app data directory.
 
-![Home capability launcher with Collect AI Artifacts, Sigma · Hayabusa, Process Inspector, and NTFS cards](/dfir-tips/Home-Capability-Launcher-v107.png)
+![Home capability launcher with Collect AI Artifacts, Sigma · Hayabusa, Process Inspector, and NTFS cards](/dfir-tips/Home-Capability-Launcher.png)
 
 ## What It Captures
 
@@ -116,7 +116,7 @@ Results are **redacted by default** (cleartext is never written to disk). Analys
 | Column | Meaning |
 |--------|---------|
 | **Timestamp** | Best available event time for the prompt, response, tool call, or metadata row. |
-| **Tool** | The AI app family, such as Claude Code, OpenAI Codex, Grok Build, Cursor, or ChatGPT. |
+| **Tool** | The AI app family, such as Claude Code, OpenAI Codex, Grok Build, Grok Bot, Cursor, or ChatGPT. |
 | **InvokedTool** | A tool/action called inside the AI app, such as a shell command or editor operation. Older saved tabs may still show the legacy `ToolName` header. |
 | **ToolCommand** | Exact command value recorded for a shell/function call. Array-valued commands remain JSON so argument boundaries are preserved. |
 | **ToolInput** | Original structured arguments for the tool call. Rows containing multiple calls retain a JSON array with each tool name and input. |
