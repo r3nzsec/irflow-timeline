@@ -13,6 +13,16 @@ const { readJsonlBounded } = require("./jsonl-reader");
 const { dbg } = require("../../logger");
 const { TOOL_CLAUDE_CODE } = require("./schema");
 const { buildToolEvidence } = require("./tool-evidence");
+const {
+  isClaudeJsonStateFile,
+  extractClaudeJsonFile,
+  countClaudeJsonExtractFiles,
+} = require("./claude-code-state");
+const {
+  isClaudeCliConfigRoot,
+  listClaudeContextFiles,
+  extractClaudeContext,
+} = require("./claude-code-context");
 const { shouldSkipSubagentPath, filterSidechainRows, tickFileProgress } = require("./extract-plan");
 const { processFilesConcurrently } = require("./file-batch");
 const {
@@ -25,7 +35,8 @@ const {
 } = require("./row-utils");
 
 function claudeRow(fields) {
-  return makeRow({ ...fields, tool: fields.tool || TOOL_CLAUDE_CODE }, TOOL_CLAUDE_CODE);
+  const timestampBasis = fields.timestampBasis || (fields.timestamp ? "source artifact timestamp" : "unavailable");
+  return makeRow({ ...fields, timestampBasis, tool: fields.tool || TOOL_CLAUDE_CODE }, TOOL_CLAUDE_CODE);
 }
 
 function parseRecordTimestamp(obj) {
@@ -343,8 +354,8 @@ async function readJsonlFile(filePath, onLine, parseStats = null) {
 /** Extract all rows from history.jsonl. */
 async function extractHistoryFile(historyPath, attribution = {}, parseStats = null) {
   const rows = [];
-  await readJsonlFile(historyPath, (obj, lineNumber) => {
-    const row = assignLineNumber(parseHistoryLine(obj, historyPath, attribution), lineNumber);
+  await readJsonlFile(historyPath, (obj, lineNumber, sourceLocation) => {
+    const row = assignLineNumber(parseHistoryLine(obj, historyPath, attribution), lineNumber, sourceLocation);
     if (row) rows.push(row);
   }, parseStats);
   return rows;
@@ -353,8 +364,8 @@ async function extractHistoryFile(historyPath, attribution = {}, parseStats = nu
 /** Extract all rows from a session *.jsonl file. */
 async function extractSessionFile(sessionPath, attribution = {}, parseStats = null) {
   const rows = [];
-  await readJsonlFile(sessionPath, (obj, lineNumber) => {
-    const row = assignLineNumber(parseSessionLine(obj, sessionPath, attribution), lineNumber);
+  await readJsonlFile(sessionPath, (obj, lineNumber, sourceLocation) => {
+    const row = assignLineNumber(parseSessionLine(obj, sessionPath, attribution), lineNumber, sourceLocation);
     if (row) rows.push(row);
   }, parseStats);
   return rows;
@@ -383,6 +394,7 @@ function listSessionJsonlFiles(projectsDir, options = {}) {
 }
 
 function countClaudeExtractFiles(claudeDir, options = {}) {
+  if (isClaudeJsonStateFile(claudeDir)) return countClaudeJsonExtractFiles(claudeDir);
   const {
     isClaudeDesktopSessionsRoot,
     countClaudeDesktopExtractFiles,
@@ -391,9 +403,13 @@ function countClaudeExtractFiles(claudeDir, options = {}) {
     return countClaudeDesktopExtractFiles(claudeDir, options);
   }
   let n = 0;
-  if (path.basename(claudeDir) === ".claude") {
+  if (isClaudeCliConfigRoot(claudeDir)) {
     if (fs.existsSync(path.join(claudeDir, "history.jsonl"))) n += 1;
     n += listSessionJsonlFiles(path.join(claudeDir, "projects"), options).length;
+    const context = listClaudeContextFiles(claudeDir, options);
+    n += context.files.length;
+    if (fs.existsSync(path.join(claudeDir, "settings.json"))) n += 1;
+    if (fs.existsSync(path.join(claudeDir, ".mcp.json"))) n += 1;
   } else {
     n += listSessionJsonlFiles(claudeDir, options).length;
   }
@@ -406,6 +422,9 @@ function countClaudeExtractFiles(claudeDir, options = {}) {
  * @param {{ user?: string, host?: string }} attribution
  */
 async function extractClaudeDir(claudeDir, attribution = {}, options = {}) {
+  if (isClaudeJsonStateFile(claudeDir)) {
+    return extractClaudeJsonFile(claudeDir, attribution, options);
+  }
   const { isClaudeDesktopSessionsRoot, extractClaudeDesktopDir } = require("./claude-desktop");
   if (isClaudeDesktopSessionsRoot(claudeDir) && path.basename(claudeDir) !== ".claude") {
     const { rows, stats } = await extractClaudeDesktopDir(claudeDir, attribution, options);
@@ -415,8 +434,8 @@ async function extractClaudeDir(claudeDir, attribution = {}, options = {}) {
   }
 
   const rows = [];
-  const parseStats = { errors: 0 };
-  const isCliHome = path.basename(claudeDir) === ".claude";
+  const parseStats = options.parseStats || { errors: 0 };
+  const isCliHome = isClaudeCliConfigRoot(claudeDir);
   const sessionPaths = isCliHome
     ? listSessionJsonlFiles(path.join(claudeDir, "projects"), options)
     : listSessionJsonlFiles(claudeDir, options);
@@ -455,13 +474,27 @@ async function extractClaudeDir(claudeDir, attribution = {}, options = {}) {
     checkAbort: options.checkAbort,
   });
 
+  let contextStats = null;
+  if (isCliHome && options.includeClaudeContext !== false) {
+    options.checkAbort?.();
+    try {
+      const context = extractClaudeContext(claudeDir, attribution, options);
+      contextStats = context.stats;
+      emitBatch(context.rows);
+    } catch (e) {
+      dbg("AIHIST", "claude context artifacts failed", { path: claudeDir, err: e.message });
+    }
+  }
+
   if (onExtractedRows) {
     const out = [];
+    if (contextStats) out._claudeContextStats = contextStats;
     if (parseStats.errors) out._parseErrors = parseStats.errors;
     return out;
   }
 
   const result = finalizeAiHistoryRows(filterSidechainRows(rows, options), options);
+  if (contextStats) result._claudeContextStats = contextStats;
   if (parseStats.errors) result._parseErrors = parseStats.errors;
   return result;
 }
@@ -499,18 +532,25 @@ async function extractClaudeCodePath(target, attribution = {}, options = {}) {
     throw new Error("Not a Claude Code directory (~/.claude or Claude Desktop claude-code-sessions).");
   }
 
-  const ext = path.extname(target).toLowerCase();
-  if (ext !== ".jsonl") {
-    throw new Error("Expected a .jsonl file or a .claude directory.");
-  }
-
-  if (path.basename(target) === "history.jsonl") {
-    const rows = await extractHistoryFile(target, attribution);
+  if (isClaudeJsonStateFile(target)) {
+    const rows = extractClaudeJsonFile(target, attribution, options);
+    if (options.onExtractedRows) return rows;
     for (let i = 0; i < rows.length; i++) rows[i].RecordId = String(i + 1);
     return rows;
   }
 
-  const rows = await extractSessionFile(target, attribution);
+  const ext = path.extname(target).toLowerCase();
+  if (ext !== ".jsonl") {
+    throw new Error("Expected a .jsonl file, ~/.claude.json, or a .claude directory.");
+  }
+
+  if (path.basename(target) === "history.jsonl") {
+    const rows = await extractHistoryFile(target, attribution, options.parseStats);
+    for (let i = 0; i < rows.length; i++) rows[i].RecordId = String(i + 1);
+    return rows;
+  }
+
+  const rows = await extractSessionFile(target, attribution, options.parseStats);
   for (let i = 0; i < rows.length; i++) rows[i].RecordId = String(i + 1);
   return rows;
 }
@@ -525,6 +565,8 @@ function resolveClaudeDir(target) {
   const { isClaudeCodeArtifactRoot } = require("./artifact-paths");
   for (let i = 0; i < 20; i++) {
     if (isClaudeCodeArtifactRoot(p)) return p;
+    const base = path.basename(p);
+    if (/^\.(?:copilot|cursor|continue|gemini|grok|codex)$/i.test(base)) break;
     const parent = path.dirname(p);
     if (parent === p) break;
     p = parent;
@@ -550,4 +592,9 @@ module.exports = {
   isClaudeCodeArtifactRoot: require("./artifact-paths").isClaudeCodeArtifactRoot,
   listSessionJsonlFiles,
   countClaudeExtractFiles,
+  isClaudeJsonStateFile,
+  extractClaudeJsonFile,
+  isClaudeCliConfigRoot,
+  listClaudeContextFiles,
+  extractClaudeContext,
 };

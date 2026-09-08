@@ -41,6 +41,14 @@ async function parseFile(filePath, tabId, db, onProgress, sheetName, fileSize) {
   if (ext === ".mft") {
     return parseMftFile(filePath, tabId, db, onProgress);
   }
+  if (ext === ".vhdx") {
+    // A KAPE `--vhdx` package is a disk image, not a table. The triage flow reads the NTFS
+    // volume inside it; falling through to CSV would parse the container header as a row.
+    throw new Error("This is a VHDX disk image. Use File → Open Triage Collection… and pick the .vhdx to import the artifacts inside it.");
+  }
+  if (ext === ".vhd") {
+    throw new Error("VHD (v1) images are not supported. Export the collection as VHDX (KAPE --vhdx) or open the collection folder with File → Open Triage Collection….");
+  }
   if (ext === ".hve") {
     // Registry-hive decoding (Amcache / SYSTEM / SOFTWARE / NTUSER) is reserved for the 1.0.8
     // Super Timeline release. Fail closed rather than misparse a hive as a 1-column CSV.

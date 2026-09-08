@@ -165,6 +165,7 @@ test("raw LocalSessionManager 21/22 builds an RDP session with the Address sourc
   // The session must also produce a graph edge — that is what puts it on the map.
   const edge = res.edges.find((e) => e.source === "10.10.10.55" && e.target === "WKS-TARGET");
   assert.ok(edge, `expected a 10.10.10.55 -> WKS-TARGET edge, got ${JSON.stringify(res.edges.map((e) => `${e.source}->${e.target}`))}`);
+  assert.equal(res.stats.rdpSessionCount, 1, "21/22 is a proven session");
 });
 
 test("raw RemoteConnectionManager 1149 resolves user and source from Param1/Param3", () => {
@@ -177,6 +178,30 @@ test("raw RemoteConnectionManager 1149 resolves user and source from Param1/Para
     edge.users.some((u) => /cersei\.lannister/i.test(u)),
     `expected cersei.lannister on the edge, got ${JSON.stringify(edge.users)}`,
   );
+  assert.equal(res.stats.rdpSessionCount, 0, "a lone 1149 is a connection, not a proven RDP session");
+  assert.ok(res.rdpSessions.some((s) => s.status === "incomplete"));
+  assert.equal((res.chains || []).length, 0, "1149 must not become a movement hop on its own");
+  const acct = (res.accounts || []).find((a) => /cersei\.lannister/i.test(a.user));
+  assert.equal(acct?.rdpSessionCount || 0, 0, "Accounts tab must not call a 1149 a session either");
+});
+
+test("1149 followed by a disconnect is still not a proven RDP session", () => {
+  const res = run(MIXED_HEADERS, [
+    { ...rcmRow("1149", { ts: "2026-03-10 08:00:00.000" }), User: null, SessionID: null, Address: null },
+    { ...lsmRow("24", { ts: "2026-03-10 08:00:05.000" }), Param1: null, Param2: null, Param3: null },
+  ]);
+  assert.ok(!res.error, `analyzer returned an error: ${res.error}`);
+  assert.equal(res.stats.rdpSessionCount, 0, "1149+24 is a dropped connection, not a logon");
+  assert.ok(res.rdpSessions.every((s) => s.status === "incomplete" || s.status === "failed"));
+  assert.equal((res.chains || []).length, 0);
+});
+
+test("a lone LSM 21 is a proven session start", () => {
+  const res = run(LSM_HEADERS, [lsmRow("21")]);
+  assert.ok(!res.error, `analyzer returned an error: ${res.error}`);
+  assert.ok(res.rdpSessions.length >= 1);
+  assert.equal(res.stats.rdpSessionCount, 1, "LocalSessionManager 21 is a session logon");
+  assert.ok(res.rdpSessions.some((s) => s.status !== "incomplete" && s.status !== "failed"));
 });
 
 test("a tab holding both channels resolves each record shape independently", () => {

@@ -6,6 +6,7 @@
  * - Claude Desktop "Code" tab: ~/Library/Application Support/Claude/claude-code-sessions/ (separate from CLI) — tielec.blog
  * - OpenAI Codex: ~/.codex/ (CODEX_HOME), sessions/YYYY/MM/DD/rollout-*.jsonl — openai/codex recorder.rs
  * - xAI Grok Build: ~/.grok/ (GROK_HOME), sessions/<encoded-cwd>/<session-id> — xai-org/grok-build
+ * - xAI Grok Bot: ~/.grokbot/ (local exec daemon) + <AppSupport>/Grok Bot/sand-client-persistence — verified on a live host
  * - ChatGPT Desktop: com.openai.chat, Atlas, MS Store Packages — as-aix, pvieito.com, garr3ttmjo writeup
  * - Gemini CLI: ~/.gemini/tmp/<hash>/chats/*.jsonl + shell_history — google-gemini/gemini-cli
  * - Cursor: ~/.cursor agent transcripts plus Cursor/User conversation-search.db and state.vscdb
@@ -19,6 +20,7 @@ const path = require("path");
 const { defaultCodexHome, isCodexDir } = require("./codex");
 const { defaultComputerHistoryRoots, isComputerHistoryDir } = require("./computer-history");
 const { defaultGrokHome, isGrokBuildRoot } = require("./grok-build");
+const { defaultGrokBotHome, defaultGrokBotAppDir, isGrokBotRoot } = require("./grok-bot");
 const { isChatgptAppDir } = require("./chatgpt");
 const { isCursorUserDataDir } = require("./cursor-composer");
 const {
@@ -157,7 +159,13 @@ function listClaudeDesktopSessionRoots() {
 /** Candidate paths to probe before validation (may not exist). */
 function listClaudeCodeCandidatePaths() {
   const home = os.homedir();
-  const out = [{ path: path.join(home, CLAUDE_DIR_NAME), kind: "cli" }];
+  const out = [];
+  const configured = process.env.CLAUDE_CONFIG_DIR;
+  if (configured) out.push({ path: path.resolve(configured), kind: "cli-relocated" });
+  out.push(
+    { path: path.join(home, CLAUDE_DIR_NAME), kind: "cli" },
+    { path: path.join(home, ".claude.json"), kind: "cli-state" },
+  );
   for (const p of listClaudeDesktopSessionRoots()) {
     out.push({ path: p, kind: "desktop" });
   }
@@ -173,6 +181,7 @@ function listChatgptCandidatePaths() {
     out.push(
       { path: path.join(support, "com.openai.chat"), kind: "mac-native" },
       { path: path.join(support, "OpenAI", "Atlas"), kind: "mac-atlas" },
+      { path: path.join(support, "Codex"), kind: "mac-codex-app" },
     );
   } else if (process.platform === "win32") {
     const roaming = process.env.APPDATA || path.join(home, "AppData", "Roaming");
@@ -181,6 +190,7 @@ function listChatgptCandidatePaths() {
       { path: path.join(roaming, "OpenAI", "ChatGPT"), kind: "win-standalone" },
       { path: path.join(local, "OpenAI", "ChatGPT"), kind: "win-local" },
       { path: path.join(local, "Packages"), kind: "win-msstore-scan" },
+      { path: path.join(roaming, "Codex"), kind: "win-codex-app" },
     );
   } else {
     const cfg = path.join(home, ".config");
@@ -188,6 +198,7 @@ function listChatgptCandidatePaths() {
       { path: path.join(cfg, "com.openai.chat"), kind: "linux-native" },
       { path: path.join(cfg, "ChatGPT"), kind: "linux-chatgpt" },
       { path: path.join(home, ".config", "OpenAI", "ChatGPT"), kind: "linux-openai" },
+      { path: path.join(cfg, "Codex"), kind: "linux-codex-app" },
     );
   }
 
@@ -240,6 +251,11 @@ function getLocalAiHistoryCandidates() {
   }
   out.push({ tool: "codex", path: defaultCodexHome() });
   out.push({ tool: "grok-build", path: defaultGrokHome() });
+  out.push({ tool: "grok-bot", path: defaultGrokBotHome() });
+  out.push({ tool: "grok-bot", path: defaultGrokBotAppDir() });
+  if (process.env.GEMINI_CLI_HOME) {
+    out.push({ tool: "gemini-cli", path: path.resolve(process.env.GEMINI_CLI_HOME) });
+  }
   out.push({ tool: "gemini-cli", path: path.join(home, GEMINI_DIR_NAME) });
   out.push({ tool: "cursor", path: defaultCursorHome() });
   for (const p of listCursorUserDataDirs()) {
@@ -309,13 +325,10 @@ function isClaudeDesktopSessionsRoot(dirPath) {
 
 function isClaudeDir(dirPath) {
   if (!dirPath || !fs.existsSync(dirPath)) return false;
-  if (path.basename(dirPath) !== CLAUDE_DIR_NAME) return false;
   try {
     if (!fs.statSync(dirPath).isDirectory()) return false;
   } catch { return false; }
-  const history = path.join(dirPath, "history.jsonl");
-  const projects = path.join(dirPath, "projects");
-  return fs.existsSync(history) || fs.existsSync(projects);
+  try { return require("./claude-code-context").isClaudeCliConfigRoot(dirPath); } catch { return false; }
 }
 
 /** CLI ~/.claude or Claude Desktop claude-code-sessions tree. */
@@ -373,14 +386,18 @@ function expandChatgptMsStorePackages(packagesDir) {
 const FORENSIC_AI_PATH_HINTS = {
   windows: [
     "Users\\<user>\\.claude\\",
+    "Users\\<user>\\.claude.json",
     "Users\\<user>\\.codex\\",
     "Users\\<user>\\.grok\\",
+    "Users\\<user>\\.grokbot\\",
     "Users\\<user>\\.cursor\\",
     "Users\\<user>\\.copilot\\",
     "Users\\<user>\\.gemini\\",
+    "Users\\<user>\\AppData\\Roaming\\Grok Bot\\sand-client-persistence\\",
     "Users\\<user>\\AppData\\Roaming\\Claude\\claude-code-sessions\\",
     "Users\\<user>\\AppData\\Roaming\\Claude\\local-agent-mode-sessions\\",
     "Users\\<user>\\AppData\\Roaming\\OpenAI\\ChatGPT\\",
+    "Users\\<user>\\AppData\\Roaming\\Codex\\",
     "Users\\<user>\\AppData\\Local\\Packages\\OpenAI.ChatGPT-*\\LocalCache\\Roaming\\ChatGPT\\",
     "Users\\<user>\\AppData\\Roaming\\Code\\User\\workspaceStorage\\",
     "Users\\<user>\\AppData\\Roaming\\Code - Insiders\\User\\workspaceStorage\\",
@@ -389,12 +406,16 @@ const FORENSIC_AI_PATH_HINTS = {
   ],
   linux: [
     "home/<user>/.claude/",
+    "home/<user>/.claude.json",
     "home/<user>/.codex/",
     "home/<user>/.grok/",
+    "home/<user>/.grokbot/",
+    "home/<user>/.config/Grok Bot/sand-client-persistence/",
     "home/<user>/.cursor/",
     "home/<user>/.copilot/",
     "home/<user>/.gemini/",
     "home/<user>/.config/com.openai.chat/",
+    "home/<user>/.config/Codex/",
     "home/<user>/.config/Code/User/workspaceStorage/",
     "home/<user>/.config/VSCodium/User/workspaceStorage/",
     "home/<user>/.config/Cursor/User/globalStorage/conversation-search.db",
@@ -402,14 +423,18 @@ const FORENSIC_AI_PATH_HINTS = {
   macos: [
     "Users/<user>/.continue/sessions/",
     "Users/<user>/.claude/",
+    "Users/<user>/.claude.json",
     "Users/<user>/.codex/",
     "Users/<user>/.grok/",
+    "Users/<user>/.grokbot/",
     "Users/<user>/.cursor/",
     "Users/<user>/.copilot/",
     "Users/<user>/.gemini/",
+    "Users/<user>/Library/Application Support/Grok Bot/sand-client-persistence/",
     "Users/<user>/Library/Application Support/Claude/claude-code-sessions/",
     "Users/<user>/Library/Application Support/Claude/local-agent-mode-sessions/",
     "Users/<user>/Library/Application Support/com.openai.chat/",
+    "Users/<user>/Library/Application Support/Codex/",
     "Users/<user>/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/Library/Caches/ComputerUse/Skysight/segments/",
     "Users/<user>/.codex/memories/extensions/skysight/resources/",
     "Users/<user>/Library/Application Support/Code/User/workspaceStorage/",
@@ -424,6 +449,7 @@ const ARTIFACT_PATH_REFERENCES = {
     label: "Claude Code",
     paths: [
       { platform: "macOS/Linux/WSL", path: "~/.claude/ (history.jsonl + projects/**/*.jsonl)" },
+      { platform: "all", path: "~/.claude.json and ~/.claude.json.backup* (per-project lastSessionId/lastStartTime/trust/MCP, Remote Control flag, account identifiers)" },
       { platform: "macOS", path: "~/Library/Application Support/Claude/claude-code-sessions/ (Desktop metadata local_*.json)" },
       { platform: "Windows", path: "%APPDATA%\\Claude\\claude-code-sessions\\" },
       { platform: "all", path: ".../Claude/local-agent-mode-sessions/ (Cowork metadata, isolated .claude/projects transcripts, audit*.jsonl)" },
@@ -437,10 +463,16 @@ const ARTIFACT_PATH_REFERENCES = {
       { platform: "all", path: "~/.codex/logs*.sqlite + WAL/SHM (tracing log; Submission/UserInput bodies carry prompt text independently of history.jsonl)" },
       { platform: "all", path: "~/.codex/memories/rollout_summaries/*.md (per-thread summaries that outlive the rollouts they describe)" },
       { platform: "all", path: "~/.codex/hooks.json (commands executed on SessionStart/PreToolUse/Stop — execution persistence)" },
+      { platform: "all", path: "~/.codex/rules/*.rules (execpolicy prefix_rule allow-list — command prefixes that run WITHOUT an approval prompt)" },
+      { platform: "all", path: "~/.codex/shell_snapshots/<thread>.<ns>.sh (exported shell environment per thread — credential-like variable NAMES reported, values never read)" },
+      { platform: "all", path: "~/.codex/thread_history*.sqlite (SQL projection of the rollouts: commands with cwd/pid/exit, file changes, MCP/web calls; used for threads whose rollout is missing or over the parse cap)" },
+      { platform: "all", path: "~/.codex/memories*.sqlite stage1_outputs + memories/{MEMORY,raw_memories,memory_summary}.md + memories/extensions/ad_hoc (model memory of the user; usage counts)" },
+      { platform: "all", path: "~/.codex/.codex-global-state.json (Codex-managed SSH hosts + identity keys, Remote Control allowed hosts, mobile pairing, local project roots)" },
+      { platform: "all", path: "~/.codex/ambient-suggestions/<hash>/ambient-suggestions.json (watched project roots + generated prompts), goals*.sqlite, queue*.sqlite, dictation-history/, transcription-history.jsonl" },
     ],
     notes: "Thread summaries and the thread catalog can evidence a thread whose rollout JSONL is gone. "
-      + "Not yet parsed: thread_history*.sqlite (a rolling projection of the rollouts), goals/queue/memories*.sqlite, "
-      + "and clipboard image pastes under $TMPDIR/codex-clipboard-*.png (outside the .codex root, so out of scan scope).",
+      + "rules/*.rules is the host's authorization posture; shell_snapshots expose exported secrets in cleartext. "
+      + "Not parsed: clipboard image pastes under $TMPDIR/codex-clipboard-*.png (outside the .codex root, so out of scan scope).",
   },
   "computer-history": {
     label: "ChatGPT Computer History",
@@ -461,28 +493,54 @@ const ARTIFACT_PATH_REFERENCES = {
     label: "Grok Build",
     paths: [
       { platform: "all", path: "$GROK_HOME or ~/.grok/ (sessions/**/prompt_history.jsonl + <session-id>/{summary,updates,chat_history,hunk_records}.json*)" },
+      { platform: "all", path: "~/.grok/sessions/**/<session-id>/events.jsonl (tool start/complete, PERMISSION request/decision with wait time, turn model + yolo flag, MCP server connections)" },
+      { platform: "all", path: "~/.grok/sessions/**/<session-id>/signals.json (session metrics incl. gcsQueue* codebase-upload counters)" },
+      { platform: "all", path: "~/.grok/sessions/session_search.sqlite, ~/.grok/logs/unified.jsonl, ~/.grok/active_sessions.json" },
     ],
     notes: "auth.json and mcp_credentials.json are sensitive configuration artifacts and are deliberately not parsed into timeline rows.",
+  },
+  "grok-bot": {
+    label: "Grok Bot",
+    paths: [
+      { platform: "macOS", path: "$GROKBOT_HOME or ~/.grokbot/ (settings; daemon/supervisor state; current and rotated local-exec-daemon.log files; attachment-staging inventory)" },
+      { platform: "macOS", path: "~/Library/Application Support/Grok Bot/sand-client-persistence/<base32-slice-name>.blob (transcript replicas, agent roster, drafts, send-journal v1/v2, excluded/unknown inventory)" },
+      { platform: "Windows (unqualified path hint)", path: "%APPDATA%\\Grok Bot\\sand-client-persistence\\" },
+      { platform: "Linux (unqualified path hint)", path: "~/.config/Grok Bot/sand-client-persistence/" },
+      { platform: "all", path: "<Grok Bot>/sand-session-marker.json, sand-update-apply-marker.json (app run/version markers)" },
+      { platform: "all", path: "<Grok Bot>/sentry/scope_v3.json + session.json (signed-in account id + email, app version, OS/hardware, timezone, boot/app-start times, last open agent)" },
+      { platform: "all", path: "<Grok Bot>/Local State (Chromium profile creation, not conclusive install time), link-preview-cache/link-cache/*.json (cached unfurl metadata, not click/access proof)" },
+    ],
+    notes: "Grok Bot agents run on xAI cloud boxes and can request actions through the local exec daemon. "
+      + "Transcript rows separate native request/decision state from execution; untimed daemon lifecycle lines lack "
+      + "commands, request IDs and results and are never linked by time alone. Replicas are bounded to 200 entries or "
+      + "the verified serialized-entry character budget. Hash-shaped attachment names remain reference hashes until an "
+      + "opt-in, bounded local search computes a matching SHA-256. Credential/gateway/secret stores are inventoried by "
+      + "name and size, never read. Current qualification is Grok Bot 0.43.0 on macOS; Windows/Linux remain unqualified.",
   },
   chatgpt: {
     label: "ChatGPT Desktop",
     paths: [
       { platform: "macOS", path: "~/Library/Application Support/com.openai.chat/" },
       { platform: "macOS", path: "~/Library/Application Support/OpenAI/Atlas/" },
+      { platform: "macOS", path: "~/Library/Application Support/Codex/ (merged ChatGPT/Codex Chromium profile since 2026-07-09)" },
       { platform: "Windows", path: "%APPDATA%\\OpenAI\\ChatGPT\\ and MS Store LocalCache\\...\\ChatGPT" },
+      { platform: "Windows", path: "%APPDATA%\\Codex\\ (merged ChatGPT/Codex Chromium profile)" },
       { platform: "Linux", path: "~/.config/com.openai.chat/ (and variants)" },
+      { platform: "Linux", path: "~/.config/Codex/" },
     ],
-    notes: "conversations-v2-* and opaque conversations-v3-*/*.data bundles are inventoried even when message bodies cannot be decoded; LevelDB/SQLite content is extracted when present.",
+    notes: "conversations-v2-* and opaque conversations-v3-*/*.data bundles are inventoried even when message bodies cannot be decoded; LevelDB/SQLite content is extracted when present. The merged Codex desktop app writes a Chromium profile under Application Support/Codex (History, Local Storage, artifact-sessions); conversation bodies still live in ~/.codex. Login Data / Cookies are not read.",
   },
   "gemini-cli": {
     label: "Gemini CLI",
     paths: [
-      { platform: "all", path: "~/.gemini/tmp/<project_hash>/chats/session-*.jsonl (current append-only sessions)" },
-      { platform: "all", path: "~/.gemini/tmp/<project_hash>/chats/<parent-session>/<subagent>.jsonl" },
-      { platform: "all", path: "~/.gemini/tmp/<project_hash>/shell_history" },
+      { platform: "all", path: "~/.gemini/tmp/<project_hash|/slug>/chats/session-*.jsonl (current append-only sessions)" },
+      { platform: "all", path: "~/.gemini/tmp/<project_hash|/slug>/chats/<parent-session>/<subagent>.jsonl" },
+      { platform: "all", path: "~/.gemini/tmp/<project_hash|/slug>/shell_history" },
       { platform: "all", path: "~/.gemini/tmp/<project_hash>/chats/session-*.json (legacy)" },
       { platform: "all", path: "~/.gemini/tmp/<project_hash>/logs.json (legacy CLI log)" },
       { platform: "all", path: "~/.gemini/tmp/<project_hash>/checkpoint-*.json (/chat save)" },
+      { platform: "all", path: "~/.gemini/projects.json, settings.json, trustedFolders.json, google_accounts.json (0.58+ registry / hooks / identity)" },
+      { platform: "all", path: "~/.gemini/history/<slug>/.project_root and tmp/<slug>/.project_root (workspace mapping)" },
     ],
   },
   cursor: {
@@ -519,6 +577,8 @@ module.exports = {
   localAppDataDir,
   defaultCursorHome,
   defaultGrokHome,
+  defaultGrokBotHome,
+  defaultGrokBotAppDir,
   listCursorUserDataDirs,
   listWindsurfUserDataDirs,
   defaultWindsurfUserDir,
@@ -536,6 +596,7 @@ module.exports = {
   isClaudeDesktopSessionsRoot,
   isClaudeCodeArtifactRoot,
   isGrokBuildRoot,
+  isGrokBotRoot,
   isChatgptAppDir,
   isCursorHome,
   isCursorUserDataDir,

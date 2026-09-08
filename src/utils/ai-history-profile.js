@@ -6,6 +6,7 @@ const TOOL_CHATGPT = "ChatGPT";
 const TOOL_GEMINI_CLI = "Gemini CLI";
 const TOOL_CODEX = "OpenAI Codex";
 const TOOL_GROK_BUILD = "Grok Build";
+const TOOL_GROK_BOT = "Grok Bot";
 const TOOL_CURSOR = "Cursor";
 const TOOL_COPILOT = "GitHub Copilot";
 
@@ -70,6 +71,7 @@ export function buildAiHistoryColorRules(isDark) {
     { column: "Tool", condition: "equals", value: TOOL_GROK_BUILD, ...pick(13) },
     { column: "Tool", condition: "equals", value: TOOL_CURSOR, ...pick(14) },
     { column: "Tool", condition: "equals", value: TOOL_COPILOT, ...pick(15) },
+    { column: "Tool", condition: "equals", value: TOOL_GROK_BOT, ...pick(16) },
   ];
   return [...roleRules, ...toolRules];
 }

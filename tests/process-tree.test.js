@@ -217,7 +217,17 @@ test("PID relink uses LogonId scope before falling back to host PID reuse", () =
 	  assert.equal(child.link.parentLogonId, "1000");
 	});
 
-test("PID relink does not cross known SessionId scopes when LogonId is unavailable", () => {
+// audit P4: a cross-scope parent is LINKED, but marked.
+//
+// Refusing every cross-scope relink fractured real trees at exactly the handovers
+// that define a Windows session — services -> a service under its own principal,
+// winlogon -> userinit, UAC elevation, runas, and every scheduled task — where the
+// child legitimately runs under a different logon/session. Those branches simply
+// vanished and the analyst saw orphans. The link is now made at low confidence with
+// an explicit warning, and (outside the known boundary parents) only when the
+// candidate is the sole holder of that PID, so ambiguous PID-reuse guesses are still
+// refused.
+test("PID relink crosses a known SessionId boundary only as a warned, low-confidence link", () => {
   const rows = [
     {
       ProcessId: "1234", ParentProcessId: "100", ProcessGuid: "",
@@ -237,13 +247,56 @@ test("PID relink does not cross known SessionId scopes when LogonId is unavailab
   const { meta, ctx } = makeStub(SESSION_HEADERS, rows);
   const tree = getProcessTree(meta, { eventIdValue: "4688" }, ctx);
   const child = tree.processes.find((p) => p.pid === "5678");
-	  const linkedParent = tree.processes.find((p) => p.key === child.parentKey);
-	  assert.equal(child.sessionId, "1");
-	  assert.equal(linkedParent, undefined, "known-but-different SessionId parent must not be linked");
-	  assert.equal(child.link.source, "unresolved");
-	  assert.equal(child.link.confidence, "none");
-	  assert.ok(child.link.warnings.includes("parent_not_found"));
-	});
+  const linkedParent = tree.processes.find((p) => p.key === child.parentKey);
+  assert.equal(child.sessionId, "1");
+  assert.ok(linkedParent, "the only process holding that PID is the parent, even across sessions");
+  assert.equal(linkedParent.pid, "1234");
+  assert.equal(child.link.confidence, "low", "but the analyst must be told the link is weak");
+  assert.ok(child.link.warnings.includes("parent_scope_mismatch"), `expected a scope warning, got ${JSON.stringify(child.link.warnings)}`);
+});
+
+test("an ambiguous cross-scope PID is still refused", () => {
+  // TWO processes in other sessions held PID 1234 — the link is a coin flip, so no
+  // link is better than a wrong one.
+  const mk = (pid, ppid, session, image, ts) => ({
+    ProcessId: pid, ParentProcessId: ppid, ProcessGuid: "", ParentProcessGuid: "",
+    Image: image, ParentImage: "", CommandLine: "x", User: "HOST-A\\u",
+    UtcTime: ts, EventID: "4688", Provider: "Microsoft-Windows-Security-Auditing",
+    Computer: "HOST-A", SubjectLogonId: "", SessionId: session,
+  });
+  const rows = [
+    mk("1234", "100", "2", "C:\\S2\\A.exe", "2026-03-15 10:00:00"),
+    mk("1234", "100", "3", "C:\\S3\\B.exe", "2026-03-15 10:00:30"),
+    mk("5678", "1234", "1", "C:\\S1\\Child.exe", "2026-03-15 10:01:00"),
+  ];
+  const { meta, ctx } = makeStub(SESSION_HEADERS, rows);
+  const tree = getProcessTree(meta, { eventIdValue: "4688" }, ctx);
+  const child = tree.processes.find((p) => p.pid === "5678");
+  assert.equal(child.link.source, "unresolved");
+  assert.ok(child.link.warnings.includes("parent_not_found"));
+});
+
+test("a services.exe parent in another logon scope links without needing to be unique", () => {
+  // services.exe starting a service under the service's own logon is an OS boundary,
+  // not PID reuse — the boundary-parent list covers it even when ambiguous.
+  const mk = (pid, ppid, logon, image, name, ts) => ({
+    ProcessId: pid, ParentProcessId: ppid, ProcessGuid: "", ParentProcessGuid: "",
+    Image: image, ParentImage: "", CommandLine: name, User: "HOST-A\\u",
+    UtcTime: ts, EventID: "4688", Provider: "Microsoft-Windows-Security-Auditing",
+    Computer: "HOST-A", SubjectLogonId: logon, SessionId: "",
+  });
+  const rows = [
+    mk("700", "600", "0x3e7", "C:\\Windows\\System32\\services.exe", "services.exe", "2026-03-15 10:00:00"),
+    mk("900", "700", "0x3e4", "C:\\Windows\\System32\\svchost.exe", "svchost.exe", "2026-03-15 10:01:00"),
+  ];
+  const { meta, ctx } = makeStub(SESSION_HEADERS, rows);
+  const tree = getProcessTree(meta, { eventIdValue: "4688" }, ctx);
+  const child = tree.processes.find((p) => p.pid === "900");
+  const parent = tree.processes.find((p) => p.key === child.parentKey);
+  assert.ok(parent, "services -> svchost must not be severed by the logon-id change");
+  assert.equal(parent.processName, "services.exe");
+  assert.ok(child.link.warnings.includes("parent_scope_boundary"));
+});
 
 // ---------- Finding #3: brace-wrapped GUIDs normalized at ingest ----------
 

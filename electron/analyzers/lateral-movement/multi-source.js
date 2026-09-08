@@ -19,6 +19,8 @@ const { dbg } = require("../../logger");
 const { resolveSpineEventIds } = require("./detector-registry");
 const { getLateralMovement } = require("./index");
 const { isHayabusaDataset, isChainsawLogonDataset } = require("../evtx-utils");
+const { cmpTs } = require("./time");
+const { termSvcChannelGuard } = require("./sql-guards");
 
 // Execution-technique finding categories produced by the single-tab analyzer's
 // db-gated secondary scan. In merged mode the synthetic meta has db:null so these never
@@ -39,6 +41,19 @@ const EXECUTION_FINDING_CATEGORIES = new Set([
   "Kerberoasting",
   "AS-REP Roasting",
   "DCSync",
+  "WMI Remote Execution",
+  "WMI Remote Activity",
+  "WinRM Remote Execution",
+  "WinRM Remote Activity",
+  "DCOM Remote Execution",
+  "OpenSSH Inbound Access",
+  "SSH Tunneling",
+  "WMI Event Subscription",
+  "RMM Suspicious Execution",
+  "RMM Executed",
+  "RMM Installed",
+  "Remote Access Tunnel",
+  "Credential Theft",
 ]);
 
 /**
@@ -89,8 +104,18 @@ function detectTabColumns(meta, ctx) {
     eventId:     detect([/^EventID$/i, /^event_id$/i, /^eventid$/i, /^EventId$/, ...(isChainsaw ? [/^id$/i] : [])]),
     ts:          detect([/^datetime$/i, /^UtcTime$/i, /^TimeCreated$/i, /^timestamp$/i, ...(isChainsaw ? [/^system_time$/i] : [])]),
     domain:      detect([/^TargetDomainName$/i, /^Target_Domain_Name$/i, /^SubjectDomainName$/i, ...(isTermSvcEvtx ? [/^Param2$/i] : [])]) || extraCol || detailsCol,
+    // 4778/4779 name the user AccountName, not TargetUserName. Detected separately
+    // because detect() returns one column for the whole tab: on a tab that also holds
+    // 4624s, `user` resolves to TargetUserName and every reconnect row came back with
+    // an empty user, so reconnects never joined their logon session.
+    _accountName: detect([/^AccountName$/i, /^Account_Name$/i]),
     clientName:    detect([/^ClientName$/i, /^Client_Name$/i]),
     clientAddress: detect([/^ClientAddress$/i, /^Client_Address$/i, /^ClientIP$/i]),
+    // 5145 access rights. WriteData/AppendData/WriteAttributes on ADMIN$ or C$ is a
+    // TOOL DROP; ReadData is an inventory or backup agent reading a file. Ignoring
+    // the mask scored both identically.
+    _accessMask: detect([/^AccessMask$/i, /^Access_Mask$/i]),
+    _accessList: detect([/^AccessList$/i, /^Access_List$/i, /^Accesses$/i]),
     shareName: detect([/^ShareName$/i, /^Share_Name$/i]),
     relativeTargetName: detect([/^RelativeTargetName$/i, /^Relative_Target_Name$/i]),
     _remoteHost: isEvtxECmd ? detect([/^RemoteHost$/i]) : null,
@@ -104,6 +129,19 @@ function detectTabColumns(meta, ctx) {
     // the UserName column. Mirrors single-tab index.js so merged mode recovers the
     // same usernames (notably 4672 admin-privilege attribution).
     _userNameFallback: isEvtxECmd ? detect([/^UserName$/i]) : null,
+    // 4624/4625 authentication mechanism. LogonProcessName distinguishes an
+    // interactive logon (User32) from the secondary-logon service (seclogo =
+    // runas / runas /netonly) and from a network authentication (NtLmSsp / Kerberos),
+    // and AuthenticationPackage says which protocol was actually used. Together they
+    // are what separates overpass-the-hash from an ordinary Type 9 — neither column
+    // was ever read, which left the Overpass/PtH technique unreachable.
+    _logonProcess: detect([/^LogonProcessName$/i, /^Logon_Process_Name$/i, /^LogonProcess$/i]),
+    _authPackage: detect([/^AuthenticationPackageName$/i, /^AuthenticationPackage$/i, /^Authentication_Package(Name)?$/i]),
+    _logonId: detect([/^TargetLogonId$/i, /^Target_Logon_ID$/i, /^LogonId$/i, /^Logon_ID$/i]),
+    _subjectLogonId: detect([/^SubjectLogonId$/i, /^Subject_Logon_ID$/i]),
+    _subjectUser: detect([/^SubjectUserName$/i, /^Subject_User_Name$/i]),
+    _targetServerName: detect([/^TargetServerName$/i, /^Target_Server_Name$/i]),
+    _properties: detect([/^Properties$/i]),
     _channel: detect([/^Channel$/i, /^SourceName$/i, /^Provider$/i]),
     // Raw-EVTX TerminalServices leaves — mirrors single-tab index.js so a raw TS tab
     // merged with others still resolves its source host, user and session id.
@@ -176,6 +214,9 @@ function queryTabRows(meta, columns, options, ctx) {
     if (safeEid) {
       whereConditions.push(`${safeEid} IN (${eventIds.map(() => "?").join(",")})`);
       params.push(...eventIds);
+      // Keep Sysmon 20-25 out of the per-tab row budget — see sql-guards.js.
+      const _tsGuard = termSvcChannelGuard(safeEid, meta.colMap[columns._channel], eventIds);
+      if (_tsGuard) { whereConditions.push(_tsGuard.sql); params.push(..._tsGuard.params); }
     }
   }
 
@@ -190,13 +231,21 @@ function queryTabRows(meta, columns, options, ctx) {
   }
   // Also include underscore columns needed for EvtxECmd parsing
   for (const key of ["_remoteHost", "_payloadData1", "_payloadData2", "_payloadData3", "_payloadData4", "_payloadData5", "_channel", "_userNameFallback",
+    "_subjectUser", "_targetServerName", "_properties", "_accountName",
+    "_logonProcess", "_authPackage", "_logonId", "_subjectLogonId", "_accessMask", "_accessList",
     "_rawAddress", "_rawParam1", "_rawParam2", "_rawParam3", "_rawSessionId", "_rawUser", "_rawReason", "_statusCol"]) {
     const colName = columns[key];
     if (colName && meta.colMap[colName]) selectParts.push(`${meta.colMap[colName]} as [${key}]`);
   }
 
+  // A bare `ORDER BY <col>` is a BINARY text sort, which is only chronological for
+  // ISO-like values. Route through the sort_datetime() expression index the same way
+  // index.js and db/query-store.js do, so a US-style or "T"-separated column is not
+  // returned in lexical order and then merged as if it were chronological.
   const orderCol = columns.ts ? meta.colMap[columns.ts] : null;
-  const orderClause = orderCol ? `ORDER BY ${orderCol} ASC` : "ORDER BY data.rowid ASC";
+  const orderClause = orderCol
+    ? (meta.tsColumns?.has?.(columns.ts) ? `ORDER BY sort_datetime(${orderCol}) ASC, data.rowid ASC` : `ORDER BY ${orderCol} ASC`)
+    : "ORDER BY data.rowid ASC";
 
   // Ensure indexes for performance
   try {
@@ -263,6 +312,9 @@ function getMultiSourceLateralMovement(metas, options = {}, ctx) {
       if (!detection.sysmonOnly) {
         const tabOpts = { ...options, maxRows: perTabMaxRows };
         const rows = queryTabRows(meta, columns, tabOpts, ctx);
+        if (rows.length >= perTabMaxRows) {
+          warnings.push(`Tab "${label}": hit the ${perTabMaxRows.toLocaleString()}-row cap (oldest events kept). Newer activity may be missing.`);
+        }
 
         for (const row of rows) {
           const sourceRowId = Number(row._rowid);
@@ -366,8 +418,12 @@ function getMultiSourceLateralMovement(metas, options = {}, ctx) {
     return { nodes: [], edges: [], chains: [], findings: [], incidents: [], groupedSessions: [], stats: {}, warnings, scanStats: {}, columns: primaryColumns || {}, error: "No logon events found across selected tabs" };
   }
 
-  // Sort merged rows by timestamp
-  allRows.sort((a, b) => ((a.ts || a.datetime || "") > (b.ts || b.datetime || "") ? 1 : (a.ts || a.datetime || "") < (b.ts || b.datetime || "") ? -1 : 0));
+  // Sort merged rows by timestamp. This MUST be a parsed compare, not a string
+  // compare: tabs contribute different renderings of the same instant (EvtxECmd
+  // "2026-01-02 08:00:00" vs raw EVTX "2026-01-02T08:00:00Z"), and a space sorts
+  // before "T", so a lexical merge interleaved the tabs by format instead of by
+  // time and every cross-tab chain, window and sequence was built out of order.
+  allRows.sort((a, b) => cmpTs(a.ts || a.datetime || "", b.ts || b.datetime || ""));
 
   dbg("MULTI-LM", `Merged ${allRows.length} rows from ${tabSummaries.length} tabs`);
 

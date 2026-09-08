@@ -1,6 +1,6 @@
 {
   "name": "irflow-timeline",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "SQLite-backed DFIR workspace for macOS. Large forensic datasets, native artifacts, AI application histories, and OS activity telemetry become searchable timelines with source provenance.",
   "main": "electron/main.js",
   "author": "DFIR Community",
@@ -23,6 +23,8 @@
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "postinstall": "patch-package && electron-rebuild -f -w better-sqlite3",
     "smoke:electron": "electron scripts/smoke-electron-runtime.js",
+    "benchmark:ai-history:phase4": "node scripts/benchmark-ai-history-phase4.cjs",
+    "acceptance:ai-history:phase5": "electron scripts/ai-history-phase5-acceptance.cjs",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",

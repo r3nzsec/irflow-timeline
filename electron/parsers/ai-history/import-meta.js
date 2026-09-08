@@ -125,12 +125,33 @@ function buildCopilotEmptyExtractError(stats) {
   return notice || "Sources were found but contained no message rows.";
 }
 
+function formatContextNotice(label, stats) {
+  if (!stats) return "";
+  const files = Number(stats.files || stats.selected || stats.taskInventory?.files || 0);
+  const typed = Number(stats.typedRows || stats.configRows || 0);
+  const omitted = Number(stats.omitted || stats.taskOmitted || 0);
+  const credentialExcluded = Number(stats.credentialExcluded || 0);
+  return `${label} context: ${typed} typed configuration row(s), ${files} inventoried file(s)`
+    + `${credentialExcluded ? `, ${credentialExcluded} credential store(s) excluded from reading/hashing` : ""}`
+    + `${omitted ? `, ${omitted} eligible file(s) omitted by the explicit context cap` : ", no eligible context file omitted"}.`;
+}
+
 function buildAiHistoryImportNotice(meta) {
   const parts = [];
+  if (Array.isArray(meta?.sourceCoverage) && meta.sourceCoverage.length) {
+    const counts = {};
+    for (const entry of meta.sourceCoverage) counts[entry.status] = (counts[entry.status] || 0) + 1;
+    const details = Object.entries(counts)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([status, count]) => `${count} ${status}`)
+      .join(", ");
+    parts.push(`Source coverage v1: ${meta.sourceCoverage.length} source(s) accounted for (${details}).`);
+  }
   if (meta?.claudeDesktop) {
     const s = buildClaudeDesktopImportNotice(meta.claudeDesktop);
     if (s) parts.push(s);
   }
+  if (meta?.claudeContext) parts.push(formatContextNotice("Claude Code", meta.claudeContext));
   if (meta?.chatgpt) {
     const s = formatChatgptImportNotice(meta.chatgpt);
     if (s) parts.push(s);
@@ -146,6 +167,7 @@ function buildAiHistoryImportNotice(meta) {
     const s = buildCursorComposerImportNotice(meta.cursor.composer);
     if (s) parts.push(s);
   }
+  if (meta?.cursor?.context) parts.push(formatContextNotice("Cursor", meta.cursor.context));
   if (meta?.windsurf) {
     const { buildVsCodeChatImportNotice } = require("./vscode-chat-db");
     const s = buildVsCodeChatImportNotice("Windsurf", meta.windsurf);
@@ -160,13 +182,37 @@ function buildAiHistoryImportNotice(meta) {
     const s = buildCodexAuxSqliteNotice(meta.codexAuxSqlite);
     if (s) parts.push(s);
   }
+  if (meta?.codexThreadHistory) {
+    const { buildCodexThreadHistoryNotice } = require("./codex-thread-history-sqlite");
+    const s = buildCodexThreadHistoryNotice(meta.codexThreadHistory);
+    if (s) parts.push(s);
+  }
   if (meta?.codexLocalEvidence) {
     const { buildCodexLocalEvidenceNotice } = require("./codex-local-evidence");
     const s = buildCodexLocalEvidenceNotice(meta.codexLocalEvidence);
     if (s) parts.push(s);
   }
+  if (meta?.codexContext) parts.push(formatContextNotice("OpenAI Codex", meta.codexContext));
+  if (meta?.grokContext) {
+    const independent = meta.grokContext.independent || {};
+    const worktrees = meta.grokContext.worktrees || {};
+    parts.push(`Grok Build context: ${Number(meta.grokContext.typedRows || 0)} typed row(s); `
+      + `${Number(independent.terminalRows || 0)} independent terminal log(s), ${Number(independent.promptRows || 0)} prompt context(s), `
+      + `${Number(worktrees.records || 0)} worktree record(s)`
+      + `${Number(independent.oversized || 0) ? `; ${independent.oversized} oversized source(s) inventoried instead of body-decoded` : ""}`
+      + `${Number(independent.omitted || 0) ? `; ${independent.omitted} independent source(s) omitted by cap` : "; no independent source omitted"}.`);
+  }
+  if (meta?.geminiHistory) {
+    parts.push(`Gemini CLI immutable history: ${Number(meta.geminiHistory.currentMessageRows || 0)} current row(s), `
+      + `${Number(meta.geminiHistory.historyRows || 0)} history row(s), ${Number(meta.geminiHistory.operations || 0)} rewind/replacement operation(s).`);
+  }
   if (meta?.windsurfCascade) {
     const s = buildWindsurfCascadeNotice(meta.windsurfCascade);
+    if (s) parts.push(s);
+  }
+  if (meta?.grokBot) {
+    const { buildGrokBotImportNotice } = require("./grok-bot");
+    const s = buildGrokBotImportNotice(meta.grokBot);
     if (s) parts.push(s);
   }
   if (meta?.browserAgentHints?.length) {
@@ -180,6 +226,10 @@ function buildAiHistoryImportNotice(meta) {
   }
   if (meta?.capped) {
     parts.push(`Row cap of ${Number(meta.capped.maxRows).toLocaleString()} reached — the timeline was truncated to the earliest ${Number(meta.capped.rowCount).toLocaleString()} messages.`);
+  }
+  if (meta?.fullTextTruncated?.rows > 0) {
+    const kb = Math.round(Number(meta.fullTextTruncated.maxChars || 0) / 1024);
+    parts.push(`${Number(meta.fullTextTruncated.rows).toLocaleString()} message bod${meta.fullTextTruncated.rows === 1 ? "y" : "ies"} longer than ${kb} KB were stored truncated in this merged import (secret scan and search see the first ${kb} KB). Open that tool's folder on its own to keep the complete body.`);
   }
   return parts.join(" ");
 }

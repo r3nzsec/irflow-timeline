@@ -8,7 +8,11 @@ const {
   aiHistoryOpenDialogFilters,
 } = require("../parsers/ai-history/open-dialog-paths");
 const { openDialogOptions } = require("../utils/open-dialog");
-const { authorizeAiArtifactPick, assertAiReadablePath } = require("../parsers/ai-history/path-auth");
+const {
+  authorizeAiArtifactPick,
+  authorizeAiScanTarget,
+  assertAiReadablePath,
+} = require("../parsers/ai-history/path-auth");
 const { dbg } = require("../logger");
 const {
   assertValidSessionPayload,
@@ -59,6 +63,25 @@ function applyClientAiScopeChoices(planned, items) {
       needsScopeChoice: false,
     };
   });
+}
+
+function authorizeSessionAiHistoryRestores(session) {
+  for (const tab of session?.tabs || []) {
+    const restore = tab?.aiHistoryRestore;
+    if (restore?.kind === "single" && restore.path) {
+      try { authorizeAiArtifactPick(restore.path, { label: "restored AI artifact" }); } catch {}
+      continue;
+    }
+    if (restore?.kind !== "profile") continue;
+    if (restore.scanRoot) {
+      try { authorizeAiScanTarget(restore.scanRoot, { label: "restored AI collection" }); } catch {}
+    }
+    for (const root of restore.roots || []) {
+      if (!root?.path) continue;
+      try { authorizeAiArtifactPick(root.path, { label: root.label || root.tool || "restored AI artifact" }); } catch {}
+    }
+  }
+  return session;
 }
 
 async function openAuthorizedAiSource({ filePath, lineNumber } = {}, openPath = shell.openPath) {
@@ -427,7 +450,7 @@ function registerSessionHandlers(safeHandle, safeSend, ctx) {
     if (result.canceled || !result.filePaths.length) return null;
     try {
       const raw = fs.readFileSync(result.filePaths[0], "utf-8");
-      return assertValidSessionPayload(JSON.parse(raw));
+      return authorizeSessionAiHistoryRestores(assertValidSessionPayload(JSON.parse(raw)));
     } catch (e) {
       return { error: e.message };
     }
@@ -462,7 +485,7 @@ function registerSessionHandlers(safeHandle, safeSend, ctx) {
       if (loaded?.recoveredFromBackup) {
         dbg("SESSION", "Recovered autosave from backup", { sourcePath: loaded.sourcePath });
       }
-      return loaded?.session || null;
+      return loaded?.session ? authorizeSessionAiHistoryRestores(loaded.session) : null;
     } catch (e) {
       dbg("SESSION", "Autosave recovery failed", { error: e?.message || String(e) });
       return { error: e.message };
@@ -559,3 +582,4 @@ function registerSessionHandlers(safeHandle, safeSend, ctx) {
 module.exports = registerSessionHandlers;
 module.exports._applyClientAiScopeChoices = applyClientAiScopeChoices;
 module.exports._openAuthorizedAiSource = openAuthorizedAiSource;
+module.exports._authorizeSessionAiHistoryRestores = authorizeSessionAiHistoryRestores;

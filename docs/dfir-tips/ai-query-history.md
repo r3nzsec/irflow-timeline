@@ -28,7 +28,7 @@ IRFlow collects more than prompts. A typical row can carry the user or assistant
 
 That is what makes the tab usable as evidence: did someone paste credentials, ask for help with suspicious commands, generate code in a sensitive workspace, or receive output that exposed secrets?
 
-`Tool` is the AI app family (Claude Code, OpenAI Codex, Grok Build, Cursor). `InvokedTool` is a tool/action **inside** that app (a shell command, editor operation, or model tool call). `Summary` is the grid preview; `FullText` is the complete body for search, secret hunt, and export.
+`Tool` is the AI app family (Claude Code, OpenAI Codex, Grok Build, Cursor). `InvokedTool` is a tool/action **inside** that app (a shell command, editor operation, or model tool call). `Summary` is the grid preview. `FullText` retains the parser body for a single-app import; merged worker imports bound very large bodies to 8 KiB per row and report every truncation in extraction coverage.
 
 ## Supported apps
 
@@ -59,6 +59,8 @@ Evidence is one of **parsed history** (rows in the grid), **inventory-only** (de
 2. **Browse folder…** — KAPE output, triage packages, mounted disks, or any tree with `Users\` / `home/` layouts. IRFlow matches Windows, Linux, and macOS paths **inside** the folder you pick.
 
 After discovery, choose **main sessions only** (faster triage) or **include subagents**. The activity log shows per-source status, files read, and row counts.
+
+After the tab opens, use **Tools → Export → View AI Extraction Coverage** for the durable per-source ledger. It distinguishes parsed, empty, partial, malformed, unsupported, excluded, and unavailable sources, shows row-cap and parse-error state, identifies credential stores inventoried without copying values, and states the Grok Bot attachment-recovery scope.
 
 Use a single **AI Apps** entry when you already know the root (`.claude`, `.codex`, `.grok`, `.cursor`, `.gemini`). **File → Open…** on those folders does the same thing.
 
@@ -92,7 +94,7 @@ On an **AI Query History** tab, **Tools → Detection → AI Secret Hunt** scans
 | File | Purpose |
 |------|---------|
 | `<tab>_timeline.csv` | Current grid rows (filters, sort, visible columns). **FullText** is always included. |
-| `manifest.json` | Source path, row count, size, mtime, SHA-256 (first 250 files hashed) |
+| `manifest.json` | Source path, row count, size, mtime, SHA-256 (first 250 eligible files hashed), plus the extraction coverage ledger, failures, caps, and remaining-source inventory |
 | `README.txt` | Short description of the bundle |
 
 **Export Source Manifest (sources only)** writes the inventory without the timeline CSV.
@@ -101,7 +103,7 @@ On an **AI Query History** tab, **Tools → Detection → AI Secret Hunt** scans
 
 - Filter **InvokedTool** for `Shell` / `Bash`, then read **ToolCommand** (exact command) and **ToolInput** (cwd, timeout, permissions). Treat those columns as evidence.
 - Filter **Role** = `user` for prompts; `assistant` for model replies.
-- Merged scans **dedupe identical prompts across tools**. The kept row’s **AlsoInTools** column lists every app that saw the same text.
+- Merged scans retain each source occurrence. Matching text across tools is linked through **AlsoInTools** without deleting either source row.
 - **Workspace** correlates to repos and production paths. **User** / **Host** come from `Users\<name>\` or a KAPE host folder when present.
 - **Row Detail → Filter session** / **Correlate path** jumps to open Prefetch, EVTX/Sigma, or Amcache tabs.
 
@@ -114,7 +116,7 @@ On an **AI Query History** tab, **Tools → Detection → AI Secret Hunt** scans
 
 ## Limitations
 
-- **Summary** is truncated for the grid — use **FullText** and **Open source**.
+- **Summary** is truncated for the grid. Merged imports also bound exceptionally large **FullText** values to 8 KiB; the import notice, coverage view, and export manifest disclose the affected row count. Use **Open source** for the original bytes.
 - Browser-only ChatGPT, Claude, Grok, Copilot, or Gemini usage is hint-only; collect the browser profile separately.
 - Consumer Grok web/mobile is not a native store.
 - Official Gemini **desktop** app is not parsed — only Gemini CLI.

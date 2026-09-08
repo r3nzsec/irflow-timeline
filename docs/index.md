@@ -1,11 +1,11 @@
 ---
 layout: home
-description: Native macOS DFIR timeline analysis — EVTX, CSV, XLSX, Plaso, $MFT, $J, and local AI app artifacts with AI Secret Hunt and built-in investigation analytics.
+description: Native macOS DFIR timeline analysis — EVTX, KAPE VHDX, CSV, XLSX, Plaso, $MFT, $J, and local AI app artifacts with source coverage and built-in investigation analytics.
 
 hero:
   name: IRFlow Timeline
   text: DFIR Timeline Analysis
-  tagline: Native macOS forensic timeline analysis. Import, search, and investigate EVTX, CSV, XLSX, Plaso, $MFT, $J, and local AI assistant artifacts — with AI Secret Hunt and the analytics DFIR professionals actually need.
+  tagline: Native macOS forensic timeline analysis. Open KAPE VHDX, EVTX, CSV, XLSX, Plaso, $MFT, $J, and local AI assistant artifacts — with source coverage, AI Secret Hunt, and practical investigation analytics.
   actions:
     - theme: brand
       text: Get Started
@@ -20,7 +20,10 @@ features:
     details: SQLite engine with sub-100ms queries on 10M+ rows. Streams 30GB+ files with zero-copy CSV parsing, memory-capped background indexing, and single-query analytics — no loading into memory.
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#E85D2A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4"/><path d="M12 17v4"/><path d="M3 12h4"/><path d="M17 12h4"/><rect x="7" y="7" width="10" height="10" rx="2" fill="rgba(232,93,42,0.18)"/><path d="M10 11h4M10 14h2"/></svg>'
     title: AI Artifacts
-    details: Scan local AI history from ChatGPT Desktop, Claude Code, Codex, Grok Build, Cursor, Copilot, Gemini CLI, Windsurf, and Continue — plus ChatGPT Computer History interaction telemetry. Preserve prompts, responses, tool calls, workspaces, and secret exposure evidence.
+    details: Scan local AI history and control-plane evidence from ChatGPT/Codex, Claude, Grok Build, Grok Bot, Gemini CLI, Cursor, Copilot, Windsurf, and Continue. Preserve prompts, tool results, policy context, source coverage, and secret-exposure evidence.
+  - icon: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#E85D2A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3" fill="rgba(232,93,42,0.18)"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/><path d="M9 9h6"/></svg>'
+    title: KAPE VHDX Triage
+    details: Open KAPE --vhdx collections directly on macOS. IRFlow reads VHDX and NTFS without mounting or modifying the image, extracts only recognized artifacts to scratch storage, and feeds the existing triage, Sigma, and Lateral Movement workflows.
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#E85D2A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="11" y1="8" x2="11" y2="14"/></svg>'
     title: 5 Search Modes
     details: Mixed, FTS, LIKE, Fuzzy, and Regex. Full-text search, substring matching, typo-tolerant fuzzy, and pattern matching across millions of rows.
@@ -47,6 +50,16 @@ features:
     details: Bookmarks, color-coded tags, conditional formatting with KAPE-aware presets, and full session save/restore.
 ---
 
+## What's New · v1.0.13
+
+- **Open KAPE VHDX directly** — File → Open Triage Collection accepts dynamic and fixed `.vhdx` images, reads the NTFS volume without mounting it, and copies only recognized artifacts into a temporary collection tree. The source image stays untouched.
+- **AI evidence beyond transcripts** — Claude, Codex/ChatGPT, Grok Build, Grok Bot, Gemini CLI, and Cursor now expose more local policy, context, tool-result, SQLite, lifecycle, and attachment evidence. Credential-store contents and secret values remain excluded.
+- **Defensible source coverage** — each AI extraction records which eligible sources were selected, opened, empty, unsupported, failed, or omitted, including database companions and explicit limits. Large Codex rollouts stream under a bounded worker instead of accumulating in memory.
+- **Quieter Windows detections** — Process Inspector now uses event-specific PID/path semantics and requires behavioral corroboration for destructive tools, credential access, high-volume network activity, and writable-path findings. Lateral Movement separates channel-colliding Event IDs, applies real timestamp/time-zone semantics, and suppresses service-account and fixed-cadence noise without hiding corroborated attacks.
+- **Forensic export integrity** — bare carriage returns are quoted correctly, AI package manifests preserve acquisition and source identity, and partial coverage survives session save/reopen.
+
+[Read the v1.0.13 announcement →](/blog/v1.0.13-ai-forensics-and-vhdx) · [KAPE VHDX workflow →](/getting-started/supported-formats#kape-vhdx-images-triage-collections) · [Full changelog →](/about/changelog)
+
 ## What's New · v1.0.12
 
 - **Diff Tabs** — View → Diff Tabs compares any two imported files (EVTX, MFT, Prefetch, AI history, Computer History, or any CSV). The result is a color-coded Added / Removed / Changed timeline with field-level before/after and clickable status counts. Merge is a union; Diff is a comparison.
@@ -56,16 +69,6 @@ features:
 - **Computer History re-audit** — `terminal.value_changed` (visible iTerm2 scrollback), Statsig account identity, and a corrected 48-hour purge caveat.
 
 [Read the v1.0.12 announcement →](/blog/v1.0.12-diff-tabs-and-triage) · [Diff Tabs workflow →](/workflows/diff-tabs) · [Full changelog →](/about/changelog)
-
-## What's New · v1.0.11
-
-- **Computer History analysis verified against a live capture** — Credential rows are time anchors, not recovered passwords; capture fidelity is measured per application rather than assumed from the app's category; and gaps spanning a recorder restart are reported as unassessed instead of falsely cleared.
-- **The copy that outlives the evidence** — Activity consolidated into `~/.codex/memories/` is neither purged at 48 hours nor cleared with Computer History, and is now collected. On a stale host it can be the only surviving record.
-- **More of each summary** — The model-inferred user profile and carried-forward prior context become their own rows instead of being flattened into one blob.
-- **Grok Build and Claude Desktop stores that outlive the conversation** — Deletion tombstones that date a removed chat, the files staged for upload to it, the Grok search index that mirrors a deleted session's text, and the app log that timestamps tool executions independently of it.
-- **Sharper grid** — Mouse modifiers reach `KeyChord` (a command-click opens a link in a background tab), and click multiplicity is named by meaning rather than producing ten numeric Activity values.
-
-[Read the v1.0.11 announcement →](/blog/v1.0.11-computer-history-verified) · [Computer History in v1.0.10 →](/blog/v1.0.10-computer-history) · [Full changelog →](/about/changelog)
 
 ## What is IRFlow Timeline?
 
@@ -92,6 +95,7 @@ Excel row limits, Windows VM overhead, or missing AI evidence — IRFlow is the 
 | **Plaso** | `.plaso`, `.timeline` | Forensic timeline database (`.timeline` auto-detects; falls back to CSV) |
 | **Raw $MFT** | `.mft` | NTFS Master File Table — direct import for NTFS analysis tools |
 | **Raw $J** | `.$J`, `.usn` | NTFS USN Journal (change journal) |
+| **KAPE VHDX** | `.vhdx` | Read-only VHDX + NTFS extraction into the triage-collection workflow |
 | **AI app artifacts** | folders / JSONL / SQLite / LevelDB | Scan local AI history from supported desktop, CLI, and editor assistants |
 | **ChatGPT Computer History** | Skysight `events.jsonl` segments + summary `.md` | macOS interaction telemetry — focus, clicks, keystrokes, selections, drags (own tab, 54-column schema) |
 

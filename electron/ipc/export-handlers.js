@@ -9,6 +9,7 @@ const { dbg } = require("../logger");
 const {
   sanitizeExportBaseName,
   enrichSourceManifest,
+  buildExtractionReport,
   buildPackageManifest,
   buildReadmeText,
   buildSourcesOnlyManifest,
@@ -62,26 +63,24 @@ function hardenAiSecretPdfWindow(win, expectedUrl) {
   );
 }
 
+function encodeDelimitedField(value, delimiter) {
+  const text = String(value ?? "");
+  if (!text.includes(delimiter) && !/["\r\n]/.test(text)) return text;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
 async function writeDelimitedExportToPath(exportData, filePath, safeSend) {
   const ext = path.extname(filePath).toLowerCase();
   const delimiter = ext === ".tsv" ? "\t" : ",";
   const writeStream = fs.createWriteStream(filePath, { encoding: "utf-8" });
-  writeStream.write(exportData.headers.join(delimiter) + "\n");
+  writeStream.write(exportData.headers.map((value) => encodeDelimitedField(value, delimiter)).join(delimiter) + "\n");
 
   let count = 0;
   let aborted = false;
   let abortError = null;
   try {
     for (const rawRow of exportData.iterator) {
-      const values = exportData.safeCols.map((sc) => {
-        const val = rawRow[sc] ?? "";
-        if (delimiter === "\t") {
-          return val.includes("\t") || val.includes("\n") ? val.replace(/\t/g, " ").replace(/\n/g, " ") : val;
-        }
-        return val.includes(",") || val.includes('"') || val.includes("\n")
-          ? `"${val.replace(/"/g, '""')}"`
-          : val;
-      });
+      const values = exportData.safeCols.map((sc) => encodeDelimitedField(rawRow[sc], delimiter));
       const ok = writeStream.write(values.join(delimiter) + "\n");
       if (!ok) await new Promise((r) => writeStream.once("drain", r));
       count += 1;
@@ -311,7 +310,7 @@ ${body}
 </html>`;
 }
 
-module.exports = function registerExportHandlers(safeHandle, safeSend, { db, _activeWindow }) {
+module.exports = function registerExportHandlers(safeHandle, safeSend, { db, _activeWindow, _tabMeta }) {
   safeHandle("export-filtered", async (event, { tabId, options }) => {
     const result = await dialog.showSaveDialog(_activeWindow(), {
       defaultPath: `filtered_export.csv`,
@@ -401,7 +400,12 @@ module.exports = function registerExportHandlers(safeHandle, safeSend, { db, _ac
 
     const sourceGroups = db.getGroupedColumnCounts(tabId, "SourceFile", exportOpts);
     const toolGroups = db.getGroupedColumnCounts(tabId, "Tool", exportOpts).groups;
-    const { sources, hashedFileCount, hashTruncated } = await enrichSourceManifest(sourceGroups.groups);
+    const tabMeta = _tabMeta?.get?.(tabId) || null;
+    const importMeta = tabMeta?.aiHistoryImportMeta || null;
+    const extractionReport = buildExtractionReport(importMeta, tabMeta?.aiHistoryFailures || []);
+    const { sources, hashedFileCount, hashTruncated } = await enrichSourceManifest(sourceGroups.groups, {
+      sourceCoverage: importMeta?.sourceCoverage || [],
+    });
     const toolBreakdown = toolGroups.map((g) => ({ tool: g.value, rowCount: g.count }));
     const filtersApplied = options?.filtersApplied !== false;
 
@@ -417,6 +421,7 @@ module.exports = function registerExportHandlers(safeHandle, safeSend, { db, _ac
         hashedFileCount,
         hashTruncated,
         toolBreakdown,
+        extractionReport,
       });
 
       await fsp.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf-8");
@@ -470,6 +475,7 @@ module.exports = function registerExportHandlers(safeHandle, safeSend, { db, _ac
       hashedFileCount,
       hashTruncated,
       toolBreakdown,
+      extractionReport,
     });
     // Record truncation in the manifest so the chain-of-custody artifact never asserts a complete
     // export over a CSV that aborted mid-stream.
@@ -611,3 +617,5 @@ module.exports.buildReportHtml = buildReportHtml;
 module.exports.redactAiSecretExportText = redactAiSecretExportText;
 module.exports.buildAiSecretPrintDocument = buildAiSecretPrintDocument;
 module.exports.hardenAiSecretPdfWindow = hardenAiSecretPdfWindow;
+module.exports.encodeDelimitedField = encodeDelimitedField;
+module.exports.writeDelimitedExportToPath = writeDelimitedExportToPath;

@@ -107,6 +107,24 @@ export function GrokMenuIcon() {
   );
 }
 
+/** Grok Bot — the Grok mark with a small antenna, marking the always-on cloud agent product. */
+export function GrokBotMenuIcon() {
+  return (
+    <MenuSvg>
+      <circle cx="12" cy="12" r="10" fill="#050505" />
+      <path
+        fill="#fff"
+        d="M17.55 5.72a8.18 8.18 0 0 0-10.7-.15 8.17 8.17 0 0 0-.94 11.56l1.66-1.55a5.92 5.92 0 0 1 .78-8.29 5.91 5.91 0 0 1 7.56-.12l1.64-1.45Z"
+      />
+      <path
+        fill="#fff"
+        d="m3.24 20.76 11.64-9.98c.46-.39 1.15-.24 1.4.31a5.92 5.92 0 0 1-8.75 7.35l-1.66 1.55a8.18 8.18 0 0 0 12.21-10.7L21.2 2.8 10.68 14.6l-7.44 6.16Z"
+      />
+      <circle cx="18.6" cy="5.4" r="2.6" fill="#8B5CF6" stroke="#050505" strokeWidth="1" />
+    </MenuSvg>
+  );
+}
+
 /** ChatGPT — chat bubble with knot (OpenAI green). */
 export function ChatGptMenuIcon() {
   const { a, soft, mid } = tones(BRAND.openai);

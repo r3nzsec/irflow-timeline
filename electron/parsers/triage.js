@@ -40,7 +40,8 @@ const KIND_LABELS = {
   logFile: "$LogFile (NTFS journal)",
   webcache: "IE/legacy Edge WebCache (WebCacheV01.dat)",
   bits: "BITS transfer queue (qmgr*.dat)",
-  windowsSearch: "Windows Search index (Windows.edb)",
+  windowsSearch: "Windows Search index (Windows.edb / Windows.db)",
+  plaso: "Plaso timeline",
   wbemRepository: "WBEM repository (OBJECTS.DATA)",
   wer: "Windows Error Reporting (.wer)",
   groupPolicy: "Group Policy artifacts",
@@ -59,7 +60,7 @@ const KIND_LABELS = {
 // Cheap name pre-filter: a KAPE module CSV either ends in `_Output.csv`, is an SBECmd per-hive
 // shellbag CSV (`<user>_UsrClass.csv` / `<user>_NTUSER.csv` — no `_Output` suffix), or carries an
 // EZ-Tools token. The header signature remains the authority; this just bounds which CSVs are peeked.
-const EZ_CSV_RE = /(?:_Output\.csv$)|(?:_(?:UsrClass|NTUSER)\.csv$)|(?:EvtxECmd|PECmd|LECmd|JLECmd|SBECmd|MFTECmd|RBCmd|RECmd|SrumECmd|Amcache|AppCompatCache|AutomaticDestinations|CustomDestinations|Shellbag)/i;
+const EZ_CSV_RE = /(?:_Output\.csv$)|(?:_(?:UsrClass|NTUSER)\.csv$)|(?:EvtxECmd|PECmd|LECmd|JLECmd|SBECmd|MFTECmd|RBCmd|RECmd|SrumECmd|Amcache|AppCompatCache|AutomaticDestinations|CustomDestinations|Shellbag|Hayabusa|Chainsaw|WxTCmd|BrowsingHistory|_Timeline)/i;
 
 // Header-column signatures → Super Timeline CSV kind (ordered: most-specific first; jumplist before
 // lnk because both carry TargetIDAbsolutePath). v1 covers the kinds the normalizer already maps from
@@ -177,7 +178,7 @@ function classifyFile(filePath) {
   if (upper === "SRUDB.DAT") return "srudb";                  // Lane E — SRUM ESE DB (Windows\System32\sru\SRUDB.dat)
   if (upper === "WEBCACHEV01.DAT") return "webcache";         // IE / legacy Edge ESE web cache
   if (/^QMGR\d*\.DAT$/i.test(base)) return "bits";            // BITS transfer queue ESE stores
-  if (upper === "WINDOWS.EDB") return "windowsSearch";        // Windows Search ESE index
+  if (upper === "WINDOWS.EDB" || upper === "WINDOWS.DB" || upper === "WINDOWS-GATHER.DB") return "windowsSearch";        // Windows Search ESE index
   if (upper === "OBJECTS.DATA" && /[\\/]WBEM[\\/]Repository[\\/]/i.test(filePath)) return "wbemRepository";
   if (ext === ".wer" || /[\\/]Report(?:Archive|Queue)[\\/].+\.wer$/i.test(filePath)) return "wer";
   if (upper === "REGISTRY.POL" || upper === "GPTTMPL.INF" || upper === "SCRIPTS.INI" || (GPO_PATH_RE.test(filePath) && GPO_SCRIPT_RE.test(filePath))) return "groupPolicy";
@@ -185,7 +186,8 @@ function classifyFile(filePath) {
   if (ext === ".evtx") return "evtx";
   if (upper === "$MFT" || ext === ".mft") return "mft";
   if (upper === "$LOGFILE") return "logFile"; // NTFS transaction journal ($FILE_NAME file activity)
-  if (upper === "$J" || upper.includes("USNJRNL")) return "usn";
+  if (upper === "$J" || (upper.includes("USNJRNL") && !/\$MAX/i.test(upper) && !/%3A\$MAX/i.test(upper))) return "usn";
+  if (ext === ".plaso" || /\.plaso$/i.test(base) || (ext === ".timeline" && /plaso/i.test(base))) return "plaso";
   // RDP bitmap cache: bcache##.bmc / Cache####.bin (bmc-tools input).
   if (/\.bmc$/i.test(base) || /^cache\d{4}\.bin$/i.test(base)) return "rdp";
   // KAPE Module output: an already-parsed EZ-Tools CSV. Gated on EZ/KAPE naming so arbitrary CSVs in
@@ -274,18 +276,24 @@ function scanTriageDir(dir, opts = {}) {
   const maxFiles = opts.maxFiles || 1_000_000;
   const maxDepth = opts.maxDepth || 40;
   const maxPathsPerKind = opts.maxPathsPerKind || 64;
+  const progressEvery = Number.isFinite(opts.progressEvery) && opts.progressEvery > 0 ? opts.progressEvery : 250;
+  const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+  const isCancelled = typeof opts.isCancelled === "function" ? opts.isCancelled : null;
 
   const counts = {};
   const bytes = {}; // total size per kind (for "heavy" flags in the manifest)
   const matched = {}; // kind -> [{ p, size }] — collected UNCAPPED (classified files are bounded)
   let total = 0, scanned = 0, truncated = false;
+  let lastProgress = 0;
 
   const stack = [{ d: dir, depth: 0 }];
   while (stack.length) {
+    if (isCancelled) isCancelled();
     const { d, depth } = stack.pop();
     let entries;
     try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { continue; }
     for (const e of entries) {
+      if (isCancelled) isCancelled();
       const full = path.join(d, e.name);
       if (e.isDirectory()) {
         if (!e.isSymbolicLink() && depth < maxDepth) stack.push({ d: full, depth: depth + 1 });
@@ -301,9 +309,14 @@ function scanTriageDir(dir, opts = {}) {
       bytes[kind] = (bytes[kind] || 0) + size;
       total++;
       (matched[kind] || (matched[kind] = [])).push({ p: full, size });
+      if (onProgress && scanned - lastProgress >= progressEvery) {
+        lastProgress = scanned;
+        onProgress({ phase: "scanning", scanned, classified: total });
+      }
     }
     if (truncated) break;
   }
+  if (onProgress) onProgress({ phase: "scanning", scanned, classified: total });
 
   // Prioritize BEFORE truncating to maxPathsPerKind, so the cap can never discard the files that
   // matter: high-value EVTX channels (Security/System/Sysmon/…) first, then largest-first (most
@@ -326,7 +339,7 @@ function scanTriageDir(dir, opts = {}) {
 }
 
 module.exports = {
-  classifyFile, scanTriageDir, KIND_LABELS, HIGH_VALUE_EVTX,
+  classifyFile, scanTriageDir, KIND_LABELS, HIGH_VALUE_EVTX, EZ_CSV_RE,
   classifyKapeCsv, classifyKapeCsvColumns, detectModuleOutput,
   lmEvtxRelevance, isLikelyEmptyEvtx, EMPTY_EVTX_BYTES,
 };

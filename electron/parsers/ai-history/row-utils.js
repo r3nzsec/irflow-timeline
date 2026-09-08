@@ -2,6 +2,7 @@
  * ai-history/row-utils.js — shared timeline row builders for AI history parsers.
  */
 
+const crypto = require("crypto");
 const { SUMMARY_MAX_LEN } = require("./schema");
 
 // Bound a single message body held in heap. FullText is the only uncapped field (Summary is
@@ -101,6 +102,7 @@ function makeRow(fields, defaultTool) {
   const tool = fields.tool || defaultTool || "";
   const row = {
     Timestamp: fields.timestamp || "",
+    TimestampBasis: fields.timestampBasis || "",
     Role: fields.role || "",
     RecordType: fields.recordType || "",
     Summary: summary,
@@ -121,6 +123,7 @@ function makeRow(fields, defaultTool) {
     OutputTokens: fields.outputTokens != null ? String(fields.outputTokens) : "",
     SourceFile: fields.sourceFile || "",
     LineNumber: fields.lineNumber != null && fields.lineNumber !== "" ? String(fields.lineNumber) : "",
+    SourceOffset: fields.sourceOffset != null && fields.sourceOffset !== "" ? String(fields.sourceOffset) : "",
     User: fields.user || "",
     Host: fields.host || "",
     AlsoInTools: fields.alsoInTools || "",
@@ -148,12 +151,20 @@ function summaryDedupeSlice(row) {
   return String(row.Summary || "").toLowerCase().replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
+function normalizedEvidenceBody(row) {
+  return String(row.FullText || row.Summary || "").replace(/\r\n/g, "\n").trim();
+}
+
+function evidenceBodyHash(row) {
+  return crypto.createHash("sha256").update(normalizedEvidenceBody(row), "utf8").digest("hex");
+}
+
 function crossToolPromptKey(row) {
-  const slice = summaryDedupeSlice(row);
-  if (!slice || slice.length < 20) return "";
+  const body = normalizedEvidenceBody(row);
+  if (!body || body.length < 20) return "";
   const role = String(row.Role || "").toLowerCase();
   if (role !== "user" && role !== "assistant") return "";
-  return `${role}\x1f${slice}`;
+  return `${role}\x1f${evidenceBodyHash(row)}`;
 }
 
 function pickRicherAiHistoryRow(a, b) {
@@ -167,50 +178,47 @@ function pickRicherAiHistoryRow(a, b) {
 }
 
 /**
- * Collapse the SAME prompt seen across DIFFERENT tools into the richest single row, recording the
- * tools it appeared in via `AlsoInTools`. The key guard (the finding's recommended fix): only merge
- * across DISTINCT Tool values. Two rows from the SAME tool that merely share a 120-char opening
- * (e.g. a repeated "fix the bug in…" template at different times) are DISTINCT prompts — the exact
- * dedupe (aiHistoryDedupeKey, incl. Timestamp+SessionId) already ran, so anything left here is
- * genuinely different and must be kept, not silently dropped. Cross-tool merges remain VISIBLE
- * (AlsoInTools is set), unlike the previous silent same-tool collapse.
+ * Preserve every source occurrence. When byte-equivalent prompt bodies appear across tools, annotate
+ * each occurrence with the complete tool set. Source paths and physical locators remain intact, so
+ * correlation never destroys evidence provenance.
  */
 function dedupeCrossToolPrompts(rows) {
-  const bucketsByKey = new Map(); // key -> [{ idx, tools:Set }]
-  const out = [];
+  const bucketsByKey = new Map();
   for (const r of rows) {
     const key = crossToolPromptKey(r);
-    if (!key) { out.push(r); continue; }
+    if (!key) continue;
     const tool = String(r.Tool || "").trim();
-    const buckets = bucketsByKey.get(key);
-    if (buckets && tool) {
-      // Merge into an existing occurrence whose tool set does NOT already include this tool.
-      const match = buckets.find((b) => !b.tools.has(tool));
-      if (match) {
-        out[match.idx] = pickRicherAiHistoryRow(out[match.idx], r);
-        match.tools.add(tool);
-        continue;
-      }
+    const bucket = bucketsByKey.get(key) || { rows: [], tools: new Set() };
+    bucket.rows.push(r);
+    if (tool) bucket.tools.add(tool);
+    for (const existing of String(r.AlsoInTools || "").split(",").map((v) => v.trim()).filter(Boolean)) {
+      bucket.tools.add(existing);
     }
-    const entry = { idx: out.length, tools: new Set(tool ? [tool] : []) };
-    if (buckets) buckets.push(entry);
-    else bucketsByKey.set(key, [entry]);
-    out.push(r);
+    bucketsByKey.set(key, bucket);
   }
-  for (const buckets of bucketsByKey.values()) {
-    for (const b of buckets) {
-      if (b.tools.size > 1) out[b.idx].AlsoInTools = [...b.tools].sort().join(", ");
-    }
+  for (const bucket of bucketsByKey.values()) {
+    if (bucket.tools.size < 2) continue;
+    const alsoInTools = [...bucket.tools].sort().join(", ");
+    for (const row of bucket.rows) row.AlsoInTools = alsoInTools;
   }
-  return out;
+  return rows;
 }
 
 function aiHistoryDedupeKey(row) {
   return [
+    row.Tool || "",
+    row.User || "",
+    row.Host || "",
+    row.SourceFile || "",
+    row.SourceOffset || "",
+    row.LineNumber || "",
     row.SessionId || "",
+    row.MessageId || "",
+    row.ParentId || "",
     row.Timestamp || "",
     row.Role || "",
-    summaryDedupeSlice(row),
+    row.RecordType || "",
+    evidenceBodyHash(row),
   ].join("\x1e");
 }
 
@@ -219,7 +227,7 @@ function aiHistoryLooseKey(row) {
   return [
     row.SessionId || "",
     row.Role || "",
-    summaryDedupeSlice(row),
+    evidenceBodyHash(row),
   ].join("\x1e");
 }
 
@@ -235,19 +243,13 @@ function isSessionRow(row) {
 }
 
 /**
- * Drop history.jsonl rows when an equivalent session JSONL row exists (same session + summary).
+ * Remove only duplicate representations of the same physical source occurrence.
  */
 function dedupeAiHistoryRows(rows, options = {}) {
-  const sessionLoose = new Set();
-  for (const r of rows) {
-    if (isSessionRow(r)) sessionLoose.add(aiHistoryLooseKey(r));
-  }
-
   const seen = new Set();
   const out = [];
   for (const r of rows) {
     const key = aiHistoryDedupeKey(r);
-    if (isHistoryRow(r) && sessionLoose.has(aiHistoryLooseKey(r))) continue;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(r);
@@ -256,8 +258,9 @@ function dedupeAiHistoryRows(rows, options = {}) {
   return out;
 }
 
-function assignLineNumber(row, lineNumber) {
+function assignLineNumber(row, lineNumber, sourceLocation = null) {
   if (row && lineNumber != null && lineNumber !== "") row.LineNumber = String(lineNumber);
+  if (row && sourceLocation?.byteOffset != null) row.SourceOffset = String(sourceLocation.byteOffset);
   return row;
 }
 
@@ -283,11 +286,15 @@ module.exports = {
   detectActivity,
   buildDescription,
   makeRow,
+  normalizedEvidenceBody,
+  evidenceBodyHash,
   aiHistoryDedupeKey,
   aiHistoryLooseKey,
   crossToolPromptKey,
   dedupeCrossToolPrompts,
   dedupeAiHistoryRows,
+  isHistoryRow,
+  isSessionRow,
   assignLineNumber,
   sortAndNumberRows,
   finalizeAiHistoryRows,

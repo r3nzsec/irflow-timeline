@@ -7,10 +7,12 @@
  *   ~/.codex/archived_sessions/.../rollout-*.jsonl — archived threads
  *   ~/.codex/session_index.jsonl — thread id / title index (optional metadata)
  *
- * Desktop app state lives under ~/.codex (not Application Support/Codex, which is UI cache).
+ * Desktop *thread* state lives under ~/.codex. The merged ChatGPT/Codex Electron app also writes a
+ * Chromium profile at Application Support/Codex — that is a ChatGPT-parser root, not this one.
  */
 
 const fs = require("fs");
+const crypto = require("crypto");
 const path = require("path");
 const { readJsonlBounded } = require("./jsonl-reader");
 const os = require("os");
@@ -31,9 +33,97 @@ const {
 
 const CODEX_DIR_NAME = ".codex";
 const ROLLOUT_FILE_RE = /^rollout-.+\.jsonl$/i;
+const ROLLOUT_THREAD_ID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+/** Legacy threshold retained for explicit inventory-only workflows and projection compatibility. */
+const MAX_CODEX_ROLLOUT_BYTES = 48 * 1024 * 1024;
+const CODEX_ROLLOUT_MAX_LINE_BYTES = 4 * 1024 * 1024;
+const CODEX_ROLLOUT_EMIT_BATCH = 1500;
+
+function rolloutThreadId(rolloutPath) {
+  const match = ROLLOUT_THREAD_ID_RE.exec(path.basename(rolloutPath));
+  return match ? match[1].toLowerCase() : "";
+}
 
 function codexRow(fields) {
-  return makeRow({ ...fields, tool: fields.tool || TOOL_CODEX }, TOOL_CODEX);
+  const timestampBasis = fields.timestampBasis || (fields.timestamp ? "source artifact timestamp" : "unavailable");
+  return makeRow({ ...fields, timestampBasis, tool: fields.tool || TOOL_CODEX }, TOOL_CODEX);
+}
+
+function safeMediaReference(raw) {
+  const value = typeof raw === "string" ? raw : raw?.url ?? raw?.file_id ?? raw?.path ?? "";
+  const text = String(value || "");
+  if (/^data:/i.test(text)) return { reference: "[embedded data]", queryParameterNames: [] };
+  try {
+    const parsed = new URL(text);
+    const queryParameterNames = [...parsed.searchParams.keys()];
+    parsed.search = "";
+    parsed.hash = "";
+    return { reference: parsed.toString(), queryParameterNames };
+  } catch { return { reference: text, queryParameterNames: [] }; }
+}
+
+function embeddedMediaDetails(raw) {
+  if (typeof raw !== "string" || !/^data:/i.test(raw)) return {};
+  const match = /^data:([^;,]*)(;base64)?,(.*)$/is.exec(raw);
+  if (!match) return { embedded: true, hashStatus: "malformed_data_url" };
+  const encoded = match[3] || "";
+  if (encoded.length > 16 * 1024 * 1024) {
+    return { embedded: true, mimeType: match[1] || "", hashStatus: "omitted_size_limit" };
+  }
+  try {
+    const bytes = match[2] ? Buffer.from(encoded, "base64") : Buffer.from(decodeURIComponent(encoded), "utf8");
+    return {
+      embedded: true,
+      mimeType: match[1] || "",
+      sizeBytes: bytes.length,
+      sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+      hashStatus: "computed",
+    };
+  } catch { return { embedded: true, mimeType: match[1] || "", hashStatus: "decode_failed" }; }
+}
+
+/** Emit one provenance row per media item; embedded bytes are hashed and never copied to FullText. */
+function extractCodexMediaReferences(obj, sourceFile, ctx, attribution = {}, sourceLocation = null, lineNumber = null) {
+  if (obj?.type !== "response_item" || !obj.payload || typeof obj.payload !== "object") return [];
+  const payload = obj.payload;
+  const content = Array.isArray(payload.content) ? payload.content
+    : Array.isArray(payload.message) ? payload.message : [];
+  const tsMs = parseIsoTimestamp(obj.timestamp);
+  const rows = [];
+  for (let index = 0; index < content.length && index < 100; index++) {
+    const item = content[index];
+    if (!item || typeof item !== "object") continue;
+    const type = String(item.type || "").toLowerCase();
+    if (!/(image|audio|video|file|document|attachment)/.test(type)) continue;
+    const rawReference = item.image_url ?? item.audio_url ?? item.video_url ?? item.file_url
+      ?? item.url ?? item.file_id ?? item.path ?? item.data ?? "";
+    const safe = safeMediaReference(rawReference);
+    const embedded = embeddedMediaDetails(typeof rawReference === "string" ? rawReference : rawReference?.url);
+    const details = {
+      mediaType: type || "media",
+      reference: safe.reference,
+      queryParameterNames: safe.queryParameterNames,
+      fileName: item.filename ?? item.name ?? null,
+      mimeType: item.mime_type ?? item.mimeType ?? embedded.mimeType ?? null,
+      detail: item.detail ?? null,
+      ...embedded,
+      sensitiveQueryValuesCopied: false,
+      contentCopied: false,
+      jsonPointer: `/payload/content/${index}`,
+    };
+    rows.push(codexRow({
+      timestamp: formatTimestampUtc(tsMs),
+      role: payload.role != null ? String(payload.role) : "metadata",
+      recordType: "media_reference",
+      summary: `Codex ${type || "media"} reference${details.fileName ? ` — ${details.fileName}` : safe.reference ? ` — ${safe.reference}` : ""}`,
+      fullText: JSON.stringify(details, null, 2),
+      ...baseRolloutFields(ctx, sourceFile, attribution),
+      messageId: `${payload.id ?? "line"}:${index}`,
+      lineNumber,
+      sourceOffset: sourceLocation?.byteOffset != null ? `${sourceLocation.byteOffset}#/payload/content/${index}` : `/payload/content/${index}`,
+    }));
+  }
+  return rows;
 }
 
 /** Forked / child Codex threads (parent session id or explicit subagent flag). */
@@ -740,23 +830,53 @@ function parseRolloutEnvelope(obj, sourceFile, ctx, attribution) {
   });
 }
 
-async function readJsonlFile(filePath, onLine, parseStats = null) {
+async function readJsonlFile(filePath, onLine, parseStats = null, extra = {}) {
   // Bounded reader: caps per-line size (one huge/newline-free rollout line can't OOM the worker)
   // and contains a per-line handler throw — a literal `null` line skips itself instead of
   // unwinding the loop and discarding every row already parsed from this file.
-  await readJsonlBounded(filePath, onLine, { parseStats });
+  await readJsonlBounded(filePath, onLine, { parseStats, ...extra });
 }
 
 async function extractCodexHistoryFile(historyPath, attribution = {}, parseStats = null) {
   const rows = [];
-  await readJsonlFile(historyPath, (obj, lineNumber) => {
-    const row = assignLineNumber(parseCodexHistoryLine(obj, historyPath, attribution), lineNumber);
+  await readJsonlFile(historyPath, (obj, lineNumber, sourceLocation) => {
+    const row = assignLineNumber(parseCodexHistoryLine(obj, historyPath, attribution), lineNumber, sourceLocation);
     if (row) rows.push(row);
   }, parseStats);
   return rows;
 }
 
-async function extractCodexRolloutFile(rolloutPath, threadIndex, attribution = {}, parseStats = null) {
+function oversizedCodexRolloutRow(rolloutPath, sizeBytes, attribution = {}) {
+  let mtimeMs = null;
+  try { mtimeMs = fs.statSync(rolloutPath).mtimeMs; } catch { /* ignore */ }
+  return makeRow({
+    timestamp: formatTimestampUtc(mtimeMs),
+    role: "system",
+    recordType: "oversized_rollout",
+    summary: `Codex rollout skipped (too large to parse in-memory) — ${path.basename(rolloutPath)} `
+      + `(${sizeBytes} bytes; cap ${MAX_CODEX_ROLLOUT_BYTES})`,
+    fullText: JSON.stringify({
+      path: rolloutPath,
+      sizeBytes,
+      capBytes: MAX_CODEX_ROLLOUT_BYTES,
+      timeSource: "file mtime",
+    }, null, 2),
+    toolDescription: "This session file exceeded the per-file parse cap so Collect AI Artifacts "
+      + "would not run the worker out of memory. The filename still dates the thread; open this "
+      + "file (or the .codex folder) as a single Codex import if you need every event.",
+    sourceFile: rolloutPath,
+    user: attribution.user || "",
+    host: attribution.host || "",
+  }, TOOL_CODEX);
+}
+
+async function extractCodexRolloutFile(rolloutPath, threadIndex, attribution = {}, parseStats = null, options = {}) {
+  let sizeBytes = 0;
+  try { sizeBytes = fs.statSync(rolloutPath).size; } catch { sizeBytes = 0; }
+  if (options.inventoryOnly && sizeBytes > MAX_CODEX_ROLLOUT_BYTES) {
+    return [oversizedCodexRolloutRow(rolloutPath, sizeBytes, attribution)];
+  }
+
   const ctx = {
     sessionId: "",
     parentId: "",
@@ -768,10 +888,32 @@ async function extractCodexRolloutFile(rolloutPath, threadIndex, attribution = {
     toolNamesByCallId: new Map(),
   };
   const rows = [];
-  await readJsonlFile(rolloutPath, (obj, lineNumber) => {
-    const row = assignLineNumber(parseRolloutEnvelope(obj, rolloutPath, ctx, attribution), lineNumber);
-    if (row) rows.push(row);
-  }, parseStats);
+  let emittedRows = 0;
+  const onRows = typeof options.onRows === "function" ? options.onRows : null;
+  const flush = () => {
+    if (!onRows || !rows.length) return;
+    emittedRows += rows.length;
+    onRows(rows.splice(0, rows.length));
+  };
+  await readJsonlFile(rolloutPath, (obj, lineNumber, sourceLocation) => {
+    const mediaRows = extractCodexMediaReferences(obj, rolloutPath, ctx, attribution, sourceLocation, lineNumber);
+    if (mediaRows.length) rows.push(...mediaRows);
+    const row = assignLineNumber(parseRolloutEnvelope(obj, rolloutPath, ctx, attribution), lineNumber, sourceLocation);
+    if (!row) return;
+    rows.push(row);
+    if (onRows && rows.length >= CODEX_ROLLOUT_EMIT_BATCH) flush();
+  }, parseStats, { maxLineBytes: CODEX_ROLLOUT_MAX_LINE_BYTES, checkAbort: options.checkAbort });
+  flush();
+  if (!onRows) emittedRows = rows.length;
+  rows._codexRolloutCoverage = {
+    sourceFile: rolloutPath,
+    sizeBytes,
+    emittedRows,
+    errors: parseStats?.errors || 0,
+    oversizedLines: parseStats?.oversizedLines || 0,
+    malformedLines: parseStats?.malformedLines || 0,
+    status: parseStats?.errors ? "partial" : "parsed",
+  };
   return rows;
 }
 
@@ -780,7 +922,8 @@ async function extractCodexRolloutFile(rolloutPath, threadIndex, attribution = {
  */
 async function extractCodexDir(codexRoot, attribution = {}, options = {}) {
   const rows = [];
-  const parseStats = { errors: 0 };
+  const parseStats = options.parseStats || { errors: 0 };
+  const rolloutCoverage = new Map();
   const threadIndex = loadThreadIndex(codexRoot);
   const rolloutPaths = listRolloutFiles(codexRoot, options);
   const historyPath = path.join(codexRoot, "history.jsonl");
@@ -807,6 +950,7 @@ async function extractCodexDir(codexRoot, attribution = {}, options = {}) {
     try {
       emitBatch(await extractCodexHistoryFile(historyPath, attribution, parseStats));
     } catch (e) {
+      if (e?.canceled || e?.cancelled) throw e;
       dbg("AIHIST", "codex history.jsonl failed", { path: historyPath, err: e.message });
     }
   }
@@ -814,10 +958,39 @@ async function extractCodexDir(codexRoot, attribution = {}, options = {}) {
   // Read rollout files in bounded-concurrency batches (threadIndex is a read-only map; sink dedupes +
   // DB/finalize sorts, so order is irrelevant). Per-file error isolation + progress preserved.
   await processFilesConcurrently(rolloutPaths, {
-    process: (rolloutPath) => extractCodexRolloutFile(rolloutPath, threadIndex, attribution, parseStats),
+    concurrency: 2,
+    process: async (rolloutPath) => {
+      const fileStats = { errors: 0, checkAbort: options.checkAbort };
+      const result = await extractCodexRolloutFile(
+        rolloutPath,
+        threadIndex,
+        attribution,
+        fileStats,
+        {
+          ...(options.onExtractedRows ? { onRows: (batch) => emitBatch(batch) } : {}),
+          checkAbort: options.checkAbort,
+        },
+      );
+      parseStats.errors += fileStats.errors;
+      parseStats.bytesRead = (parseStats.bytesRead || 0) + (fileStats.bytesRead || 0);
+      if (fileStats.bySource) {
+        if (!parseStats.bySource) parseStats.bySource = {};
+        Object.assign(parseStats.bySource, fileStats.bySource);
+      }
+      const threadId = rolloutThreadId(rolloutPath);
+      if (threadId) rolloutCoverage.set(threadId, result._codexRolloutCoverage);
+      return result;
+    },
     onProgress: (rolloutPath) => { fileIndex += 1; tickFileProgress(onFileProgress, fileIndex, fileCount, rolloutPath); },
     onRows: (batch) => emitBatch(batch),
-    onError: (e, rolloutPath) => dbg("AIHIST", "codex rollout failed", { path: rolloutPath, err: e.message }),
+    onError: (e, rolloutPath) => {
+      const threadId = rolloutThreadId(rolloutPath);
+      if (threadId) {
+        rolloutCoverage.set(threadId, { sourceFile: rolloutPath, status: "unavailable", errors: 1 });
+      }
+      parseStats.errors += 1;
+      dbg("AIHIST", "codex rollout failed", { path: rolloutPath, err: e.message });
+    },
     checkAbort: options.checkAbort,
   });
 
@@ -835,7 +1008,26 @@ async function extractCodexDir(codexRoot, attribution = {}, options = {}) {
     if (auxRows.length) emitBatch(auxRows);
     auxSqliteStats = stats;
   } catch (e) {
+    if (e?.canceled || e?.cancelled) throw e;
     dbg("AIHIST", "codex aux sqlite supplement failed", { err: e.message });
+  }
+
+  // thread_history*.sqlite — the app's SQL projection of the rollouts. Supplement threads whose
+  // rollout is missing, unreadable, or only partly parsed. Large valid rollouts stream directly;
+  // the caller streams so a 65K-item projection never sits in the heap.
+  const { supplementCodexFromThreadHistory } = require("./codex-thread-history-sqlite");
+  let threadHistoryStats = null;
+  try {
+    const { rows: thRows, stats } = supplementCodexFromThreadHistory(codexRoot, attribution, {
+      ...options,
+      rolloutCoverage,
+      onRows: onExtractedRows ? (batch) => emitBatch(batch) : null,
+    });
+    if (thRows.length) emitBatch(thRows);
+    threadHistoryStats = stats;
+  } catch (e) {
+    if (e?.canceled || e?.cancelled) throw e;
+    dbg("AIHIST", "codex thread_history supplement failed", { err: e.message });
   }
 
   const { supplementCodexFromLocalEvidence } = require("./codex-local-evidence");
@@ -845,7 +1037,19 @@ async function extractCodexDir(codexRoot, attribution = {}, options = {}) {
     if (localRows.length) emitBatch(localRows);
     localEvidenceStats = stats;
   } catch (e) {
+    if (e?.canceled || e?.cancelled) throw e;
     dbg("AIHIST", "codex local evidence supplement failed", { err: e.message });
+  }
+
+  let codexContextStats = null;
+  try {
+    const { rows: contextRows, stats } = require("./codex-context")
+      .extractCodexContext(codexRoot, attribution, options);
+    if (contextRows.length) emitBatch(contextRows);
+    codexContextStats = stats;
+  } catch (e) {
+    if (e?.canceled || e?.cancelled) throw e;
+    dbg("AIHIST", "codex config and instruction context failed", { err: e.message });
   }
 
   let vscodeAgentStats = null;
@@ -882,7 +1086,9 @@ async function extractCodexDir(codexRoot, attribution = {}, options = {}) {
     const out = [];
     if (sqliteStats) out._codexStateSqliteStats = sqliteStats;
     if (auxSqliteStats) out._codexAuxSqliteStats = auxSqliteStats;
+    if (threadHistoryStats) out._codexThreadHistoryStats = threadHistoryStats;
     if (localEvidenceStats) out._codexLocalEvidenceStats = localEvidenceStats;
+    if (codexContextStats) out._codexContextStats = codexContextStats;
     if (vscodeAgentStats) out._codexVsCodeAgentStats = vscodeAgentStats;
     if (parseStats.errors) out._parseErrors = parseStats.errors;
     return out;
@@ -891,7 +1097,9 @@ async function extractCodexDir(codexRoot, attribution = {}, options = {}) {
   const finalized = finalizeAiHistoryRows(filterSidechainRows(rows, options), options);
   if (sqliteStats) finalized._codexStateSqliteStats = sqliteStats;
   if (auxSqliteStats) finalized._codexAuxSqliteStats = auxSqliteStats;
+  if (threadHistoryStats) finalized._codexThreadHistoryStats = threadHistoryStats;
   if (localEvidenceStats) finalized._codexLocalEvidenceStats = localEvidenceStats;
+  if (codexContextStats) finalized._codexContextStats = codexContextStats;
   if (vscodeAgentStats) finalized._codexVsCodeAgentStats = vscodeAgentStats;
   if (parseStats.errors) finalized._parseErrors = parseStats.errors;
   return finalized;
@@ -922,13 +1130,19 @@ async function extractCodexPath(target, attribution = {}, options = {}) {
   const threadIndex = codexRoot ? loadThreadIndex(codexRoot) : new Map();
 
   if (path.basename(target) === "history.jsonl" && peekHistoryJsonl(target)) {
-    const rows = await extractCodexHistoryFile(target, attribution);
+    const rows = await extractCodexHistoryFile(target, attribution, options.parseStats);
     for (let i = 0; i < rows.length; i++) rows[i].RecordId = String(i + 1);
     return rows;
   }
 
   if (isCodexRolloutFile(target)) {
-    const rows = await extractCodexRolloutFile(target, threadIndex, attribution);
+    const rows = await extractCodexRolloutFile(
+      target,
+      threadIndex,
+      attribution,
+      options.parseStats,
+      { ignoreSizeCap: true },
+    );
     for (let i = 0; i < rows.length; i++) rows[i].RecordId = String(i + 1);
     return rows;
   }
@@ -945,6 +1159,8 @@ function defaultCodexHome() {
 module.exports = {
   CODEX_DIR_NAME,
   ROLLOUT_FILE_RE,
+  MAX_CODEX_ROLLOUT_BYTES,
+  extractCodexRolloutFile,
   resolveCodexHome,
   isCodexDir,
   isCodexRolloutFile,
@@ -954,6 +1170,7 @@ module.exports = {
   extractPayloadContent,
   parseCodexHistoryLine,
   parseRolloutEnvelope,
+  extractCodexMediaReferences,
   isCodexForkedSession,
   extractCodexDir,
   extractCodexPath,

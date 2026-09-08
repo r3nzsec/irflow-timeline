@@ -2,6 +2,8 @@ node_modules/
 .pnpm-store/
 dist/
 release/
+release-phase*/
+internal-docs/
 *.db
 *.db-wal
 *.db-shm

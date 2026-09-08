@@ -119,27 +119,31 @@ export const TOOL_ENTRIES = [
     techniques: ["T1567.002"],
   },
   // ---- Tunnel / proxy ----
+  // Tunnel binaries are almost always shipped with the Go release-artifact name
+  // still attached (frpc_windows_amd64.exe, cloudflared-windows-amd64.exe,
+  // chisel_1.9.1_windows_amd64.exe), and the bare canonical name that used to be
+  // the only alias matched none of them.
   {
     canonical: "ngrok",
-    aliases: ["ngrok"],
+    aliases: ["ngrok", "ngrok-windows-amd64", "ngrok_windows_amd64"],
     category: "tunnel",
     techniques: ["T1572"],
   },
   {
     canonical: "Chisel",
-    aliases: ["chisel"],
+    aliases: ["chisel", "chisel_windows_amd64", "chisel-windows-amd64", "chisel_windows_386", "chiselc"],
     category: "tunnel",
     techniques: ["T1572"],
   },
   {
     canonical: "frp",
-    aliases: ["frpc", "frps"],
+    aliases: ["frpc", "frps", "frpc_windows_amd64", "frps_windows_amd64", "frpc-windows-amd64", "frps-windows-amd64"],
     category: "tunnel",
     techniques: ["T1572"],
   },
   {
     canonical: "Cloudflared",
-    aliases: ["cloudflared"],
+    aliases: ["cloudflared", "cloudflared-windows-amd64", "cloudflared_windows_amd64", "cloudflared-windows-386"],
     category: "tunnel",
     techniques: ["T1572", "T1090"],
   },
@@ -148,6 +152,54 @@ export const TOOL_ENTRIES = [
     aliases: ["plink"],
     category: "tunnel",
     techniques: ["T1572"],
+  },
+  {
+    canonical: "Ligolo-ng",
+    aliases: ["ligolo", "ligolo-ng", "agent_windows_amd64", "proxy_windows_amd64"],
+    category: "tunnel",
+    techniques: ["T1572", "T1090"],
+  },
+  {
+    canonical: "gost",
+    aliases: ["gost", "gost-windows-amd64"],
+    category: "tunnel",
+    techniques: ["T1572", "T1090"],
+  },
+  {
+    canonical: "NPS",
+    aliases: ["npc", "nps", "npc_windows_amd64"],
+    category: "tunnel",
+    techniques: ["T1572"],
+  },
+  {
+    canonical: "Iox",
+    aliases: ["iox"],
+    category: "tunnel",
+    techniques: ["T1572", "T1090"],
+  },
+  {
+    canonical: "revsocks",
+    aliases: ["revsocks", "rsockstun"],
+    category: "tunnel",
+    techniques: ["T1572", "T1090"],
+  },
+  {
+    canonical: "EarthWorm",
+    aliases: ["ew", "earthworm", "ew_for_win"],
+    category: "tunnel",
+    techniques: ["T1572", "T1090"],
+  },
+  {
+    canonical: "Stowaway",
+    aliases: ["stowaway", "stowaway_agent", "stowaway_admin"],
+    category: "tunnel",
+    techniques: ["T1572", "T1090"],
+  },
+  {
+    canonical: "socat",
+    aliases: ["socat"],
+    category: "tunnel",
+    techniques: ["T1572", "T1090"],
   },
 ];
 

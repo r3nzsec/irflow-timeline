@@ -81,7 +81,7 @@ function findSessionSearchDb(grokRoot) {
  * index is a partial view, and the row says so rather than implying completeness.
  */
 function extractSessionSearchRows(dbPath, attribution = {}, options = {}) {
-  const snapshot = copySqliteFamilyToTemp(dbPath);
+  const snapshot = copySqliteFamilyToTemp(dbPath, { checkAbort: options.checkAbort });
   let db = null;
   const rows = [];
   try {
@@ -187,7 +187,7 @@ async function extractUnifiedLog(grokRoot, attribution = {}, options = {}) {
   const rows = [];
   const parseStats = { errors: 0 };
 
-  await readJsonlBounded(filePath, (obj, lineNumber) => {
+  await readJsonlBounded(filePath, (obj, lineNumber, sourceLocation) => {
     if (rows.length >= maxRows) return;
     if (!obj || typeof obj !== "object") return;
     const spec = LOGGED_EVENTS.get(String(obj.msg || ""));
@@ -226,6 +226,7 @@ async function extractUnifiedLog(grokRoot, attribution = {}, options = {}) {
         + "updates.jsonl and is not available here.",
       sourceFile: filePath,
       lineNumber,
+      sourceOffset: sourceLocation.byteOffset,
       user: attribution.user || "",
       host: attribution.host || "",
     }));

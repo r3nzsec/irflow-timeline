@@ -1,0 +1,17 @@
+{"ts":"2026-07-26T10:00:00.500Z","type":"mcp_config_resolved","servers":["filesystem"],"disabled":[]}
+{"ts":"2026-07-26T10:00:00.600Z","type":"mcp_server_starting","server_name":"filesystem","transport":"stdio","target":"npx mcp-filesystem /tmp/grok-demo","timeout_sec":30}
+{"ts":"2026-07-26T10:00:00.900Z","type":"mcp_server_connected","server_name":"filesystem","transport":"stdio","tool_count":2,"duration_ms":300,"tools":["read_file","list_dir"]}
+{"ts":"2026-07-26T10:00:00.950Z","type":"mcp_init_completed","total_servers":1,"succeeded":1,"failed":0,"auth_required":0,"total_tools":2,"duration_ms":450,"is_reinit":false}
+{"ts":"2026-07-26T10:00:01.000Z","type":"turn_started","session_id":"grok-session-1","turn_number":1,"model_id":"grok-4.5","yolo_mode":false,"conversation_message_count":1,"session_relationship":"primary","schema_version":"1.0"}
+{"ts":"2026-07-26T10:00:01.100Z","type":"loop_started","loop_index":0}
+{"ts":"2026-07-26T10:00:01.200Z","type":"phase_changed","phase":"waiting_for_model"}
+{"ts":"2026-07-26T10:00:02.000Z","type":"first_token"}
+{"ts":"2026-07-26T10:00:03.500Z","type":"permission_requested","tool_name":"run_terminal_command"}
+{"ts":"2026-07-26T10:00:03.900Z","type":"permission_resolved","tool_name":"run_terminal_command","decision":"allow","wait_ms":4210}
+{"ts":"2026-07-26T10:00:04.000Z","type":"tool_started","tool_name":"run_terminal_command"}
+{"ts":"2026-07-26T10:00:05.000Z","type":"tool_completed","tool_name":"run_terminal_command","duration_ms":980,"outcome":"success","tool_call_id":"call-shell-1"}
+{"ts":"2026-07-26T10:00:05.100Z","type":"permission_requested","tool_name":"write"}
+{"ts":"2026-07-26T10:00:05.110Z","type":"permission_resolved","tool_name":"write","decision":"deny","wait_ms":8}
+{"ts":"2026-07-26T10:00:05.200Z","type":"tool_started","tool_name":"read_file"}
+{"ts":"2026-07-26T10:00:05.300Z","type":"tool_completed","tool_name":"read_file","duration_ms":45,"outcome":"error","tool_call_id":"call-read-9"}
+{"ts":"2026-07-26T10:00:06.000Z","type":"turn_ended","outcome":"completed"}

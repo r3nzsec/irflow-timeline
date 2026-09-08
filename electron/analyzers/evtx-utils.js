@@ -127,6 +127,13 @@ function _normalizeEvtxChannel(channel) {
   if (raw === "pwsh" || raw.includes("powershell")) return "powershell";
   if (raw === "wmi" || raw.includes("wmi-activity")) return "wmi-activity";
   if (raw === "winrm" || raw.includes("winrm")) return "winrm";
+  // Hayabusa rewrites the channel to a short code from
+  // rules/config/channel_abbreviations.txt, so the full-name checks below never
+  // match its output. Without these two the TerminalServices channel of a
+  // Hayabusa CSV is unrecognisable, and any channel gate keyed on it silently
+  // drops every RDP session row.
+  if (raw === "rds-lsm" || raw === "rdslsm") return "localsessionmanager";
+  if (raw === "rds-rcm" || raw === "rdsrcm") return "remoteconnectionmanager";
   if (raw.includes("localsessionmanager")) return "localsessionmanager";
   if (raw.includes("remoteconnectionmanager")) return "remoteconnectionmanager";
   return raw;

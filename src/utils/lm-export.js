@@ -54,14 +54,14 @@ export function redactSecrets(value) {
   return s;
 }
 
-/** Apply redactSecrets to every string value of a flat row object. */
+/** Apply redactSecrets to every string value, including nested objects/arrays. */
 export function redactRow(row) {
-  if (!row || typeof row !== "object") return row;
+  if (row == null) return row;
+  if (typeof row === "string") return redactSecrets(row);
   if (Array.isArray(row)) return row.map(redactRow);
+  if (typeof row !== "object") return row;
   const out = {};
-  for (const [k, v] of Object.entries(row)) {
-    out[k] = typeof v === "string" ? redactSecrets(v) : v;
-  }
+  for (const [k, v] of Object.entries(row)) out[k] = redactRow(v);
   return out;
 }
 

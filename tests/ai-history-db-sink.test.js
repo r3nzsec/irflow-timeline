@@ -31,10 +31,13 @@ function historyRow() {
   }, "Claude Code");
 }
 
-test("prepareChunkRowsForDb collapses a history.jsonl row against its session row (per-source dedupe)", () => {
+test("prepareChunkRowsForDb preserves history and session source occurrences", () => {
   const rows = prepareChunkRowsForDb([historyRow(), sessionRow()], 1, 1e6, 0);
-  assert.equal(rows.length, 1, "history row dropped when the session row is present in the same set");
-  assert.equal(rows[0].MessageId, "m1", "the richer session row is the survivor");
+  assert.equal(rows.length, 2);
+  assert.deepEqual(new Set(rows.map((row) => row.SourceFile)), new Set([
+    "/x/.claude/history.jsonl",
+    "/x/projects/p/sess.jsonl",
+  ]));
 });
 
 test("prepareChunkRowsForDb caps to the remaining budget and numbers from recordIdStart", () => {
@@ -51,6 +54,12 @@ test("prepareChunkRowsForDb slims FullText by default but keeps it when asked", 
   assert.equal(slim[0].FullText, "", "merged streamed path blanks FullText for DB leanness");
   const kept = prepareChunkRowsForDb(build(), 1, 10, 0, { keepFullText: true });
   assert.equal(kept[0].FullText, "the complete body", "single-import path keeps FullText");
+  const capped = prepareChunkRowsForDb(
+    [makeRow({ role: "user", summary: "short", fullText: "x".repeat(100) }, "Claude Code")],
+    1, 10, 0, { keepFullText: true, maxFullTextChars: 20 },
+  );
+  assert.equal(capped[0].FullText.startsWith("x".repeat(20)), true);
+  assert.match(capped[0].FullText, /truncated 80 chars for merged import/);
 });
 
 test("prepareChunkRowsForDb retains exact tool evidence on streamed and single imports", () => {
@@ -91,23 +100,26 @@ test("writeAiHistoryRowsToDb maps rows to header arrays and batches inserts", ()
   assert.equal(calls[0].first.length, AI_HISTORY_COLUMNS.length, "each row mapped to a full header-ordered array");
 });
 
-test("filterAlreadySeenStreamedRows drops exact duplicates across streamed sources", () => {
+test("filterAlreadySeenStreamedRows drops only the same physical occurrence", () => {
   const seen = new Set();
   const first = makeRow({
     role: "assistant",
     summary: "same Claude response body with enough text to be useful",
     sessionId: "sess-1",
     timestamp: "2026-06-01 10:00:00",
+    sourceFile: "/evidence/source.jsonl",
   }, "Claude Code");
-  const duplicate = { ...first, SourceFile: "/other/source.jsonl" };
+  const duplicate = { ...first };
+  const otherSource = { ...first, SourceFile: "/other/source.jsonl" };
   const differentTool = { ...first, Tool: "Cursor" };
 
   let result = filterAlreadySeenStreamedRows([first], seen);
   assert.equal(result.rows.length, 1);
   assert.equal(result.dropped, 0);
 
-  result = filterAlreadySeenStreamedRows([duplicate, differentTool], seen);
-  assert.equal(result.rows.length, 1, "same app/session/timestamp/role/summary duplicate is dropped");
-  assert.equal(result.rows[0].Tool, "Cursor", "same prompt from a different AI app is retained");
+  result = filterAlreadySeenStreamedRows([duplicate, otherSource, differentTool], seen);
+  assert.equal(result.rows.length, 2);
+  assert.ok(result.rows.includes(otherSource));
+  assert.ok(result.rows.includes(differentTool));
   assert.equal(result.dropped, 1);
 });

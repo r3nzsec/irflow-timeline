@@ -171,32 +171,53 @@ test("pi-48 fires when hollowingLikely is set", () => {
   assert.equal(ruleLevel(r, "pi-48"), 3);
 });
 
-// ---------- pi-49: parent PID spoofing ----------
+// ---------- pi-49: parent link disagreement (audit P5) ----------
+//
+// This rule used to be "Parent PID Spoofing" and went critical whenever a child's
+// reported ParentImage named a trusted binary the linked parent did not match.
+// That is backwards: real PPID spoofing (PROC_THREAD_ATTRIBUTE_PARENT_PROCESS)
+// makes the reported and actual parent AGREE, because the OS records the spoofed
+// parent in both. A disagreement means the tree relinked onto a recycled PID — a
+// reconstruction defect. It is now a link-quality warning.
 
-test("pi-49 fires at level 3 when reported parent is a known-trusted binary and linked parent lacks a Microsoft signer", () => {
-  // svchost is in _EXPECTED_SIGNERS → reportedTrusted=true. Linked parent has
-  // no MS signer → linkedSignerTrusted=false. Upgrade to critical.
+test("pi-49 does not report a PID-relinked mismatch as an attack", () => {
   const node = mkNode({
     processName: "evil.exe", image: "C:\\Tools\\evil.exe",
     parentImage: "C:\\Windows\\System32\\svchost.exe",
+    linkSource: "pid-host", linkConfidence: "low",
   });
   const parentNode = { processName: "malware.exe", image: "C:\\Malware\\malware.exe", signer: "" };
   const r = getSusInfo(node, parentNode);
-  assert.ok(hasRule(r, "pi-49"), "must flag reported vs. linked mismatch");
-  assert.equal(ruleLevel(r, "pi-49"), 3);
+  assert.ok(hasRule(r, "pi-49"), "the disagreement is still surfaced");
+  assert.equal(ruleLevel(r, "pi-49"), 0, "as context — a mislinked branch, not a spoof");
 });
 
-test("pi-49 stays at level 2 when the linked parent carries a Microsoft signer (data quirk, not spoof)", () => {
-  // Reported parent is trusted-looking (svchost), but the linked parent IS
-  // Microsoft-signed — this is a data-quality issue, not a spoof.
+test("pi-49 is low (not silent) when the link was a 1:1 GUID join", () => {
+  // A GUID link is an identity join, so the two fields genuinely disagree rather
+  // than the link being suspect.
   const node = mkNode({
     processName: "child.exe", image: "C:\\Tools\\child.exe",
     parentImage: "C:\\Windows\\System32\\svchost.exe",
+    linkSource: "guid", linkConfidence: "high",
   });
   const parentNode = { processName: "services.exe", image: "C:\\Windows\\System32\\services.exe", signer: "Microsoft Windows" };
   const r = getSusInfo(node, parentNode);
   assert.ok(hasRule(r, "pi-49"));
-  assert.equal(ruleLevel(r, "pi-49"), 2);
+  assert.equal(ruleLevel(r, "pi-49"), 1);
+});
+
+test("pi-49 never reaches high or critical on its own", () => {
+  // The old rule promoted to critical whenever the reported parent was a Microsoft
+  // binary and the linked parent was unsigned — i.e. on every PID-reuse mislink
+  // involving a system binary, which is the common case on a busy host.
+  for (const linkSource of ["guid", "pid-host", "pid-logon", ""]) {
+    const node = mkNode({
+      processName: "evil.exe", image: "C:\\Tools\\evil.exe",
+      parentImage: "C:\\Windows\\explorer.exe", linkSource,
+    });
+    const r = getSusInfo(node, { processName: "unknown.exe", image: "C:\\X\\unknown.exe", signer: "" });
+    assert.ok(ruleLevel(r, "pi-49") <= 1, `pi-49 must stay <= low, got ${ruleLevel(r, "pi-49")} for linkSource=${linkSource}`);
+  }
 });
 
 test("pi-49 stays silent when reported parent matches linked parent", () => {
@@ -219,15 +240,17 @@ test("pi-49 skips when reported parentImage is missing (backfilled case)", () =>
   assert.equal(hasRule(r, "pi-49"), false);
 });
 
-test("pi-49 degrades to high (level 2) when reported parent is not a known-trusted binary", () => {
+test("pi-49 is context when neither parent name is a trusted binary", () => {
+  // Nothing about "the reported parent is not a Microsoft binary" makes a link
+  // disagreement more likely to be an attack; it is the same mislink either way.
   const node = mkNode({
     processName: "evil.exe", image: "C:\\Tools\\evil.exe",
-    parentImage: "C:\\Tools\\stager.exe",
+    parentImage: "C:\\Tools\\stager.exe", linkSource: "pid-host",
   });
   const parentNode = { processName: "other.exe", image: "C:\\Tools\\other.exe" };
   const r = getSusInfo(node, parentNode);
   assert.ok(hasRule(r, "pi-49"));
-  assert.equal(ruleLevel(r, "pi-49"), 2);
+  assert.equal(ruleLevel(r, "pi-49"), 0);
 });
 
 // ---------- pi-50 / pi-51 / pi-52: privilege use ----------

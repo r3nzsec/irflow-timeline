@@ -67,6 +67,18 @@ const DETECTORS = [
     toggleable: true,
   },
   {
+    id: "alternate-creds",
+    label: "Alternate Credentials / Overpass-the-Hash",
+    findingCategories: ["Alternate Credentials"],
+    mitre: ["T1550.002", "T1078"],
+    // Type 9 (NewCredentials) logons. These are always logged with workstation ==
+    // computer, so they were being removed by the local-logon filter before any
+    // detector saw them.
+    spineEids: ["4624", "4648"],
+    uiGroup: "Auth",
+    toggleable: true,
+  },
+  {
     id: "explicit-creds",
     label: "Explicit Credentials (RunAs)",
     findingCategories: [],
@@ -99,7 +111,7 @@ const DETECTORS = [
   {
     id: "rdp-sessions",
     label: "RDP Sessions",
-    findingCategories: ["Concurrent RDP Sessions"],
+    findingCategories: ["Concurrent RDP Sessions", "Tunnelled RDP"],
     mitre: ["T1021.001"],
     // The session state machine needs the whole lifecycle. Dropping individual ids
     // here does not reduce findings, it silently breaks session reconstruction.
@@ -110,9 +122,25 @@ const DETECTORS = [
   {
     id: "rdp-shadow",
     label: "RDP Shadow / Session Takeover",
-    findingCategories: [],
+    findingCategories: ["RDP Session Shadowing"],
     mitre: ["T1021.001"],
-    spineEids: ["20", "32", "33", "34", "35"],
+    // 20503/20504 are the actual shadow events (RemoteConnectionManager/Admin).
+    // 20/32-35 were the original list and are kept only because a handful of
+    // exports label session-takeover rows that way; they are channel-gated, so
+    // they can no longer pull in unrelated providers' small event ids.
+    spineEids: ["20503", "20504", "20", "32", "33", "34", "35"],
+    uiGroup: "RDP",
+    toggleable: true,
+  },
+  {
+    id: "rdp-nla-failures",
+    label: "RDP Auth Failures (NLA)",
+    findingCategories: ["RDP Brute Force"],
+    mitre: ["T1110.001", "T1021.001"],
+    // With NLA on — the default since Windows 8 / Server 2012 — a failed RDP logon
+    // is written as a Security 4625 with LogonType 3, indistinguishable from an SMB
+    // or LDAP failure. RdpCoreTS 140 is the event that names it as RDP.
+    spineEids: ["131", "140"],
     uiGroup: "RDP",
     toggleable: true,
   },

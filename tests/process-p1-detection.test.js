@@ -18,11 +18,17 @@ function stripModuleSyntax(src) {
 
 function loadPipeline() {
   const root = path.join(__dirname, "..");
+  // Stubs stand in for the pipeline's imports. This file only exercises SEQ_DEFS and
+  // the custom-rule validators, so the detection-rules constants just need to exist
+  // as regexes — the pipeline evaluates them at module scope.
   const stubs = `
     function getSusInfo() { return { level: 0, reason: null, evidence: [], behaviors: [], techniques: [] }; }
     function normalizeTimestamp() { return NaN; }
     function normalizeHost(v) { return String(v||'').trim().toLowerCase(); }
     function _ptFormatDuration() { return ''; }
+    var SAFE_PROCS = /^$/i;
+    var USER_WRITABLE_PATH = /[\\\\/](users|temp|tmp|appdata|downloads|public|perflogs|programdata)[\\\\/]/i;
+    var BENIGN_INSTALL_PATH = /^$/i;
   `;
   const pipe = stripModuleSyntax(fs.readFileSync(path.join(root, "src/utils/process-inspector-pipeline.js"), "utf8"));
   const sandbox = { module: { exports: {} }, exports: {}, console, Math, Date, Number, String, Array, Object, Map, Set, JSON, RegExp };

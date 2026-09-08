@@ -27,7 +27,7 @@ When both `history.jsonl` and a session JSONL contain the same prompt, the sessi
 
 | Tool | Platform | Path |
 |------|----------|------|
-| **Claude Code (CLI)** | all | `~/.claude/history.jsonl`, `~/.claude/projects/**/*.jsonl` |
+| **Claude Code (CLI)** | all | `~/.claude/history.jsonl`, `~/.claude/projects/**/*.jsonl`, `~/.claude.json` |
 | **Claude Desktop** | macOS | `~/Library/Application Support/Claude/` — `claude-code-sessions/` plus sibling stores below |
 | **Claude Desktop** | Windows | `%APPDATA%\Claude\` (same layout) |
 | **Claude Desktop / Cowork** | all | `.../Claude/local-agent-mode-sessions/` (`local_*.json`, isolated `.claude/projects/**/*.jsonl`, `audit*.jsonl`, `.audit-key`) |
@@ -40,11 +40,18 @@ Discovery prefers `~/Library/Application Support/Claude` over its `claude-code-s
 |----------|--------|----------------|
 | `~/.claude/history.jsonl` | Parsed | Fast prompt history for intent, suspicious questions, credential pasting. |
 | `~/.claude/projects/**/*.jsonl` | Parsed | Full prompts, responses, tool-use, attachments, file-history snapshots, model/token data, sidechains, workspace. |
+| `settings.json`, `.mcp.json` | Parsed | Model and permission posture, allow/ask/deny rules, lifecycle hooks, status-line command, and MCP definitions. Environment/header/query secret values are excluded; configuration does not prove execution. |
+| `CLAUDE.md`, `MEMORY.md`, `skills/`, `plugins/`, `plans/`, `tasks/`, `todos/` | Hashed inventory | Instruction, memory, extension, plan, and task context with path, size, mtime, and bounded SHA-256. |
+| `file-history/`, `backups/.claude.json.backup*` | Hashed inventory | Physical file revisions and raw state backups. Backup rows link to the expected current `~/.claude.json` source. |
+| `.credentials.json` | Excluded-content inventory | Path, size, and mtime only. The file is never opened or hashed. |
+| `~/.claude.json` and `.claude.json.backup*` | Parsed | Per-project last session, lastStartTime, cost, trust-dialog, allowed tools, MCP (env values redacted), Remote Control flag, account identifiers. Sits next to `~/.claude`, not inside it. Workspaces that exist only in a backup become `project_removed`. |
 | `claude-code-sessions/**/local_*.json` and Cowork `local-agent-mode-sessions/**` | Parsed metadata, recursive transcripts, audit rows | Isolated Cowork sessions instead of assuming every transcript lives in `~/.claude/projects`. |
 | `deleted_<session-uuid>` tombstone | Parsed | Dated proof a conversation existed and was removed. |
 | `pending-uploads/` | Inventory-only | Files staged for upload. Content is never read. |
 | `plan-usage-history.json` | Parsed (derived) | Contiguous “application in use” windows. |
 | `scheduled-tasks.json`, `git-worktrees.json` | Parsed | Unattended agent runs, and workspaces with last-seen times. |
+| `bridge-state.json` | Parsed | Remote Control: local session linked to a claude.ai session, consent flag. |
+| `claude_desktop_config.json`, `config.json` | Parsed | Trusted folders, remote folder grants, Cowork security prefs, MCP servers (env values redacted). |
 
 ## Stores that outlive the conversation {#claude-desktop-state-artifacts}
 
@@ -68,7 +75,8 @@ Also collected: `scheduled-tasks.json` (agent runs configured to fire without us
 
 1. **File → Open…** and select the `.claude` folder, or **Tools → Analysis → AI Artifacts → AI Apps → Claude Code…**
 2. Dragging multiple `*.jsonl` files from the same `.claude` tree consolidates into **one** tab.
-3. Opening `history.jsonl` directly uses the AI history parser — not the generic CSV importer.
+3. Opening `history.jsonl` or `~/.claude.json` directly uses the AI history parser — not the generic CSV importer. Collect AI Artifacts on This Mac picks up `~/.claude.json` as its own Claude Code root so a scan aimed at `~/.claude` does not have to walk up.
+4. A relocated `CLAUDE_CONFIG_DIR` is accepted when supplied as the evidence root. Generic folders named `projects` are not treated as Claude roots.
 
 **Collect everything (CLI + Desktop)**
 

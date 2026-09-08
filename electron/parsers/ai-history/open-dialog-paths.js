@@ -26,6 +26,7 @@ const {
 } = require("./artifact-paths");
 const { defaultCodexHome, isCodexDir } = require("./codex");
 const { defaultGrokHome, isGrokBuildRoot } = require("./grok-build");
+const { defaultGrokBotHome, defaultGrokBotAppDir, isGrokBotRoot } = require("./grok-bot");
 const { isChatgptAppDirQuick } = require("./chatgpt");
 const { hasGeminiSessionsQuick } = require("./gemini-cli");
 const { isWindsurfUserDir } = require("./windsurf");
@@ -47,6 +48,7 @@ function hasDecodedAiHistoryAtPath(tool, dirPath) {
     case "claude-code": return isClaudeCodeArtifactRoot(dirPath);
     case "codex": return isCodexDir(dirPath);
     case "grok-build": return isGrokBuildRoot(dirPath, { quick: true });
+    case "grok-bot": return isGrokBotRoot(dirPath);
     case "chatgpt": return isChatgptAppDirQuick(dirPath);
     case "gemini-cli": return hasGeminiSessionsQuick(dirPath);
     case "cursor": return isCursorHome(dirPath) || isCursorUserDataDir(dirPath);
@@ -84,6 +86,8 @@ function defaultDecodeAiHistoryDialogPath(tool) {
       || path.join(home, ".claude"),
     codex: defaultCodexHome(),
     "grok-build": defaultGrokHome(),
+    "grok-bot": [defaultGrokBotHome(), defaultGrokBotAppDir()].find((p) => p && fs.existsSync(p))
+      || defaultGrokBotHome(),
     "gemini-cli": path.join(home, GEMINI_DIR_NAME),
     cursor: defaultCursorHome(),
     copilot: fs.existsSync(defaultCopilotCliHome())
@@ -103,6 +107,8 @@ function defaultAiHistoryOpenPath() {
     ...listClaudeCodeCandidatePaths().map((c) => c.path),
     defaultCodexHome(),
     defaultGrokHome(),
+    defaultGrokBotHome(),
+    defaultGrokBotAppDir(),
     defaultCursorHome(),
     ...listChatgptCandidatePaths(),
     path.join(home, GEMINI_DIR_NAME),
@@ -127,6 +133,7 @@ function aiHistoryOpenDialogFilters() {
     { name: "Claude Code (.claude / JSONL)", extensions: ["jsonl"] },
     { name: "OpenAI Codex (.codex / JSONL)", extensions: ["jsonl"] },
     { name: "Grok Build (.grok / JSONL)", extensions: ["json", "jsonl", "log"] },
+    { name: "Grok Bot (.grokbot / Grok Bot app / blob)", extensions: ["json", "blob", "log"] },
     { name: "ChatGPT Desktop (bundles / LevelDB / SQLite)", extensions: ["data", "ldb", "log", "db", "sqlite", "sqlite3"] },
     { name: "Gemini CLI (.gemini / session JSONL)", extensions: ["json", "jsonl", "*"] },
     { name: "Cursor (transcripts / local databases)", extensions: ["jsonl", "txt", "db", "vscdb"] },

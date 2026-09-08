@@ -1,0 +1,1 @@
+{"scale":0,"locale":"en-US","mcpServers":{"hexstrike-ai":{"command":"python3","args":["/opt/hexstrike/mcp.py"],"env":{"API_KEY":"SHOULD-NEVER-APPEAR"}}},"lastKnownAccountUuid":"b548fd3a-0000-4000-8000-000000000002"}

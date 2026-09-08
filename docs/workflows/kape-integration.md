@@ -8,11 +8,11 @@ IRFlow Timeline automatically detects and pre-configures display settings for ou
 
 ## Open Triage Collection
 
-For a full KAPE (or similar) triage **folder** — not a single CSV — use:
+For a full KAPE (or similar) triage **folder or VHDX image** — not a single CSV — use:
 
 **File → Open Triage Collection…**
 
-1. Choose the collection root (for example a KAPE output directory or mounted evidence tree).
+1. Choose the collection root (a KAPE output directory or mounted evidence tree) **or the `.vhdx` KAPE produced with `--vhdx`**. For a VHDX, IRFlow reads the NTFS volume inside the image and copies the recognizable artifacts into a scratch folder first; nothing is mounted and the image is never modified. See [Supported Formats → KAPE VHDX Images](/getting-started/supported-formats#kape-vhdx-images-triage-collections).
 2. IRFlow inventories recognizable artifacts (EVTX channels, `$MFT` / `$J`, KAPE CSVs, Prefetch, Amcache, registry hives, LNK/Jump Lists, and more).
 3. Review two independent lanes:
    - **Lateral Movement** — pre-selects LM-relevant EVTX (Security, Sysmon, TerminalServices, RDP, …), imports them as timeline tabs, then can hand off to the [Lateral Movement Tracker](/features/lateral-movement).
@@ -93,7 +93,7 @@ When exporting from EZ Tools, use the default column configurations to ensure IR
 
 ## AI App Artifacts in KAPE Collections
 
-KAPE profile auto-detection covers EZ Tools CSV/XLSX output. **AI assistant history** is separate: collect local app paths from user profiles (`.claude`, `.codex`, `.cursor`, `.gemini`, `.continue`, ChatGPT app-data folders, VS Code-family `workspaceStorage/*/chatSessions/`, etc.) into your KAPE or triage package, then run **Tools → Analysis → AI Artifacts → Collect AI Artifacts** on the collection root.
+KAPE profile auto-detection covers EZ Tools CSV/XLSX output. **AI assistant history** is separate: collect local app paths from user profiles (`.claude`, `.claude.json`, `.codex`, `.cursor`, `.gemini`, `.continue`, ChatGPT app-data folders including the merged `Application Support/Codex` Chromium profile, VS Code-family `workspaceStorage/*/chatSessions/`, etc.) into your KAPE or triage package, then run **Tools → Analysis → AI Artifacts → Collect AI Artifacts** on the collection root.
 
 IRFlow walks Windows, Linux, and macOS profile layouts and merges discovered AI stores into one **AI Query History** tab. See [KAPE Triage Workflow](/dfir-tips/kape-triage-workflow) and [AI Query History](/dfir-tips/ai-query-history) for collection paths and investigation tips.
 

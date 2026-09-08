@@ -85,11 +85,18 @@ test("current Gemini JSONL replay preserves exact tool commands/results and rewi
 
   try {
     const rows = await extractGeminiSessionJsonlFile(sessionPath, { user: "analyst" });
-    assert.equal(rows.length, 4);
-    assert.ok(rows.some((row) => row.MessageId === "m-user"));
-    assert.ok(!rows.some((row) => row.MessageId === "rewound-message"));
-    const call = rows.find((row) => row.RecordType === "tool_call");
-    const result = rows.find((row) => row.RecordType === "tool_result");
+    const currentRows = rows.filter((row) => !row.RecordType.startsWith("history_"));
+    assert.equal(currentRows.length, 4);
+    assert.ok(currentRows.some((row) => row.MessageId === "m-user"));
+    assert.ok(!currentRows.some((row) => row.MessageId === "rewound-message"));
+    const rewound = rows.find((row) => row.ParentId === "rewound-message" && row.RecordType === "history_user");
+    assert.ok(rewound, "rewound source event remains in immutable history");
+    assert.match(rewound.FullText, /"historyStatus": "rewound"/);
+    assert.ok(rows.some((row) => row.RecordType === "history_rewind" && row.ParentId === "rewound-message"));
+    assert.equal(rows._geminiHistoryStats.currentMessageRows, 4);
+    assert.equal(rows._geminiHistoryStats.rewoundMessages, 1);
+    const call = currentRows.find((row) => row.RecordType === "tool_call");
+    const result = currentRows.find((row) => row.RecordType === "tool_result");
     assert.ok(call);
     assert.ok(result);
     assert.equal(call.InvokedTool, "run_shell_command");
@@ -97,7 +104,7 @@ test("current Gemini JSONL replay preserves exact tool commands/results and rewi
     assert.equal(call.ToolDescription, "Identify the executable");
     assert.match(result.FullText, /PE32\+ executable/);
     assert.equal(call.Workspace, "/evidence/case");
-    const assistant = rows.find((row) => row.MessageId === "m-assistant");
+    const assistant = currentRows.find((row) => row.MessageId === "m-assistant");
     assert.equal(assistant.Model, "gemini-current");
     assert.equal(assistant.InputTokens, "12");
     assert.match(assistant.FullText, /Inspect metadata first/);
@@ -128,9 +135,11 @@ test("nested Gemini JSONL sessions are marked as subagent evidence", async () =>
 
   try {
     const rows = await extractGeminiSessionJsonlFile(sessionPath);
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].IsSidechain, "true");
-    assert.equal(rows[0].ParentId, "parent-session");
+    const currentRows = rows.filter((row) => !row.RecordType.startsWith("history_"));
+    assert.equal(currentRows.length, 1);
+    assert.equal(currentRows[0].IsSidechain, "true");
+    assert.equal(currentRows[0].ParentId, "parent-session");
+    assert.ok(rows.some((row) => row.RecordType === "history_user"));
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -203,6 +212,80 @@ test("extractGeminiCliDir reads legacy logs.json under .gemini/tmp", async () =>
   const rows = await extractGeminiCliDir(FIXTURE_GEMINI_LOGS);
   assert.equal(rows.length, 2);
   assert.equal(countGeminiSessions(FIXTURE_GEMINI_LOGS), 1);
+});
+
+test("Gemini 0.58 project registry, hooks, accounts, and slug markers are parsed", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "irflow-gemini-58-"));
+  const root = path.join(tmp, ".gemini");
+  try {
+    fs.mkdirSync(path.join(root, "history", "case-slug"), { recursive: true });
+    fs.mkdirSync(path.join(root, "tmp", "case-slug"), { recursive: true });
+    fs.mkdirSync(path.join(root, "skills", "demo-skill"), { recursive: true });
+    fs.writeFileSync(path.join(root, "projects.json"), JSON.stringify({
+      projects: { "/evidence/case": "case-slug" },
+    }));
+    fs.writeFileSync(path.join(root, "settings.json"), JSON.stringify({
+      security: { auth: { selectedType: "oauth-personal" } },
+      general: { sessionRetention: { enabled: true, maxAge: "30d", maxCount: 50 } },
+      experimental: { autoMemory: true },
+      tools: { allowed: ["read_file"], exclude: ["run_shell_command"] },
+      mcpServers: {
+        timeline: { command: "node", args: ["server.js", "--token", "GEMINI-MCP-SECRET"], env: { API_TOKEN: "SECRET" } },
+      },
+      hooks: {
+        SessionStart: [{
+          matcher: "*",
+          hooks: [{ type: "command", command: "echo session-start" }],
+        }],
+      },
+    }));
+    fs.writeFileSync(path.join(root, "trustedFolders.json"), JSON.stringify({
+      "/evidence/case": { decision: "trusted" },
+    }));
+    fs.writeFileSync(path.join(root, "google_accounts.json"), JSON.stringify({
+      active: "analyst@example.com",
+      old: ["old@example.com"],
+    }));
+    fs.writeFileSync(path.join(root, "oauth_creds.json"), JSON.stringify({
+      access_token: "SHOULD-NEVER-APPEAR",
+      refresh_token: "SHOULD-NEVER-APPEAR-EITHER",
+    }));
+    fs.writeFileSync(path.join(root, "installation_id"), "11111111-1111-4111-8111-111111111111\n");
+    fs.writeFileSync(path.join(root, "GEMINI.md"), "Preserve source provenance");
+    fs.writeFileSync(path.join(root, "skills", "demo-skill", "SKILL.md"), "# Demo skill");
+    fs.writeFileSync(path.join(root, "settings.json.orig"), '{"old":true}');
+    fs.mkdirSync(path.join(root, "policies"));
+    fs.writeFileSync(path.join(root, "policies", "tools.json"), '{"approval":"ask"}');
+    fs.writeFileSync(path.join(root, "history", "case-slug", ".project_root"), "/evidence/case");
+    fs.writeFileSync(path.join(root, "tmp", "case-slug", ".project_root"), "/evidence/case");
+
+    assert.equal(isGeminiCliRoot(root), true);
+    const rows = await extractGeminiCliDir(root, { user: "analyst" });
+    assert.ok(rows.some((r) => r.RecordType === "project_registry" && r.Workspace === "/evidence/case"));
+    const hook = rows.find((r) => r.RecordType === "hook");
+    assert.ok(hook);
+    assert.equal(hook.InvokedTool, "SessionStart");
+    assert.equal(hook.ToolCommand, "echo session-start");
+    const acct = rows.find((r) => r.RecordType === "account_identity");
+    assert.match(acct.Summary, /analyst@example\.com/);
+    const cred = rows.find((r) => r.RecordType === "credential_inventory");
+    assert.ok(cred);
+    assert.match(cred.Summary, /oauth_creds\.json/);
+    assert.ok(!/SHOULD-NEVER-APPEAR/.test(JSON.stringify(rows)), "oauth token values stay out");
+    assert.ok(rows.some((r) => r.RecordType === "project_root" && r.SessionId === "case-slug"));
+    assert.ok(rows.some((r) => r.RecordType === "trusted_folder" && r.Workspace === "/evidence/case"));
+    assert.ok(rows.some((r) => r.RecordType === "skill_inventory" && /demo-skill/.test(r.Summary)));
+    assert.ok(rows.some((r) => r.RecordType === "cli_settings" && /Auto Memory on/.test(r.Summary)));
+    const mcp = rows.find((r) => r.RecordType === "mcp_server_config");
+    assert.equal(mcp.InvokedTool, "timeline");
+    assert.doesNotMatch(JSON.stringify(rows), /GEMINI-MCP-SECRET/);
+    assert.ok(rows.some((r) => r.RecordType === "memory_file" && /computed/.test(r.FullText)));
+    assert.ok(rows.some((r) => r.RecordType === "skill_file_inventory" && /computed/.test(r.FullText)));
+    assert.ok(rows.some((r) => r.RecordType === "state_backup_inventory"));
+    assert.ok(rows.some((r) => r.RecordType === "policy_inventory"));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("extractGeminiSessionFile includes system and error message types", () => {

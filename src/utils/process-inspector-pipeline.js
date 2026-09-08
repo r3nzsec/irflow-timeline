@@ -13,6 +13,7 @@
 // so we don't change memoization semantics.
 
 import { getSusInfo } from "./process-inspector.js";
+import { SAFE_PROCS, USER_WRITABLE_PATH, BENIGN_INSTALL_PATH } from "../detection-rules.js";
 import { normalizeTimestamp, normalizeHost } from "./forensic-normalize.js";
 import { _ptFormatDuration } from "./process-inspector.js";
 
@@ -349,13 +350,18 @@ const _confidenceScore = (confidence) => ({
   suppressed: -50,
 }[confidence] || 0);
 
-const _RX_PT_USER_WRITABLE_PATH = /[\\/](users|programdata|windows[\\/]temp|temp|tmp|appdata|downloads|public|perflogs)[\\/]/i;
+// Unified — see USER_WRITABLE_PATH in detection-rules.js (audit P19).
+const _RX_PT_USER_WRITABLE_PATH = USER_WRITABLE_PATH;
 // Legitimate per-user install / auto-update locations. These ARE user-writable but are
 // overwhelmingly benign — Squirrel/Electron updaters (\AppData\Local\<Vendor>\app-<ver>),
 // per-user app installs (\AppData\Local\Programs\), and Microsoft per-user apps (Teams,
 // OneDrive). pi-57 ("same name from unusual path") skips them to avoid flooding FPs on
 // normal endpoints. NOTE: \AppData\Local\Temp is intentionally NOT here — staging dirs stay flagged.
+// Kept alongside the shared BENIGN_INSTALL_PATH because it also matches the
+// Squirrel/Electron "app-<version>" layout, which is version-numbered rather than
+// vendor-named.
 const _RX_PT_BENIGN_PERUSER_PATH = /\\appdata\\local\\(programs\\|microsoft\\(teams|onedrive|edgeupdate)\\|[^\\]+\\app-\d)/i;
+const _isBenignInstallPath = (img) => _RX_PT_BENIGN_PERUSER_PATH.test(img) || BENIGN_INSTALL_PATH.test(img);
 const _RX_PT_TRUST_SENSITIVE_PATH = /^[a-z]:[\\/](windows|program files|program files \(x86\))[\\/]/i;
 
 const _strongHash = (value) => {
@@ -367,11 +373,40 @@ const _strongHash = (value) => {
     || (text.match(/\b[a-f0-9]{64}\b/i)?.[0] || text.match(/\b[a-f0-9]{40}\b/i)?.[0] || text.match(/\b[a-f0-9]{32}\b/i)?.[0] || "").toLowerCase();
 };
 
+// Processes whose whole job is to start, do one thing and exit. On any host with
+// 4689 / Sysmon-5 enabled these churn constantly — a console window per command,
+// a crash reporter per fault, a broker per activation — so "4+ short-lived
+// instances in 10 minutes" is their NORMAL state, not a finding. Without this,
+// pi-53 fired on essentially every workstation in a dataset. Deliberately narrow:
+// only names that cannot carry an attacker's payload by themselves.
+const _RX_RESPAWN_BENIGN = /^(conhost|cmd|consent|dllhost|wermgr|werfault|werfaultsecure|taskhostw|backgroundtaskhost|runtimebroker|gpupdate|gpresult|ngen|ngentask|mscorsvw|sppsvc|sppextcomobj|cleanmgr|tiworker|wuauclt|usoclient|mousocoreworker|searchprotocolhost|searchfilterhost|searchindexer|compattelrunner|dismhost|drvinst|msiexec|omadmclient|deviceenroller|ipconfig|net1|whoami|hostname|chcp|where|find|findstr|timeout|ping|reg|sc|tasklist|systeminfo)$/i;
+
 const _lifetimeEvidenceFor = (info, node, disabledRules) => {
   if (!info) return null;
-  const isWritable = _RX_PT_USER_WRITABLE_PATH.test(String(node?.image || ""));
+  const img = String(node?.image || "");
+  // An Electron/Teams-style per-user install directory is user-writable by
+  // construction; treating it as "suspicious path" made every updater helper a
+  // level-2 respawn finding.
+  const benignPerUser = _isBenignInstallPath(img);
+  const isWritable = _RX_PT_USER_WRITABLE_PATH.test(img) && !benignPerUser;
+  const nameBase = String(node?.processName || "").toLowerCase().replace(/\.exe$/i, "");
   if (info.type === "short-respawn") {
     if (disabledRules?.has("pi-53")) return null;
+    // A known-churning name running from a normal location is expected behaviour.
+    // Keep it visible as context (it still feeds sequence/cluster correlation) but
+    // stop it scoring. A same-named binary from a writable path is NOT excluded —
+    // that is the masquerade case and keeps full severity below.
+    if (!isWritable && (_RX_RESPAWN_BENIGN.test(nameBase) || SAFE_PROCS.test(nameBase))) {
+      return {
+        cat: "context",
+        level: 0,
+        reason: `Repeated short-lived respawns (expected for ${nameBase || "this process"})`,
+        ruleId: "pi-53",
+        tid: [],
+        beh: "lifetime-respawn",
+        confidence: "context",
+      };
+    }
     return {
       cat: "lifetime",
       level: isWritable ? 2 : 1,
@@ -514,7 +549,10 @@ const _applyPrevalence = (det, node, model) => {
   }
   if ((det.level || 0) <= 0) return { ...det, prevalence };
   const boost = prevalence?.scoreBoost || 0;
-  const lifetimeBoost = det.lifetime?.type === "short-respawn" ? 15 : 0;
+  // Only boost when the respawn actually scored — a benign conhost churn is
+  // demoted to context above and must not carry a prevalence bonus with it.
+  const _respawnScored = (det.evidence || []).some((e) => e.ruleId === "pi-53" && (e.level || 0) > 0);
+  const lifetimeBoost = det.lifetime?.type === "short-respawn" && _respawnScored ? 15 : 0;
   const trustBoost = det.trust?.suppressed ? 0
     : det.trust?.type === "cross-host-hash-mismatch" ? 25
     : det.trust?.type === "same-name-unusual-path" ? 15
@@ -533,14 +571,21 @@ const _applyPrevalence = (det, node, model) => {
 
 const _scoreOneProcess = (p, byK, susOpts, lifetimeMap, trustMap, prevalenceModel, disabledRules) => {
   const parent = byK.get(p.parentKey) || null;
+  // Is the IMMEDIATE edge trustworthy? consistentParentKey returns null when the
+  // row's own ParentProcessName disagrees with the process we linked it to — the
+  // signature of a PID-reuse mislink. The grandparent already went through this
+  // check, but the parent did not, so a mislinked edge could still manufacture a
+  // parent->child chain finding (a spurious "office -> shell") out of two
+  // unrelated processes that happened to share a PID.
+  const parentEdgeConsistent = parent ? !!consistentParentKey(p, byK) : true;
   // Grandparent for multi-hop chain rules (winword→cmd→powershell). Use
   // consistentParentKey so PID-reuse edges don't invent a false office→shell path.
   let grandparent = null;
-  if (parent) {
+  if (parent && parentEdgeConsistent) {
     const gpk = consistentParentKey(parent, byK);
     if (gpk) grandparent = byK.get(gpk) || null;
   }
-  const det = getSusInfo(p, parent, { ...susOpts, grandparentNode: grandparent });
+  const det = getSusInfo(p, parent, { ...susOpts, grandparentNode: grandparent, parentEdgeConsistent });
   const withLifetime = _applyLifetime(det, p, lifetimeMap.get(p.key), disabledRules);
   const withTrust = _applyTrust(withLifetime, trustMap.get(p.key), disabledRules);
   return _applyPrevalence(withTrust, p, prevalenceModel);
@@ -1266,7 +1311,18 @@ export const buildIncidentStories = (data, byKeyMap, childMap, detMap, seqMap, n
       ...story.commands, ...sequences.map((s) => s.name), ...storyline.map((s) => `${s.parent} ${s.child} ${s.reason}`),
     ].join("\n").toLowerCase();
 	    const prevalenceSignals = [...story.prevalenceSignals].slice(0, 8);
-	    const triageScore = Math.max(story.maxScore || 0, story.maxLevel * 100) + (story.bestSeqRank * 20) + ((story.clusterIds.size || 0) * 6) + events.length;
+	    // Severity is a BAND, not a term. The old form added cluster count and raw
+	    // event count to a level*100 base, so a noisy high-severity story (many
+	    // clusters, ~100 events) outscored a single critical finding and took the
+	    // hero banner — the banner said "critical" while headlining the wrong
+	    // incident. Volume now only orders stories WITHIN a severity band.
+	    const _severityBand = (story.maxLevel || 0) * 1000;
+	    const _withinBand = Math.min(
+	      999,
+	      Math.max(0, (story.maxScore || 0) - ((story.maxLevel || 0) * 100))
+	      + (story.bestSeqRank * 20) + ((story.clusterIds.size || 0) * 6) + events.length,
+	    );
+	    const triageScore = _severityBand + _withinBand;
     return {
       id: `story-${headlineHost || "host"}-${users[0] || "user"}-${story.firstTs || storyIdx}-${storyIdx}`,
       hostname: headlineHost,

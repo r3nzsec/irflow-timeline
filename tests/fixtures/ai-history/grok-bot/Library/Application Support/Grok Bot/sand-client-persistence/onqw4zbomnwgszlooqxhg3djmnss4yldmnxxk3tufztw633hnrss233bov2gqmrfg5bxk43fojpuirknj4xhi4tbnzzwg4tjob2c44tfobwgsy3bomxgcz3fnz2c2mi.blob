@@ -1,0 +1,198 @@
+{
+  "schemaVersion": 1,
+  "value": {
+    "persistedAt": 1788758400000,
+    "epochHint": null,
+    "acceptedSequenceHint": null,
+    "entries": [
+      {
+        "kind": "message",
+        "id": "m-1",
+        "role": "user",
+        "content": "Pull the auth logs from my laptop",
+        "richText": "",
+        "isStreaming": false,
+        "timestampMs": 1788758000000,
+        "requestId": "req-1",
+        "clientNonce": "n1",
+        "batchId": "batch-shot"
+      },
+      {
+        "kind": "send-message",
+        "id": "s-1",
+        "message": {
+          "type": "local-tool-permission",
+          "content": "Run `cat /var/log/auth.log` on your Mac?"
+        },
+        "respondedValue": "allow",
+        "timestampMs": 1788758010000,
+        "requestId": "req-1"
+      },
+      {
+        "kind": "send-message",
+        "id": "s-2",
+        "message": {
+          "type": "text",
+          "content": "Here is what I found in the logs."
+        },
+        "timestampMs": 1788758020000,
+        "requestId": "req-1"
+      },
+      {
+        "kind": "send-message",
+        "id": "s-3",
+        "message": {
+          "type": "widget",
+          "content": "Archive the results?"
+        },
+        "respondedValue": "yes",
+        "timestampMs": 1788758030000,
+        "requestId": "req-1"
+      },
+      {
+        "kind": "user-attachment",
+        "id": "a-1",
+        "file_path": "/home/box/sand-data/agents/agent-1/attachments/0000000000000000000000000000000000000000000000000000000000000000.png",
+        "file_name": "shot.png",
+        "byteSize": 4096,
+        "width": 800,
+        "height": 600,
+        "batchId": "batch-shot"
+      },
+      {
+        "kind": "event",
+        "id": "e-1",
+        "event": {
+          "type": "automation-changed",
+          "action": "created",
+          "automationId": "auto-9",
+          "automationName": "Nightly log sweep"
+        },
+        "timestampMs": 1788758050000
+      },
+      {
+        "kind": "feedback",
+        "id": "f-1",
+        "requestId": "req-1",
+        "state": "prompt",
+        "timestampMs": 1788758060000
+      },
+      {
+        "kind": "user-attachment",
+        "id": "a-2",
+        "file_path": "/home/box/sand-data/agents/agent-1/attachments/fce7e4b5a387675f7fbb7ca9b2c4ed0c650b0e4997e3b2ddc4840ea72e6bf2ba.csv",
+        "file_name": "evidence-export.csv",
+        "byteSize": 35,
+        "batchId": "batch-csv",
+        "clientNonce": "n9",
+        "timestampMs": 1788758100000
+      },
+      {
+        "kind": "send-message",
+        "id": "s-9",
+        "message": {
+          "type": "local-tool-permission",
+          "ask": {
+            "requestId": "abc",
+            "action": "run-command",
+            "target": "ls -la \"/Users/subject/Desktop/E01\" && du -sh \"/Users/subject/Desktop/E01\"",
+            "machineId": "MAC1",
+            "machineLabel": "MAC1",
+            "status": "always"
+          }
+        },
+        "timestampMs": 1788758110000,
+        "requestId": "req-2"
+      },
+      {
+        "kind": "send-message",
+        "id": "s-10",
+        "message": {
+          "type": "local-tool-permission",
+          "ask": {
+            "requestId": "abd",
+            "action": "read-file",
+            "target": "/Users/subject/Documents/app/Sidebar.tsx",
+            "machineId": "MAC1",
+            "machineLabel": "MAC1",
+            "status": "always"
+          }
+        },
+        "timestampMs": 1788758111000,
+        "requestId": "req-2"
+      },
+      {
+        "kind": "send-message",
+        "id": "s-11",
+        "message": {
+          "type": "text",
+          "content": "Here is the VPS panel.",
+          "images": [
+            {
+              "url": "file:///home/box/sand-data/agents/agent-1/attachments/1111111111111111111111111111111111111111111111111111111111111111.png",
+              "alt": "hPanel VPS list showing srv1 running at 203.0.113.9",
+              "width": 1280,
+              "height": 800
+            }
+          ]
+        },
+        "timestampMs": 1788758120000,
+        "requestId": "req-2"
+      },
+      {
+        "kind": "send-message",
+        "id": "s-12",
+        "message": {
+          "type": "widget",
+          "widget": {
+            "prompt": "Send the email now?",
+            "helpText": "Keeps the application open.",
+            "options": [
+              {
+                "label": "Draft it",
+                "value": "Draft it for review",
+                "style": "primary"
+              },
+              {
+                "label": "Send now",
+                "value": "Send now",
+                "style": "danger"
+              },
+              {
+                "label": "Not yet",
+                "value": "Not yet"
+              }
+            ]
+          }
+        },
+        "timestampMs": 1788758130000,
+        "requestId": "req-2",
+        "respondedValue": "Draft it for review"
+      },
+      {
+        "kind": "send-message",
+        "id": "s-13",
+        "message": {
+          "type": "attachment",
+          "url": "file:///home/box/sand-data/agents/agent-1/attachments/2222222222222222222222222222222222222222222222222222222222222222.pdf",
+          "file_name": "report.pdf"
+        },
+        "timestampMs": 1788758140000,
+        "requestId": "req-2"
+      },
+      {
+        "kind": "send-message",
+        "id": "s-14",
+        "message": {
+          "type": "text",
+          "content": "Sign in to Hostinger hPanel"
+        },
+        "timestampMs": 1788758150000,
+        "requestId": "req-2",
+        "boxRequestId": "box-1",
+        "boxInstruction": "Sign in to Hostinger hPanel",
+        "boxResolution": "handed_back"
+      }
+    ]
+  }
+}

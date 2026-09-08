@@ -26,8 +26,14 @@ contextBridge.exposeInMainWorld("tle", {
   // Open Triage Collection: pick a KAPE/triage folder, review a manifest, import a selection.
   triageSelectRoot: () => ipcRenderer.invoke("triage-select-root"),
   triageDiscover: (dir) => ipcRenderer.invoke("triage-discover", { dir }),
+  triageCancelDiscover: (jobId) => ipcRenderer.invoke("triage-cancel-discover", { jobId }),
   triageImport: (dir, paths, opts) => ipcRenderer.invoke("triage-import", { dir, paths, ...(opts || {}) }),
   triageCancelBatch: (batchId, tabIds) => ipcRenderer.invoke("triage-cancel-batch", { batchId, tabIds }),
+  // VHDX: the picker returned { vhdx }; extract its artifacts into a scratch triage root.
+  triageOpenVhdx: (file) => ipcRenderer.invoke("triage-open-vhdx", { file }),
+  triageCancelVhdx: (jobId) => ipcRenderer.invoke("triage-cancel-vhdx", { jobId }),
+  onTriageVhdxProgress: (cb) => onIpc("triage-vhdx-progress", cb),
+  onTriageDiscoverProgress: (cb) => onIpc("triage-discover-progress", cb),
   listJobs: () => ipcRenderer.invoke("jobs-list"),
   getJobMetrics: () => ipcRenderer.invoke("jobs-metrics"),
   cancelJob: (jobId) => ipcRenderer.invoke("jobs-cancel", { jobId }),

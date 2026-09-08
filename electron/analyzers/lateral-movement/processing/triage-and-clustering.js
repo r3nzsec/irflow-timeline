@@ -12,6 +12,7 @@
  * @returns {{_findingPairs: Map, _chainEdges: Set, executionSessions: Array, incidents: Array}}
  */
 const { DC_PAT: _DC_PAT, SRV_PAT: _SRV_PAT, SEV_ORDER: sevOrder } = require("../constants");
+const { tsMs, cmpTs } = require("../time");
 
 /**
  * Index findings by "SOURCE->TARGET". A pure projection of the findings array, so any
@@ -63,7 +64,7 @@ function correlateTriageAndCluster(state) {
 
       // === Triage priority score ===
       const _sevBase = { critical: 40, high: 25, medium: 12, low: 3 };
-      const _dsEnd = timeOrdered.length > 0 ? new Date(timeOrdered[timeOrdered.length - 1].ts) : null;
+      const _dsEnd = timeOrdered.length > 0 ? tsMs(timeOrdered[timeOrdered.length - 1].ts) : null;
       for (const f of findings) {
         let ts = _sevBase[f.severity] || 0;
         // DC / server target bonus
@@ -80,8 +81,8 @@ function correlateTriageAndCluster(state) {
         if (f.source && _outlierHosts.has(f.source)) ts += 5;
         // Recency: last event within 1 hour of dataset end
         if (_dsEnd && f.timeRange && f.timeRange.to) {
-          const fEnd = new Date(f.timeRange.to);
-          if (!isNaN(fEnd) && (_dsEnd - fEnd) <= 3600000) ts += 5;
+          const fEnd = tsMs(f.timeRange.to);
+          if (fEnd != null && (_dsEnd - fEnd) <= 3600000) ts += 5;
         }
         // Multiple hosts involved
         if (fTargets.length > 1 || ((f.source || "").split(", ").filter(Boolean).length > 1)) ts += 3;
@@ -163,9 +164,11 @@ function correlateTriageAndCluster(state) {
 
         // Within each group, sort by time and split into sessions at >10 min gap
         let _esId = 0;
-        const _parseTime = (s) => { const d = new Date((s || "").replace("T", " ").replace("Z", "")); return isNaN(d) ? 0 : d.getTime(); };
+        // Parsed as UTC, not host-local — see time.js. The old form dropped the zone
+        // and let the analyst's timezone decide where a session boundary fell.
+        const _parseTime = (s) => tsMs(s) ?? 0;
         for (const [, group] of _sessGroups) {
-          group.sort((a, b) => ((a.timeRange?.from) || "").localeCompare((b.timeRange?.from) || ""));
+          group.sort((a, b) => cmpTs(a.timeRange?.from, b.timeRange?.from));
           const clusters = [];
           let cur = [group[0]];
           for (let i = 1; i < group.length; i++) {
@@ -180,7 +183,7 @@ function correlateTriageAndCluster(state) {
           if (cur.length > 0) clusters.push(cur);
 
           for (const cl of clusters) {
-            const allTs = cl.flatMap(f => [f.timeRange?.from, f.timeRange?.to]).filter(Boolean).sort();
+            const allTs = cl.flatMap(f => [f.timeRange?.from, f.timeRange?.to]).filter(Boolean).sort(cmpTs);
             const worstSev = cl.reduce((b, f) => (sevOrder[f.severity] ?? 4) < (sevOrder[b] ?? 4) ? f.severity : b, "low");
             const maxTriage = Math.max(...cl.map(f => f.triageScore || 0));
             const totalEvents = cl.reduce((s, f) => s + (f.eventCount || 0), 0);
@@ -284,14 +287,14 @@ function correlateTriageAndCluster(state) {
       for (const [pk, pFindings] of _incByPair) {
         if (pFindings.length < 2) continue;
         // Sort by timeRange.from
-        pFindings.sort((a, b) => ((a.timeRange?.from) || "").localeCompare((b.timeRange?.from) || ""));
+        pFindings.sort((a, b) => cmpTs(a.timeRange?.from, b.timeRange?.from));
         // Merge within 30-min gaps
         const clusters = [];
         let cur = [pFindings[0]];
         for (let i = 1; i < pFindings.length; i++) {
-          const prevEnd = new Date(cur[cur.length - 1].timeRange?.to || "");
-          const nextStart = new Date(pFindings[i].timeRange?.from || "");
-          if (!isNaN(prevEnd) && !isNaN(nextStart) && (nextStart - prevEnd) <= 1800000) {
+          const prevEnd = tsMs(cur[cur.length - 1].timeRange?.to);
+          const nextStart = tsMs(pFindings[i].timeRange?.from);
+          if (prevEnd != null && nextStart != null && (nextStart - prevEnd) <= 1800000) {
             cur.push(pFindings[i]);
           } else {
             clusters.push(cur);
@@ -313,7 +316,7 @@ function correlateTriageAndCluster(state) {
           const allEvidenceRefs = _dedupeEvidenceRefs(dedupedCl.flatMap(f => f.evidenceRefs || []));
           const incSeverity = dedupedCl.reduce((best, f) => (sevOrder[f.severity] ?? 4) < (sevOrder[best] ?? 4) ? f.severity : best, "low");
           const incTriageScore = Math.max(...dedupedCl.map(f => f.triageScore || 0)) + 5;
-          const allTs = dedupedCl.flatMap(f => [f.timeRange?.from, f.timeRange?.to]).filter(Boolean).sort();
+          const allTs = dedupedCl.flatMap(f => [f.timeRange?.from, f.timeRange?.to]).filter(Boolean).sort(cmpTs);
           const totalEvents = dedupedCl.reduce((s, f) => s + (f.eventCount || 0), 0);
           // Auto-generate narrative
           const chain = allCategories.join(" \u2192 ");

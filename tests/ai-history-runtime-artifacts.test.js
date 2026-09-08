@@ -25,6 +25,8 @@ const {
   collectPlanUsageWindows,
   collectScheduledTasks,
   collectWorktreeAccess,
+  collectRemoteBridgeState,
+  collectDesktopConfigState,
   collectClaudeDesktopState,
   USAGE_SESSION_GAP_MS,
 } = require("../electron/parsers/ai-history/claude-desktop-state");
@@ -206,7 +208,8 @@ test("collectClaudeDesktopState gathers every store and tolerates a missing root
   const rows = collectClaudeDesktopState(FIXTURE_DESKTOP, { user: "subject" }, {});
   const kinds = new Set(rows.map((r) => r.RecordType));
   for (const k of ["session_deleted", "pending_upload", "app_usage_window",
-    "scheduled_task", "workspace_seen"]) {
+    "scheduled_task", "workspace_seen", "remote_control_bridge", "trusted_folder",
+    "remote_folder_grant", "mcp_server_config"]) {
     assert.ok(kinds.has(k), `expected ${k} rows`);
   }
 
@@ -214,4 +217,52 @@ test("collectClaudeDesktopState gathers every store and tolerates a missing root
   assert.ok(!noUploads.some((r) => r.RecordType === "pending_upload"));
 
   assert.deepEqual(collectClaudeDesktopState("/nope/does/not/exist", {}, {}), []);
+});
+
+test("bridge-state.json links a local session to its remote controller and records consent", () => {
+  const rows = collectRemoteBridgeState(FIXTURE_DESKTOP, { user: "subject" });
+  assert.equal(rows.length, 1);
+  const [row] = rows;
+  assert.equal(row.RecordType, "remote_control_bridge");
+  assert.match(row.Summary, /Remote Control bridge ENABLED, user consented — local session local_demo-session-uuid ↔ remote session session_01REMOTEDEMO; 2 remote message\(s\) processed/);
+  assert.equal(row.SessionId, "local_demo-session-uuid");
+  assert.equal(row.MessageId, "session_01REMOTEDEMO");
+  assert.match(row.FullText, /"environmentId": "env_demo"/);
+  assert.match(row.FullText, /"scopeIds": \[/);
+  // The file has no timestamp, so the row must say where its time came from.
+  assert.match(row.FullText, /"timeSource": "bridge-state.json mtime/);
+  assert.ok(row.Timestamp, "dated from mtime rather than left blank");
+  assert.match(row.ToolDescription, /not a use of the bridge/);
+});
+
+test("claude_desktop_config.json yields trusted folders, remote grants, consent memory, prefs and MCP servers", () => {
+  const rows = collectDesktopConfigState(FIXTURE_DESKTOP, { user: "subject" });
+  const trusted = rows.filter((r) => r.RecordType === "trusted_folder");
+  assert.deepEqual(trusted.map((r) => r.Workspace).sort(), ["/Users/subject/Downloads", "/Users/subject/Projects/Example"]);
+  assert.match(trusted[0].ToolDescription, /without a further per-folder prompt/);
+
+  const grants = rows.filter((r) => r.RecordType === "remote_folder_grant");
+  assert.equal(grants.length, 2);
+  assert.ok(grants.every((r) => r.SessionId === "session_01REMOTEDEMO"));
+  assert.ok(grants.some((r) => r.Workspace === "/tmp/scratch"));
+
+  const consent = rows.find((r) => r.RecordType === "remote_folder_consent");
+  assert.equal(consent.Workspace, "/Users/subject/Projects/Example");
+  const files = rows.find((r) => r.RecordType === "cowork_user_files_path");
+  assert.equal(files.Workspace, "/Users/subject/Documents/Claude");
+
+  const prefs = rows.find((r) => r.RecordType === "cowork_preferences");
+  assert.match(prefs.Summary, /browser tools on \(chrome\), web search off, scheduled tasks on, bypass-permissions gate on for 1 account\(s\)/);
+  assert.match(prefs.FullText, /"bypassPermissionsAccounts": \[\s*"b548fd3a-0000-4000-8000-000000000002"/);
+  assert.ok(!/epitaxyPrefs|starred/.test(prefs.FullText), "UI-only preferences stay out");
+
+  const mcp = rows.filter((r) => r.RecordType === "mcp_server_config");
+  assert.equal(mcp.length, 2, "one from claude_desktop_config.json, one from config.json");
+  const fsSrv = mcp.find((r) => r.InvokedTool === "filesystem");
+  assert.equal(fsSrv.ToolCommand, "npx -y @modelcontextprotocol/server-filesystem /Users/subject/Projects");
+  assert.match(fsSrv.FullText, /"envKeys": \[\s*"FS_TOKEN"/, "env NAMES are listed");
+  const hex = mcp.find((r) => r.InvokedTool === "hexstrike-ai");
+  assert.match(hex.SourceFile, /config\.json$/);
+  assert.ok(!/SHOULD-NEVER-APPEAR/.test(JSON.stringify(rows)), "env VALUES are never emitted");
+  assert.ok(rows.every((r) => r.Timestamp), "config rows are dated from the file mtime");
 });

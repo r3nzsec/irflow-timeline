@@ -24,7 +24,7 @@ const {
 const { attributeHost } = require("./host-attribution");
 
 // Artifact kinds this branch can actually turn into a timeline tab.
-const INGESTIBLE_KINDS = new Set(["evtx", "mft", "usn", "kapeCsv"]);
+const INGESTIBLE_KINDS = new Set(["evtx", "mft", "usn", "kapeCsv", "plaso"]);
 
 // Present-but-unparseable kinds, with the tool that would produce something importable.
 // Surfaced as information rather than silently dropped — "we saw 290 prefetch files and
@@ -78,7 +78,7 @@ function looksLikeTriage(dir, scan) {
   return false;
 }
 
-/** Record .zip siblings so the UI can say they were seen and deliberately not opened. */
+/** Record .zip / .vhdx siblings so the UI can say they were seen and deliberately not opened. */
 function findZips(dir) {
   const out = [];
   try {
@@ -87,6 +87,20 @@ function findZips(dir) {
         let size = 0;
         try { size = fs.statSync(path.join(dir, e.name)).size; } catch { /* ignore */ }
         out.push({ name: e.name, size, sizeLabel: _human(size) });
+      }
+    }
+  } catch { /* ignore */ }
+  return out;
+}
+
+function findVhdx(dir) {
+  const out = [];
+  try {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.isFile() && /\.vhdx$/i.test(e.name)) {
+        let size = 0;
+        try { size = fs.statSync(path.join(dir, e.name)).size; } catch { /* ignore */ }
+        out.push({ name: e.name, path: path.join(dir, e.name), size, sizeLabel: _human(size) });
       }
     }
   } catch { /* ignore */ }
@@ -103,7 +117,12 @@ async function discoverTriageCollection(root, opts = {}) {
   const started = Date.now();
   const warnings = [];
 
-  const scan = scanTriageDir(root, { maxPathsPerKind: 4096, ...(opts.scanOpts || {}) });
+  const scan = scanTriageDir(root, {
+    maxPathsPerKind: 4096,
+    onProgress: opts.onProgress,
+    isCancelled: opts.isCancelled,
+    ...(opts.scanOpts || {}),
+  });
   if (scan.truncated) warnings.push(`Scan stopped after ${scan.scanned.toLocaleString()} files; the manifest may be incomplete.`);
   if (scan.pathsTruncated) warnings.push("Some artifact kinds had more files than the per-kind cap; high-value logs were kept first.");
 
@@ -145,10 +164,9 @@ async function discoverTriageCollection(root, opts = {}) {
         empty,
         // An empty stub contributes nothing and would just create a dead tab.
         defaultChecked: tier > 0 && !empty,
-        note: empty ? "empty log (header only)" : "",
+        note: empty ? "empty log (header only)" : (tier === 0 ? "not a lateral-movement channel" : ""),
       };
-    })
-    .filter((x) => x.lmTier > 0);
+    });
 
   // Parsed arm: EvtxECmd output is every channel already merged into one CSV, so it is
   // graded tier 3 on its own.
@@ -220,6 +238,12 @@ async function discoverTriageCollection(root, opts = {}) {
       ? `The archive ${zips[0].name} was not opened.`
       : `${zips.length} .zip archives in this folder were not opened.`);
   }
+  const vhdxFound = findVhdx(root);
+  if (vhdxFound.length) {
+    warnings.push(vhdxFound.length === 1
+      ? `This folder also contains ${vhdxFound[0].name} (${vhdxFound[0].sizeLabel}). If the collection looks empty, open that VHDX instead.`
+      : `This folder also contains ${vhdxFound.length} .vhdx images. If the collection looks empty, open one of those instead.`);
+  }
 
   return {
     rootPath: root,
@@ -246,7 +270,7 @@ async function discoverTriageCollection(root, opts = {}) {
     },
     artifacts,
     info,
-    ignored: { zips },
+    ignored: { zips, vhdx: vhdxFound },
     warnings,
     stats: {
       scanned: scan.scanned,

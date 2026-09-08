@@ -13,6 +13,7 @@ const {
 const {
   buildCursorComposerFixture,
   buildCursorConversationSearchFixture,
+  buildCursorToolOnlyFixture,
 } = require("./helpers/vscdb-builder");
 
 const FIXTURE_CURSOR = path.join(__dirname, "fixtures/ai-history/cursor/.cursor");
@@ -38,6 +39,41 @@ test("extractCursorComposerStores reads bubble messages from state.vscdb", async
   assert.ok(rows.length >= 2);
   assert.equal(rows[0].Tool, "Cursor");
   assert.match(rows.find((r) => r.Role === "user")?.Summary || "", /composer DB/);
+});
+
+test("Cursor composer retains tool-only bubbles with exact timestamp and result", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "irflow-cursor-tool-only-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const root = path.join(tmp, ".cursor");
+  const dbPath = path.join(root, "chats", "tool", "store.db");
+  if (!buildCursorToolOnlyFixture(dbPath)) return t.skip("better-sqlite3 unavailable");
+  fs.mkdirSync(path.join(root, "projects"), { recursive: true });
+  const { rows } = await extractCursorComposerStores(root);
+  const tool = rows.find((item) => item.RecordType === "composer_tool_evidence");
+  assert.ok(tool);
+  assert.equal(tool.Timestamp, "2026-09-08 01:02:03");
+  assert.equal(tool.InvokedTool, "run_terminal_command");
+  assert.equal(tool.ToolCommand, "whoami && id");
+  assert.match(tool.FullText, /uid=501/);
+  assert.equal(tool.MessageId, "tool-only-bubble");
+});
+
+test("Cursor accounts for more than the former 20/16 database limits", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "irflow-cursor-many-db-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const root = path.join(tmp, ".cursor");
+  fs.mkdirSync(path.join(root, "projects"), { recursive: true });
+  for (let i = 0; i < 25; i++) {
+    if (!buildCursorComposerFixture(path.join(root, "chats", String(i).padStart(2, "0"), "store.db"))) {
+      return t.skip("better-sqlite3 unavailable");
+    }
+  }
+  const { rows, stats } = await extractCursorComposerStores(root);
+  assert.equal(stats.eligibleDatabases, 25);
+  assert.equal(stats.selectedDatabases, 25);
+  assert.equal(stats.omittedDatabases, 0);
+  assert.equal(stats.databases, 25);
+  assert.equal(rows.length, 50);
 });
 
 test("extractCursorDir merges transcript and composer rows when vscdb present", async (t) => {

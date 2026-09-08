@@ -4,11 +4,18 @@
  * Codex versions the active store (for example state_5.sqlite). Live stores commonly use WAL,
  * so extraction snapshots the primary database with its -wal/-shm/-journal companions before
  * opening it. SourceFile always points to the acquired artifact, not the temporary copy.
+ *
+ * Tables read explicitly: `threads`, `thread_spawn_edges`, `thread_dynamic_tools`, and (state_5+)
+ * `remote_control_enrollments` — the record that this host's Codex app-server was paired for
+ * Remote Control, i.e. that a ChatGPT client elsewhere could drive Codex on this machine through
+ * the listed relay. Its columns carry no thread or session name, so the generic table sweep below
+ * would never surface it; it needs its own reader.
  */
 
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const crypto = require("crypto");
 
 const { dbg } = require("../../logger");
 const { openVscdbReadOnly, listTables, safeCloseDb } = require("./vscdb-kv");
@@ -76,22 +83,119 @@ function listCodexStateSqliteFiles(codexRoot) {
   return files.map((entry) => entry.path);
 }
 
-function copySqliteFamilyToTemp(dbPath) {
+function hashFileSha256(filePath, checkAbort = () => {}) {
+  const hash = crypto.createHash("sha256");
+  const fd = fs.openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  let offset = 0;
+  try {
+    while (true) {
+      checkAbort();
+      const read = fs.readSync(fd, buffer, 0, buffer.length, offset);
+      if (!read) break;
+      hash.update(buffer.subarray(0, read));
+      offset += read;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return hash.digest("hex");
+}
+
+function sqliteSourceIdentity(filePath, options = {}) {
+  const checkAbort = typeof options.checkAbort === "function" ? options.checkAbort : () => {};
+  const before = fs.statSync(filePath);
+  const sha256 = options.hash === false ? null : hashFileSha256(filePath, checkAbort);
+  const after = fs.statSync(filePath);
+  return {
+    path: filePath,
+    sizeBytes: before.size,
+    modifiedAtMs: Math.trunc(before.mtimeMs),
+    sha256,
+    hashStatus: sha256 ? "computed" : "not_requested",
+    stableDuringHash: before.size === after.size && Math.trunc(before.mtimeMs) === Math.trunc(after.mtimeMs),
+    observedAfter: {
+      sizeBytes: after.size,
+      modifiedAtMs: Math.trunc(after.mtimeMs),
+    },
+  };
+}
+
+function hasSqliteHeader(filePath) {
+  const fd = fs.openSync(filePath, "r");
+  const header = Buffer.alloc(16);
+  try {
+    return fs.readSync(fd, header, 0, header.length, 0) === header.length
+      && header.equals(Buffer.from("SQLite format 3\0", "binary"));
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Acquire a consistent SQLite snapshot. VACUUM INTO reads one SQLite transaction and includes
+ * committed WAL pages. Non-SQLite/corrupt inputs retain the prior family-copy fallback so the
+ * parser can report an unsupported source without mutating evidence.
+ */
+function copySqliteFamilyToTemp(dbPath, options = {}) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "irflow-codex-state-"));
   const base = path.basename(dbPath);
   const dest = path.join(tmpDir, base);
   const sidecars = [];
-  try {
-    fs.copyFileSync(dbPath, dest);
-    for (const suffix of ["-wal", "-shm", "-journal"]) {
-      const source = `${dbPath}${suffix}`;
-      if (!fs.existsSync(source)) continue;
-      fs.copyFileSync(source, `${dest}${suffix}`);
+  const checkAbort = typeof options.checkAbort === "function" ? options.checkAbort : () => {};
+  const family = [dbPath];
+  for (const suffix of ["-wal", "-shm", "-journal"]) {
+    const source = `${dbPath}${suffix}`;
+    if (fs.existsSync(source)) {
+      family.push(source);
       sidecars.push(source);
     }
+  }
+  const acquiredAtMs = Date.now();
+  try {
+    const originalIdentity = family.map((source) => sqliteSourceIdentity(source, {
+      hash: options.hashOriginals !== false,
+      checkAbort,
+    }));
+    let snapshotMethod = "sqlite_vacuum_into";
+    let integrityCheck = "ok";
+    let sourceDb = null;
+    try {
+      checkAbort();
+      if (!hasSqliteHeader(dbPath)) throw new Error("not a SQLite database header");
+      sourceDb = openVscdbReadOnly(dbPath);
+      sourceDb.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
+    } catch {
+      snapshotMethod = "family_copy_fallback";
+      integrityCheck = "not_checked";
+      try { sourceDb?.close(); } catch { /* ignore */ }
+      sourceDb = null;
+      fs.copyFileSync(dbPath, dest);
+      for (const source of sidecars) {
+        checkAbort();
+        fs.copyFileSync(source, `${dest}${source.slice(dbPath.length)}`);
+      }
+    } finally {
+      try { sourceDb?.close(); } catch { /* ignore */ }
+    }
+    if (snapshotMethod === "sqlite_vacuum_into") {
+      const verifyDb = openVscdbReadOnly(dest);
+      try {
+        integrityCheck = String(verifyDb.prepare("PRAGMA quick_check").pluck().get() || "unknown");
+      } finally {
+        verifyDb.close();
+      }
+      if (integrityCheck !== "ok") throw new Error(`SQLite snapshot integrity check failed: ${integrityCheck}`);
+    }
+    const snapshotIdentity = sqliteSourceIdentity(dest, { hash: true, checkAbort });
     return {
       dbPath: dest,
       sidecars,
+      acquiredAtMs,
+      snapshotMethod,
+      integrityCheck,
+      originalIdentity,
+      snapshotIdentity,
       cleanup: () => {
         try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
       },
@@ -151,8 +255,20 @@ function rowFromThreadRecord(rec, sourceFile, attribution) {
     sandboxPolicy: pickString(rec, ["sandbox_policy", "sandboxPolicy"]),
     rolloutPath: pickString(rec, ["rollout_path", "rolloutPath"]),
     archived: rec.archived == null ? undefined : !!rec.archived,
+    archivedAt: (() => { const ms = parseFlexibleTimestamp(pickValue(rec, ["archived_at"])); return ms == null ? undefined : formatTimestampUtc(ms); })(),
     tokensUsed: pickValue(rec, ["tokens_used", "tokensUsed"]),
     preview,
+    name: pickString(rec, ["name"]) || undefined,
+    isPinned: rec.is_pinned == null ? undefined : !!rec.is_pinned,
+    gitOriginUrl: pickString(rec, ["git_origin_url"]) || undefined,
+    gitSha: pickString(rec, ["git_sha"]) || undefined,
+    cliVersion: pickString(rec, ["cli_version"]) || undefined,
+    reasoningEffort: pickString(rec, ["reasoning_effort"]) || undefined,
+    historyMode: pickString(rec, ["history_mode"]) || undefined,
+    memoryMode: pickString(rec, ["memory_mode"]) || undefined,
+    projectId: pickString(rec, ["project_id"]) || undefined,
+    sectionId: pickString(rec, ["thread_section_id"]) || undefined,
+    createdAt: (() => { const ms = parseFlexibleTimestamp(pickValue(rec, ["created_at_ms", "created_at"])); return ms == null ? undefined : formatTimestampUtc(ms); })(),
   };
   return codexMetaRow({
     timestamp: ts,
@@ -299,6 +415,126 @@ function extractDynamicToolRows(db, sourceFile, attribution, maxRows) {
   });
 }
 
+/** Drop a URL's query string and fragment — relay URLs can carry tokens; the endpoint is the evidence. */
+function stripUrlSecrets(raw) {
+  const value = raw == null ? "" : String(raw).trim();
+  if (!value) return { url: "", queryStripped: false };
+  try {
+    const u = new URL(value);
+    const stripped = !!(u.search || u.hash);
+    u.search = "";
+    u.hash = "";
+    return { url: u.toString(), queryStripped: stripped };
+  } catch {
+    const cut = value.split(/[?#]/)[0];
+    return { url: cut, queryStripped: cut !== value };
+  }
+}
+
+/**
+ * Remote Control enrollments — one row per (relay, account, client) pairing.
+ *
+ * Configuration state rather than an activity record: the timestamp is `updated_at` (epoch
+ * seconds), the last time the enrollment changed, not a session time. `remote_control_enabled`
+ * is the flag an analyst actually needs; a disabled enrollment still evidences that pairing was
+ * set up at some point.
+ */
+function extractRemoteControlRows(db, sourceFile, attribution, maxRows) {
+  let records;
+  try {
+    records = db.prepare("SELECT * FROM remote_control_enrollments ORDER BY updated_at DESC LIMIT ?").all(maxRows);
+  } catch {
+    try { records = db.prepare("SELECT * FROM remote_control_enrollments LIMIT ?").all(maxRows); } catch { return []; }
+  }
+  return records.map((rec) => {
+    const tsMs = parseFlexibleTimestamp(rec.updated_at);
+    const enabled = rec.remote_control_enabled == null ? null : Number(rec.remote_control_enabled) !== 0;
+    const serverName = rec.server_name != null ? String(rec.server_name) : "";
+    const clientName = rec.app_server_client_name != null ? String(rec.app_server_client_name) : "";
+    const environmentId = rec.environment_id != null ? String(rec.environment_id) : "";
+    const relay = stripUrlSecrets(rec.websocket_url);
+    const state = enabled === null ? "enrolled" : (enabled ? "ENABLED" : "disabled");
+    return codexMetaRow({
+      timestamp: tsMs == null ? "" : formatTimestampUtc(tsMs),
+      role: "system",
+      recordType: "remote_control_enrollment",
+      summary: `Codex Remote Control ${state} — server "${serverName || "?"}"`
+        + `${clientName ? ` via ${clientName}` : ""}${environmentId ? `, environment ${environmentId}` : ""}`
+        + `${relay.url ? ` (relay ${relay.url})` : ""}`,
+      fullText: serializeSafe({
+        remoteControlEnabled: enabled,
+        serverName,
+        serverId: rec.server_id != null ? String(rec.server_id) : "",
+        environmentId,
+        appServerClientName: clientName,
+        accountId: rec.account_id != null ? String(rec.account_id) : "",
+        relayUrl: relay.url,
+        relayQueryStripped: relay.queryStripped,
+        updatedAt: tsMs == null ? null : formatTimestampUtc(tsMs),
+      }),
+      sessionId: environmentId,
+      messageId: rec.server_id != null ? String(rec.server_id) : "",
+      toolName: "",
+      toolDescription: "Pairing of this host's Codex app-server for Remote Control: a signed-in ChatGPT "
+        + "client (phone, web, or another desktop) could start and drive Codex threads on this "
+        + "machine through the relay while the enrollment was enabled. Configuration state — the "
+        + "timestamp is when the enrollment last changed, not when it was used. Relay query strings "
+        + "are stripped before storage.",
+      sourceFile,
+      user: attribution.user || "",
+      host: attribution.host || "",
+    });
+  });
+}
+
+/**
+ * `projects` + `project_roots` — the desktop app's project catalogue: a name, the local root paths
+ * it maps to, and creation/update times. Threads reference `project_id`, so this is how a thread id
+ * resolves to a folder on disk when its cwd column is empty.
+ */
+function extractProjectRows(db, sourceFile, attribution, maxRows) {
+  let records;
+  try {
+    records = db.prepare(`
+      SELECT p.id, p.name, p.metadata, p.created_at_ms, p.updated_at_ms, p.position,
+             GROUP_CONCAT(r.path, char(10)) AS paths
+      FROM projects p LEFT JOIN project_roots r ON r.project_id = p.id
+      GROUP BY p.id ORDER BY p.updated_at_ms DESC LIMIT ?
+    `).all(maxRows);
+  } catch {
+    try { records = db.prepare("SELECT * FROM projects LIMIT ?").all(maxRows); } catch { return []; }
+  }
+  return records.map((rec) => {
+    const tsMs = parseFlexibleTimestamp(rec.updated_at_ms ?? rec.created_at_ms);
+    const createdMs = parseFlexibleTimestamp(rec.created_at_ms);
+    const paths = rec.paths != null ? String(rec.paths).split("\n").filter(Boolean) : [];
+    const name = rec.name != null ? String(rec.name) : "";
+    return codexMetaRow({
+      timestamp: tsMs == null ? "" : formatTimestampUtc(tsMs),
+      role: "system",
+      recordType: "project",
+      summary: `Codex project "${name || rec.id}"${paths.length ? ` — ${paths.join(", ")}` : ""}`,
+      fullText: serializeSafe({
+        projectId: rec.id ?? null,
+        name,
+        rootPaths: paths,
+        metadata: parseMaybeJson(rec.metadata) ?? rec.metadata ?? null,
+        position: rec.position ?? null,
+        createdAt: createdMs == null ? null : formatTimestampUtc(createdMs),
+        updatedAt: tsMs == null ? null : formatTimestampUtc(tsMs),
+      }),
+      sessionId: "",
+      messageId: rec.id != null ? String(rec.id) : "",
+      workspace: paths[0] || "",
+      toolDescription: "Project catalogue entry from state*.sqlite: the folder(s) a project maps to on this "
+        + "machine. Threads carry project_id; join it here to place a thread in a directory.",
+      sourceFile,
+      user: attribution.user || "",
+      host: attribution.host || "",
+    });
+  });
+}
+
 function extractDatabaseRows(db, sourceFile, attribution, maxRows) {
   const rows = [];
   const tables = new Set(listTables(db));
@@ -311,10 +547,17 @@ function extractDatabaseRows(db, sourceFile, attribution, maxRows) {
   if (tables.has("thread_dynamic_tools") && rows.length < maxRows) {
     rows.push(...extractDynamicToolRows(db, sourceFile, attribution, maxRows - rows.length));
   }
+  if (tables.has("remote_control_enrollments") && rows.length < maxRows) {
+    rows.push(...extractRemoteControlRows(db, sourceFile, attribution, maxRows - rows.length));
+  }
+  if (tables.has("projects") && rows.length < maxRows) {
+    rows.push(...extractProjectRows(db, sourceFile, attribution, maxRows - rows.length));
+  }
 
   for (const table of tables) {
     if (rows.length >= maxRows) break;
-    if (["threads", "thread_spawn_edges", "thread_dynamic_tools"].includes(table)) continue;
+    if (["threads", "thread_spawn_edges", "thread_dynamic_tools", "remote_control_enrollments",
+      "projects", "project_roots", "project_idempotency_keys"].includes(table)) continue;
     try {
       rows.push(...extractRowsFromTable(db, table, sourceFile, attribution, maxRows - rows.length));
     } catch (e) {
@@ -356,7 +599,7 @@ function supplementCodexFromStateSqlite(codexRoot, attribution = {}, options = {
   let snapshot;
   let db;
   try {
-    snapshot = copySqliteFamilyToTemp(dbPath);
+    snapshot = copySqliteFamilyToTemp(dbPath, { checkAbort: options.checkAbort });
     db = openVscdbReadOnly(snapshot.dbPath);
     rows.push(...extractDatabaseRows(db, dbPath, attribution, maxRows));
   } catch (e) {
@@ -377,15 +620,28 @@ function supplementCodexFromStateSqlite(codexRoot, attribution = {}, options = {
     return true;
   });
 
+  const remoteControlRows = unique.filter((r) => r.RecordType === "remote_control_enrollment");
+  const remoteControlEnabled = remoteControlRows.filter((r) => /"remoteControlEnabled":true/.test(r.FullText)).length;
+
   return {
     rows: unique,
     stats: unique.length
       ? {
         databases: 1,
         indexRows: unique.length,
+        remoteControlEnrollments: remoteControlRows.length,
+        remoteControlEnabled,
+        projectRows: unique.filter((r) => r.RecordType === "project").length,
         source: dbPath,
         candidates,
         sidecarsAcquired: snapshot?.sidecars?.map((p) => path.basename(p)) || [],
+        acquisition: snapshot ? {
+          method: snapshot.snapshotMethod,
+          acquiredAtMs: snapshot.acquiredAtMs,
+          integrityCheck: snapshot.integrityCheck,
+          originalIdentity: snapshot.originalIdentity,
+          snapshotIdentity: snapshot.snapshotIdentity,
+        } : null,
       }
       : null,
   };
@@ -397,14 +653,24 @@ function buildCodexStateSqliteNotice(stats) {
   const sidecars = stats.sidecarsAcquired?.length
     ? `; acquired ${stats.sidecarsAcquired.join(", ")}`
     : "";
-  return `OpenAI Codex: +${stats.indexRows} state/enrichment row(s) from ${source}${sidecars}.`;
+  // Lead with remote control: a paired relay is the finding an analyst must not skim past.
+  const remote = stats.remoteControlEnrollments
+    ? `Codex REMOTE CONTROL: ${stats.remoteControlEnrollments} enrollment(s), ${stats.remoteControlEnabled || 0} enabled. `
+    : "";
+  return `${remote}OpenAI Codex: +${stats.indexRows} state/enrichment row(s) from ${source}${sidecars}.`;
 }
 
 module.exports = {
   listCodexStateSqliteFiles,
   copySqliteFamilyToTemp,
+  hashFileSha256,
+  sqliteSourceIdentity,
+  hasSqliteHeader,
   parseFlexibleTimestamp,
   rowFromThreadRecord,
+  stripUrlSecrets,
+  extractRemoteControlRows,
+  extractProjectRows,
   supplementCodexFromStateSqlite,
   buildCodexStateSqliteNotice,
 };

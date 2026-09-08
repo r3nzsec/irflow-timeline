@@ -17,6 +17,7 @@
  * @returns {number} the updated finding-id counter (fid)
  */
 const { DC_PAT: _DC_PAT } = require("../constants");
+const { tsMs, cmpTs } = require("../time");
 
 function detectCredentialAttacks(state) {
   const { db, meta, columns, isEvtxECmd, disabledSet: _disabledSet, findings, warnings } = state;
@@ -55,8 +56,8 @@ function detectCredentialAttacks(state) {
 
           const _krbHits = []; // {ts, host, user, serviceName, encType}
           let _krbTotalRows = 0; // total 4769 rows (all encryption types) for ratio check
-          const _KRBTGT_PAT = /^krbtgt[\/$@]/i;
-          const _MACHINE_SPN_PAT = /\$@/;
+          const _KRBTGT_PAT = /^krbtgt(?:[\/$@]|$)/i;
+          const _MACHINE_SPN_PAT = /\$(?:@|$)/i;
           // Common infrastructure SPNs that legitimately use RC4 in mixed environments
           const _COMMON_SPN_PREFIX = /^(HTTP|CIFS|HOST|LDAP|DNS|NFS|TERMSRV|RestrictedKrbHost|WSMAN|exchangeMDB|exchangeRFR|exchangeAB|SMTP|POP|IMAP)\//i;
           // Service account naming patterns (these accounts legitimately request RC4 tickets)
@@ -116,6 +117,7 @@ function detectCredentialAttacks(state) {
               const pdMatch = user.match(/^Target:\s*(?:([^\\]+)\\)?(.+)$/i);
               if (pdMatch) user = pdMatch[2].trim();
             }
+            if (user && /@/.test(user) && !/\s/.test(user)) user = user.replace(/@[^@]*$/, "");
             // Skip machine accounts requesting tickets (normal behavior)
             if (user && user.endsWith("$")) continue;
 
@@ -146,7 +148,7 @@ function detectCredentialAttacks(state) {
             const _krbIsLegacyEnv = _krbRc4Ratio > 0.5;
 
             // Cluster by user
-            _krbHits.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
+            _krbHits.sort((a, b) => cmpTs(a.ts, b.ts));
             const _krbByUser = new Map();
             for (const h of _krbHits) {
               const uk = h.user.toUpperCase();
@@ -157,7 +159,7 @@ function detectCredentialAttacks(state) {
             for (const [userKey, hits] of _krbByUser) {
               const spns = [...new Set(hits.map(h => h.serviceName))];
               const hosts = [...new Set(hits.map(h => h.host).filter(Boolean))];
-              const allTs = hits.map(h => h.ts).filter(Boolean).sort();
+              const allTs = hits.map(h => h.ts).filter(Boolean).sort(cmpTs);
               const user = hits[0].user;
 
               // --- FP Control: require minimum 3 unique SPNs ---
@@ -170,9 +172,9 @@ function detectCredentialAttacks(state) {
               let hasBurst = false;
               if (allTs.length >= 3) {
                 for (let i = 0; i <= allTs.length - 3; i++) {
-                  const t0 = new Date(allTs[i]).getTime();
-                  const t2 = new Date(allTs[i + 2]).getTime();
-                  if (!isNaN(t0) && !isNaN(t2) && (t2 - t0) <= 600000) { // 10 min
+                  const t0 = tsMs(allTs[i]);
+                  const t2 = tsMs(allTs[i + 2]);
+                  if (t0 != null && t2 != null && (t2 - t0) <= 600000) { // 10 min
                     hasBurst = true;
                     break;
                   }
@@ -322,6 +324,7 @@ function detectCredentialAttacks(state) {
               const pdMatch = user.match(/^Target:\s*(?:([^\\]+)\\)?(.+)$/i);
               if (pdMatch) user = pdMatch[2].trim();
             }
+            if (user && /@/.test(user) && !/\s/.test(user)) user = user.replace(/@[^@]*$/, "");
             if (user && user.endsWith("$")) continue; // skip machine accounts
             // FP control: service accounts legitimately default to RC4 — skip unless pre-auth is
             // explicitly disabled on them (then it is a genuine roastable target).
@@ -353,7 +356,7 @@ function detectCredentialAttacks(state) {
             for (const [, hits] of _arByUser) {
               const user = hits[0].user;
               const hosts = [...new Set(hits.map(h => h.host).filter(Boolean))];
-              const allTs = hits.map(h => h.ts).filter(Boolean).sort();
+              const allTs = hits.map(h => h.ts).filter(Boolean).sort(cmpTs);
               // Did we observe an explicit PreAuthType=0 for this account? That confirms the
               // account is roastable; without it we are inferring from weak encryption alone.
               const _arConfirmed = hits.some(h => h.preAuthDisabled);
@@ -400,20 +403,31 @@ function detectCredentialAttacks(state) {
         const _dcTsCol = columns.ts ? meta.colMap[columns.ts] : null;
         const _dcHostCol = columns.target ? meta.colMap[columns.target] : null;
         const _dcUserCol = columns.user ? meta.colMap[columns.user] : null;
+        const _dcSubjectCol = columns._subjectUser ? meta.colMap[columns._subjectUser] : null;
+        // EvtxECmd maps `user` to PayloadData1, which on a 4662 is object/property text,
+        // not "Target: DOMAIN\\user". Without the UserName fallback the account resolved
+        // to that junk string, the "machine account" test never matched, and routine
+        // DC-to-DC replication was reported as a critical DCSync. Mirrors build-graph.js.
+        const _dcUserFallbackCol = columns._userNameFallback ? meta.colMap[columns._userNameFallback] : null;
         const _dcPdCols = [columns._payloadData1, columns._payloadData2, columns._payloadData3, columns._payloadData4, columns._payloadData5]
           .filter(c => c && meta.colMap[c]).map(c => meta.colMap[c]);
-        // Also check Details/Extra for non-EvtxECmd formats
+        // Also check Details/Extra for non-EvtxECmd formats. Raw EVTX keeps the
+        // replication GUIDs in Properties — without that column DCSync is silent.
         const _dcDetailsCol = columns.details ? meta.colMap[columns.details] : null;
         const _dcExtraCol = columns.extra ? meta.colMap[columns.extra] : null;
+        const _dcPropsCol = columns._properties ? meta.colMap[columns._properties] : null;
 
         if (db && _dcEidCol && !_disabledSet.has("dcsync")) {
           const _dcSelParts = ["data.rowid as _rid"];
           if (_dcTsCol) _dcSelParts.push(`${_dcTsCol} as _ts`);
           if (_dcHostCol) _dcSelParts.push(`${_dcHostCol} as _host`);
           if (_dcUserCol) _dcSelParts.push(`${_dcUserCol} as _user`);
+          if (_dcSubjectCol) _dcSelParts.push(`${_dcSubjectCol} as _subjectUser`);
+          if (_dcUserFallbackCol) _dcSelParts.push(`${_dcUserFallbackCol} as _userFallback`);
           for (let pi = 0; pi < _dcPdCols.length; pi++) _dcSelParts.push(`${_dcPdCols[pi]} as _pd${pi}`);
           if (_dcDetailsCol) _dcSelParts.push(`${_dcDetailsCol} as _details`);
           if (_dcExtraCol) _dcSelParts.push(`${_dcExtraCol} as _extra`);
+          if (_dcPropsCol) _dcSelParts.push(`${_dcPropsCol} as _props`);
 
           const _dcSql = `SELECT ${_dcSelParts.join(", ")} FROM data WHERE ${_dcEidCol} = '4662' LIMIT 50000`;
           let _dcRows = [];
@@ -429,7 +443,7 @@ function detectCredentialAttacks(state) {
             // Concatenate all text fields to search for GUIDs
             const allText = [
               ..._dcPdCols.map((_, pi) => row[`_pd${pi}`] || ""),
-              row._details || "", row._extra || "",
+              row._details || "", row._extra || "", row._props || "",
             ].join(" ").toLowerCase();
 
             if (!_REPL_GUIDS.test(allText)) continue;
@@ -437,8 +451,19 @@ function detectCredentialAttacks(state) {
             let user = (row._user || "").trim();
             if (isEvtxECmd && user) {
               const pdMatch = user.match(/^Target:\s*(?:([^\\]+)\\)?(.+)$/i);
-              if (pdMatch) user = pdMatch[2].trim();
+              if (pdMatch) {
+                user = pdMatch[2].trim();
+              } else {
+                const fallback = String(row._userFallback || "")
+                  .replace(/\s*\(S-1-[0-9-]+\)\s*$/i, "")
+                  .trim();
+                user = (fallback && fallback !== "-\\-" && fallback !== "-") ? fallback : "";
+              }
             }
+            if (user && user.includes("\\")) user = user.split("\\").pop();
+            if (!user && row._subjectUser) user = String(row._subjectUser).trim();
+            if (user && user.includes("\\")) user = user.split("\\").pop();
+            if (user && /@/.test(user) && !/\s/.test(user)) user = user.replace(/@[^@]*$/, "");
             // FP: domain controllers legitimately replicate — skip machine accounts (covers DC↔DC
             // replication AND gMSA sync accounts, which appear as principals ending in "$").
             if (user && user.endsWith("$")) continue;
@@ -474,7 +499,7 @@ function detectCredentialAttacks(state) {
             for (const [, hits] of _dcByUser) {
               const user = hits[0].user;
               const hosts = [...new Set(hits.map(h => h.host).filter(Boolean))];
-              const allTs = hits.map(h => h.ts).filter(Boolean).sort();
+              const allTs = hits.map(h => h.ts).filter(Boolean).sort(cmpTs);
               const hasAll = hits.some(h => h.hasGetChangesAll);
 
               // DCSync with Get-Changes-All is always critical

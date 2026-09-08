@@ -12,9 +12,12 @@ const { extractMergedAiHistoryRootsToDb } = require("../parsers/ai-history/profi
 const { buildCopilotEmptyExtractError } = require("../parsers/ai-history/import-meta");
 
 let cancelled = false;
+const cancelView = workerData?.cancelBuffer ? new Int32Array(workerData.cancelBuffer) : null;
 
 function checkAbort() {
-  if (cancelled) throw Object.assign(new Error("AI history extraction canceled"), { canceled: true });
+  if (cancelled || (cancelView && Atomics.load(cancelView, 0) === 1)) {
+    throw Object.assign(new Error("AI history extraction canceled"), { canceled: true });
+  }
 }
 
 function progress(patch) {
@@ -116,6 +119,7 @@ async function runExtract() {
       indexesReady: descriptor.indexesReady,
       indexedCols: descriptor.indexedCols,
       importNotice: importNotice || null,
+      importMeta: importMeta || null,
       failures: failures || [],
       rowObjects: null,
     });

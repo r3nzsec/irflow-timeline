@@ -9,6 +9,7 @@
  */
 
 const fs = require("fs");
+const path = require("path");
 
 // Current Claude Cowork transcripts can contain legitimate detached/tool-result records above
 // 16MB (18.8MB observed in the live 2026 schema). Keep ingestion bounded while allowing those
@@ -16,58 +17,140 @@ const fs = require("fs");
 const DEFAULT_MAX_LINE_BYTES = 32 * 1024 * 1024;
 const READ_CHUNK_BYTES = 1 << 20; // 1MB
 
+function parseSourceStats(parseStats, filePath) {
+  if (!parseStats || !filePath) return null;
+  if (!parseStats.bySource) parseStats.bySource = {};
+  const sourceFile = path.resolve(filePath);
+  if (!parseStats.bySource[sourceFile]) {
+    parseStats.bySource[sourceFile] = {
+      sourceFile,
+      physicalLines: 0,
+      deliveredLines: 0,
+      parsedJsonLines: 0,
+      errors: 0,
+      oversizedLines: 0,
+      malformedLines: 0,
+      handlerErrors: 0,
+      readErrors: 0,
+    };
+  }
+  return parseStats.bySource[sourceFile];
+}
+
 /**
- * Stream a JSONL file line-by-line, JSON-parsing each line and invoking onLine(obj, lineNumber).
- * A JSON.parse failure or an onLine() throw skips only that line (counted), never the whole file.
+ * Stream a text file line-by-line without materializing a line above maxLineBytes. Every newline
+ * advances the physical line number, including blank, malformed, and oversized lines. The byte
+ * offset is measured from the beginning of the source file.
  * @param {string} filePath
- * @param {(obj:any, lineNumber:number) => void} onLine
+ * @param {(line:string, lineNumber:number, sourceLocation:{byteOffset:number,byteLength:number}) => void} onLine
+ * @param {{ parseStats?: {errors:number}, maxLineBytes?: number }} [options]
+ */
+async function readLinesBounded(filePath, onLine, options = {}) {
+  const parseStats = options.parseStats || null;
+  const sourceStats = parseSourceStats(parseStats, filePath);
+  const checkAbort = typeof options.checkAbort === "function"
+    ? options.checkAbort
+    : (typeof parseStats?.checkAbort === "function" ? parseStats.checkAbort : () => {});
+  const maxLineBytes = options.maxLineBytes || DEFAULT_MAX_LINE_BYTES;
+  const stream = fs.createReadStream(filePath, { highWaterMark: READ_CHUNK_BYTES });
+  let parts = [];
+  let bufferedBytes = 0;
+  let dropping = false;
+  let lineNumber = 0;
+  let lineStartOffset = 0;
+  let chunkStartOffset = 0;
+
+  const increment = (name) => {
+    if (!parseStats) return;
+    parseStats[name] = (parseStats[name] || 0) + 1;
+    if (sourceStats) sourceStats[name] = (sourceStats[name] || 0) + 1;
+  };
+  const append = (segment) => {
+    if (dropping || !segment.length) return;
+    if (bufferedBytes + segment.length > maxLineBytes) {
+      increment("errors");
+      increment("oversizedLines");
+      parts = [];
+      bufferedBytes = 0;
+      dropping = true;
+      return;
+    }
+    parts.push(segment);
+    bufferedBytes += segment.length;
+  };
+  const emit = (lineEndOffset) => {
+    lineNumber += 1;
+    if (sourceStats) sourceStats.physicalLines += 1;
+    const sourceLocation = {
+      byteOffset: lineStartOffset,
+      byteLength: Math.max(0, lineEndOffset - lineStartOffset),
+    };
+    if (!dropping) {
+      const line = parts.length === 0 ? "" : Buffer.concat(parts, bufferedBytes).toString("utf8");
+      try {
+        onLine(line, lineNumber, sourceLocation);
+        if (sourceStats) sourceStats.deliveredLines += 1;
+      } catch {
+        increment("errors");
+        increment("handlerErrors");
+      }
+    }
+    parts = [];
+    bufferedBytes = 0;
+    dropping = false;
+  };
+
+  try {
+    for await (const chunk of stream) {
+      checkAbort();
+      if (parseStats) parseStats.bytesRead = (parseStats.bytesRead || 0) + chunk.length;
+      if (sourceStats) sourceStats.bytesRead = (sourceStats.bytesRead || 0) + chunk.length;
+      let segmentStart = 0;
+      for (let i = 0; i < chunk.length; i++) {
+        if (chunk[i] !== 0x0a) continue;
+        append(chunk.subarray(segmentStart, i));
+        emit(chunkStartOffset + i);
+        lineStartOffset = chunkStartOffset + i + 1;
+        segmentStart = i + 1;
+      }
+      append(chunk.subarray(segmentStart));
+      chunkStartOffset += chunk.length;
+    }
+  } catch (error) {
+    increment("errors");
+    increment("readErrors");
+    throw error;
+  }
+  checkAbort();
+  if (lineStartOffset < chunkStartOffset || dropping || bufferedBytes > 0) emit(chunkStartOffset);
+}
+
+/**
+ * Stream a JSONL file line-by-line, JSON-parsing each line and invoking
+ * onLine(obj, lineNumber, sourceLocation). A parse or handler failure skips only that physical line.
+ * @param {string} filePath
+ * @param {(obj:any, lineNumber:number, sourceLocation:{byteOffset:number,byteLength:number}) => void} onLine
  * @param {{ parseStats?: {errors:number}, maxLineBytes?: number }} [options]
  */
 async function readJsonlBounded(filePath, onLine, options = {}) {
   const parseStats = options.parseStats || null;
-  const maxLineBytes = options.maxLineBytes || DEFAULT_MAX_LINE_BYTES;
-  const stream = fs.createReadStream(filePath, { encoding: "utf8", highWaterMark: READ_CHUNK_BYTES });
-
-  let buf = "";        // current partial line
-  let lineNumber = 0;
-  let dropping = false; // discarding an over-length line until its terminating newline
-
-  const emit = (line) => {
-    lineNumber += 1;
+  const sourceStats = parseSourceStats(parseStats, filePath);
+  await readLinesBounded(filePath, (line, lineNumber, sourceLocation) => {
     const trimmed = line.trim();
     if (!trimmed) return;
     let obj;
-    try { obj = JSON.parse(trimmed); } catch { if (parseStats) parseStats.errors += 1; return; }
-    try { onLine(obj, lineNumber); } catch { if (parseStats) parseStats.errors += 1; }
-  };
-
-  for await (const chunk of stream) {
-    let rest = chunk;
-    while (rest.length) {
-      const nl = rest.indexOf("\n");
-      if (nl === -1) {
-        if (dropping) break; // still inside an over-length line — discard the whole chunk
-        buf += rest;
-        if (buf.length > maxLineBytes) { // partial line already too big — drop the rest of it
-          if (parseStats) parseStats.errors += 1;
-          dropping = true;
-          buf = "";
-        }
-        break;
+    try { obj = JSON.parse(trimmed); } catch {
+      if (parseStats) {
+        parseStats.errors = (parseStats.errors || 0) + 1;
+        parseStats.malformedLines = (parseStats.malformedLines || 0) + 1;
+        sourceStats.errors += 1;
+        sourceStats.malformedLines += 1;
       }
-      const segment = rest.slice(0, nl);
-      rest = rest.slice(nl + 1);
-      if (dropping) { dropping = false; buf = ""; continue; } // tail of the dropped line
-      const line = buf + segment;
-      buf = "";
-      if (line.length > maxLineBytes) { if (parseStats) parseStats.errors += 1; continue; }
-      emit(line);
+      return;
     }
-  }
-  if (!dropping && buf.length) {
-    if (buf.length > maxLineBytes) { if (parseStats) parseStats.errors += 1; }
-    else emit(buf);
-  }
+    if (sourceStats) sourceStats.parsedJsonLines += 1;
+    onLine(obj, lineNumber, sourceLocation);
+  }, options);
 }
 
-module.exports = { readJsonlBounded, DEFAULT_MAX_LINE_BYTES };
+module.exports = { readLinesBounded, readJsonlBounded, DEFAULT_MAX_LINE_BYTES };

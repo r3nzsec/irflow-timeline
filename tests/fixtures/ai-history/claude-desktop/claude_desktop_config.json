@@ -1,0 +1,18 @@
+{
+  "coworkUserFilesPath": "/Users/subject/Documents/Claude",
+  "preferences": {
+    "coworkBrowserToolsEnabled": true,
+    "coworkPreferredBrowser": "chrome",
+    "localAgentModeTrustedFolders": ["/Users/subject/Projects/Example", "/Users/subject/Downloads"],
+    "remoteFolderConsentMemory": ["/Users/subject/Projects/Example"],
+    "remoteSessionFolderGrants": {"session_01REMOTEDEMO": ["/Users/subject/Projects/Example", "/tmp/scratch"]},
+    "coworkScheduledTasksEnabled": true,
+    "coworkWebSearchEnabled": false,
+    "bypassPermissionsGateByAccount": {"b548fd3a-0000-4000-8000-000000000002": true},
+    "sidebarMode": "compact",
+    "epitaxyPrefs": {"starred-cowork-spaces": ["x"]}
+  },
+  "mcpServers": {
+    "filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/subject/Projects"], "env": {"FS_TOKEN": "SHOULD-NEVER-APPEAR"}}
+  }
+}

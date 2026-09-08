@@ -6,6 +6,14 @@ description: Process Inspector — parent-child process trees, multi-pass detect
 
 The Process Inspector builds parent-child process trees from **Sysmon Event ID 1** and **Windows Security Event ID 4688**, then scores execution chains with chain rules, standalone detections, prevalence, binary trust, lifetime, injection, and privilege-use correlation. Results open as **Story / Triage / Hunt / Graph / Raw** views plus a **Rules** health report, with analyst suppressions, custom rules, and one-click pivots into the main grid and other IRFlow features.
 
+::: tip Correctness and false-positive hardening in v1.0.13
+Security PID roles are resolved per event, EvtxECmd hexadecimal PIDs no longer collapse to zero,
+and EID 7/11 enrichment scores the loaded module or created file rather than the process image.
+Administrative-tool, LSASS, network-volume, writable-path, installer, Python environment, and respawn
+findings now require the behavior they claim, while corroborated WinRM, DCOM, web-shell, RMM,
+tunnel, injection, and writable-path service activity remains detectable.
+:::
+
 ![Process Inspector Story view on WKS2390 Sysmon — 81 stories, GUID-linked tree, DumpIt.exe and cmd.exe chains](/dfir-tips/Process-Inspector-Story.png)
 
 ## Opening the Process Inspector

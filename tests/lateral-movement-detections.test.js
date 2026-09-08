@@ -292,6 +292,45 @@ test("C: a Type-3 edge is NOT relabeled when the exec finding is far outside the
   assert.notEqual(edge.technique, "Service Exec", `edge must stay Network Logon when exec is out of window, got ${edge.technique}`);
 });
 
+test("Remote Service Execution is one finding per host cluster, not one dataset-wide aggregate", () => {
+  const rows = [
+    row("4624", { ts: "2026-03-10T08:00:00Z", logonType: "3", user: "CORP\\attacker", computer: "HOSTA", ip: "10.10.10.5" }),
+    row("5145", { ts: "2026-03-10T08:00:30Z", user: "CORP\\attacker", computer: "HOSTA", ip: "10.10.10.5", shareName: "\\\\*\\ADMIN$" }),
+    row("7045", { ts: "2026-03-10T08:01:00Z", computer: "HOSTA", ip: "-", image: "C:\\Windows\\Temp\\a.exe", commandLine: "cmd /c whoami", serviceName: "svca" }),
+    row("4624", { ts: "2026-03-15T12:00:00Z", logonType: "3", user: "CORP\\attacker", computer: "HOSTB", ip: "10.10.10.8" }),
+    row("5145", { ts: "2026-03-15T12:00:20Z", user: "CORP\\attacker", computer: "HOSTB", ip: "10.10.10.8", shareName: "\\\\*\\ADMIN$" }),
+    row("7045", { ts: "2026-03-15T12:01:00Z", computer: "HOSTB", ip: "-", image: "C:\\Windows\\Temp\\b.exe", commandLine: "cmd /c whoami", serviceName: "svcb" }),
+  ];
+  const { meta, ctx } = makeStub(HEADERS, rows);
+  const result = getLateralMovement(meta, OPTS, ctx);
+  const execs = (result.findings || []).filter((f) => f.category === "Remote Service Execution");
+  assert.equal(execs.length, 2, `expected one service-exec finding per host, got ${JSON.stringify(execs.map((f) => f.target))}`);
+  const byHost = new Map(execs.map((f) => [f.target, f]));
+  assert.ok(byHost.has("HOSTA") && byHost.has("HOSTB"));
+  assert.deepEqual(byHost.get("HOSTA").serviceNames, ["svca"]);
+  assert.deepEqual(byHost.get("HOSTB").serviceNames, ["svcb"]);
+  const seqs = (result.findings || []).filter((f) => f.category === "Remote Execution Sequence");
+  assert.equal(seqs.length, 2, `each host should get its own sequence, got ${JSON.stringify(seqs.map((s) => s.target))}`);
+  const hostAEdge = (result.edges || []).find((e) => e.target === "HOSTA");
+  const hostBEdge = (result.edges || []).find((e) => e.target === "HOSTB");
+  assert.equal(hostAEdge?.technique, "Service Exec");
+  assert.equal(hostBEdge?.technique, "Service Exec");
+});
+
+test("Remote Service Execution splits the same host when installs are more than 10 minutes apart", () => {
+  const rows = [
+    row("4624", { ts: "2026-03-10T08:00:00Z", logonType: "3", user: "CORP\\attacker", computer: "HOST01", ip: "10.10.10.5" }),
+    row("7045", { ts: "2026-03-10T08:01:00Z", computer: "HOST01", ip: "-", image: "C:\\Windows\\Temp\\a.exe", commandLine: "cmd /c whoami", serviceName: "svca" }),
+    row("4624", { ts: "2026-03-10T08:20:00Z", logonType: "3", user: "CORP\\attacker", computer: "HOST01", ip: "10.10.10.5" }),
+    row("7045", { ts: "2026-03-10T08:21:00Z", computer: "HOST01", ip: "-", image: "C:\\Windows\\Temp\\b.exe", commandLine: "cmd /c whoami", serviceName: "svcb" }),
+  ];
+  const { meta, ctx } = makeStub(HEADERS, rows);
+  const result = getLateralMovement(meta, OPTS, ctx);
+  const execs = (result.findings || []).filter((f) => f.category === "Remote Service Execution");
+  assert.equal(execs.length, 2, `expected two 10-min clusters on HOST01, got ${JSON.stringify(execs.map((f) => f.serviceNames))}`);
+  assert.deepEqual(execs.map((f) => f.serviceNames).sort(), [["svca"], ["svcb"]]);
+});
+
 // ── 4771 Kerberos brute force ──────────────────────────────────────────────
 
 test("4771: 5+ Kerberos pre-auth failures from one source to a DC fire a Kerberos Brute Force", () => {

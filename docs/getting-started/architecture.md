@@ -6,7 +6,7 @@ description: IRFlow Timeline architecture — React renderer, Electron main proc
 
 Technical overview of IRFlow Timeline's architecture for developers and contributors.
 
-> **v1.0.6+ modular layout (current: v1.0.12).** What was once a ~20K-line `App.jsx` and monolithic `electron/parser.js` / `electron/db.js` is now decomposed into focused modules across the renderer and main process (`parsers/`, `ipc/`, `jobs/`, `analyzers/`, and related trees). v1.0.8 extended the AI parser subsystem, triage collection orchestration, worker lifecycle controls, and multi-source analyzers; v1.0.9 added bounded native EVTX chunk ingestion; v1.0.10 added ChatGPT Computer History (Skysight) plus crash-safe session recovery and a global worker budget; v1.0.11 verifies Computer History against a live capture and collects the Grok Build and Claude Desktop stores that outlive a deleted conversation; and v1.0.12 adds tab diffing (`electron/db/diff-tabs.js`, `src/utils/diff-tabs.js`) and version-aware Hayabusa command construction. The file references below reflect that layout.
+> **v1.0.6+ modular layout (current: v1.0.13).** What was once a ~20K-line `App.jsx` and monolithic `electron/parser.js` / `electron/db.js` is now decomposed into focused modules across the renderer and main process (`parsers/`, `ipc/`, `jobs/`, `analyzers/`, and related trees). v1.0.8 extended the AI parser subsystem, triage collection orchestration, worker lifecycle controls, and multi-source analyzers; v1.0.9 added bounded native EVTX chunk ingestion; v1.0.10 added ChatGPT Computer History (Skysight) plus crash-safe session recovery and a global worker budget; v1.0.11 verified Computer History against a live capture; v1.0.12 added tab diffing and version-aware Hayabusa command construction; and v1.0.13 adds read-only VHDX/NTFS triage extraction, versioned AI source coverage and acquisition metrics, plus Process Inspector and Lateral Movement correctness hardening. The file references below reflect that layout.
 
 ## System Architecture
 
@@ -77,13 +77,15 @@ The main process runs with full Node.js access and acts as the orchestrator:
 
 ### Worker Threads
 
-**Files:** `electron/jobs/job-manager.js` + `import-worker.js` · `index-worker.js` · `query-worker.js` · `analyzer-worker.js` · `sigma-worker.js` · `ai-history-profile-worker.js` · `computer-history-worker.js`
+**Files:** `electron/jobs/job-manager.js` + `import-worker.js` · `index-worker.js` · `query-worker.js` · `analyzer-worker.js` · `sigma-worker.js` · `ai-history-profile-worker.js` · `computer-history-worker.js` · `triage-discover-worker.js` · `vhdx-extract-worker.js`
 
 CPU-heavy work runs off the main thread in `worker_threads`, coordinated by `job-manager.js`:
 
 - **`import-worker`** — streams a source file through `parsers/index.js` into a temp SQLite DB (single AI app folders via `parsers/ai-history/` decode path)
 - **`ai-history-profile-worker`** — **Collect AI Artifacts** merged extract: walks profile/collection trees with `parsers/ai-history/profile-scan.js`, streams rows into a temp SQLite DB without holding the full merge in memory
 - **`computer-history-worker`** — ChatGPT Computer History (Skysight) parse of `events.jsonl` segments and activity summaries into the dedicated 54-column tab
+- **`triage-discover-worker`** — inventories a folder-based triage collection without blocking the main process
+- **`vhdx-extract-worker`** — read-only VHDX/NTFS extraction of recognized KAPE artifacts into a scratch collection tree, with free-space checks, progress, and cancellation
 - **`index-worker`** — builds column indexes, then the FTS5 index, in the background
 - **`query-worker`** — streams heavy filtered/sorted result pages off the main thread
 - **`analyzer-worker`** — runs forensic detectors (including AI Secret Hunt via `analyzers/ai-history/`)
@@ -151,6 +153,7 @@ Streaming parsers convert source files into batched SQLite inserts:
 - **`mft.js`** — two-pass raw `$MFT` parser (pass 1 builds directory + FN attribute maps, pass 2 reconstructs full paths); outputs **34 columns** matching MFTECmd, with SI-vs-FN timestamp comparison and resident-data detection
 - **`usn.js`** — raw `$UsnJrnl:$J` parser with reason-flag decoding and file-reference extraction
 - **`ai-history/`** — per-app parsers (Claude Code/Desktop/Cowork, Codex, Grok Build, ChatGPT, Gemini CLI, Cursor, Copilot, Windsurf, Continue) merged by profile scan or folder import into **AI Query History** tabs. JSONL is streamed with bounded line and evidence sizes; SQLite sources are snapshotted with available WAL/SHM companions. ChatGPT Computer History (Skysight) is a separate family: OS-level interaction telemetry that opens in its own 54-column tab rather than AI Query History.
+- **`vhdx.js` + `ntfs-reader.js` + `vhdx-triage.js`** — read-only dynamic/fixed VHDX access, in-memory log replay, MBR/GPT/bare NTFS discovery, `$MFT` traversal, and selective extraction into the triage-collection pipeline
 
 ## Data Flow
 

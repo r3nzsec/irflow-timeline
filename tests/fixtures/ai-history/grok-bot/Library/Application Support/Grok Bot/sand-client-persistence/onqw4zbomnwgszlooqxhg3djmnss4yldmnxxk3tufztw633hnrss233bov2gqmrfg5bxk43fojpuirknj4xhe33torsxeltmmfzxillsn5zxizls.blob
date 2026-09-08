@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "value": {
+    "rows": [
+      {
+        "id": "agent-1",
+        "name": "Triage Helper",
+        "description": "Sorts alerts",
+        "title": "IR assistant",
+        "createdAt": 1788500000000,
+        "updatedAt": 1788700000000,
+        "path": "/home/box/agents/triage",
+        "lastEntry": {
+          "kind": "text",
+          "text": "done"
+        },
+        "lastActivityAt": 1788758300000,
+        "origin": "user",
+        "isGroup": false,
+        "memberIds": []
+      }
+    ]
+  }
+}

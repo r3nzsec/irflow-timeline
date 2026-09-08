@@ -39,7 +39,7 @@ function writeCodexFixture() {
   return { dir, root };
 }
 
-test("parseAiHistoryImport streams into the db, dedupes per-source, and keeps FullText", async () => {
+test("parseAiHistoryImport streams every physical source occurrence and keeps FullText", async () => {
   const { dir, root } = writeCodexFixture();
   const db = makeFakeDb();
   try {
@@ -50,14 +50,16 @@ test("parseAiHistoryImport streams into the db, dedupes per-source, and keeps Fu
     assert.equal(res.sourceFormat, "ai-history-codex");
 
     const rows = db._inserted();
-    assert.equal(rows.length, 2, "the exact-duplicate history line is deduped away (per-source dedupe)");
-    assert.equal(res.rowCount, 2);
+    assert.equal(rows.length, 3, "repeated text at a different byte offset remains separate evidence");
+    assert.equal(res.rowCount, 3);
 
     const tsIdx = AI_HISTORY_COLUMNS.indexOf("Timestamp");
     const recIdx = AI_HISTORY_COLUMNS.indexOf("RecordId");
     const ftIdx = AI_HISTORY_COLUMNS.indexOf("FullText");
-    assert.deepEqual(rows.map((r) => r[recIdx]), ["1", "2"], "contiguous RecordId from 1");
-    assert.ok(rows[0][tsIdx] < rows[1][tsIdx], "rows sorted chronologically");
+    const offsetIdx = AI_HISTORY_COLUMNS.indexOf("SourceOffset");
+    assert.deepEqual(rows.map((r) => r[recIdx]), ["1", "2", "3"], "contiguous RecordId from 1");
+    assert.ok(rows.every((row, i) => i === 0 || rows[i - 1][tsIdx] <= row[tsIdx]), "rows sorted chronologically");
+    assert.equal(new Set(rows.map((r) => r[offsetIdx])).size, 3, "physical source offsets are unique");
     assert.ok(rows.some((r) => r[ftIdx] && r[ftIdx].includes("prompt body")), "FullText retained for single-tool import");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

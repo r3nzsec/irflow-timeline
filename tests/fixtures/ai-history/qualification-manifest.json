@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 2,
+  "createdUtc": "2026-09-08T00:00:00Z",
+  "sanitized": true,
+  "handling": "Synthetic or scrubbed fixtures only. Hashes identify exact test inputs and must change with intentional fixture edits.",
+  "artifacts": [
+    {
+      "surface": "claude-code",
+      "path": "claude/.claude/history.jsonl",
+      "sha256": "5a3863f9c517616b8c83e46fc179c626b1230457c98b46e4df07bc54e480d41b",
+      "families": ["prompt history"]
+    },
+    {
+      "surface": "claude-code",
+      "path": "claude/.claude/projects/demo-app/sess-abc.jsonl",
+      "sha256": "f2aa7f2f24f71ea7411bd337ad4937a7e090e27c73675c641bac1c6f6f2caff9",
+      "families": ["messages", "tool calls"]
+    },
+    {
+      "surface": "codex",
+      "path": "codex/.codex/history.jsonl",
+      "sha256": "cb91a6cc9334ea472fce898342d7fbcdacc29cefb8569d93d7cc84f69f035a7b",
+      "families": ["prompt history"]
+    },
+    {
+      "surface": "codex",
+      "path": "codex/.codex/sessions/2026/01/01/rollout-test-fixture.jsonl",
+      "sha256": "b9412fc5af6fbf8ee19bbae8a70448b4b9334dbfd783db3745cd1af0943eb6f0",
+      "families": ["rollout messages", "tool calls", "tool results"]
+    },
+    {
+      "surface": "grok-build",
+      "path": "grok/.grok/sessions/%2Ftmp%2Fgrok-demo/grok-session-1/updates.jsonl",
+      "sha256": "27e2d5e78ef36c5bcc3de1a059af482c3edfcee8c72641a3cbdc3a9908f7fbde",
+      "families": ["messages", "terminal tool calls", "results"]
+    },
+    {
+      "surface": "grok-bot",
+      "path": "grok-bot/Library/Application Support/Grok Bot/sand-client-persistence/onqw4zbomnwgszlooqxhg3djmnss45ljfvwgc6lpov2a.blob",
+      "sha256": "2f1056c77ab54528213b79bfee0f4265809e77c27d8060b1f181bb9753ed584a",
+      "families": ["persistence slice"]
+    },
+    {
+      "surface": "gemini-cli",
+      "path": "gemini/.gemini/tmp/a1b2c3d4/chats/session-demo.json",
+      "sha256": "fd0797d38e5d5cde2966a7f9202c5818461e6c293fefa552b80b6a3824b34a8d",
+      "families": ["legacy conversation", "tool calls"]
+    },
+    {
+      "surface": "cursor",
+      "path": "cursor/.cursor/projects/demo-project/agent-transcripts/a1111111-1111-4111-8111-111111111111/a1111111-1111-4111-8111-111111111111.jsonl",
+      "sha256": "d91e92023e7d8691f4e33fad8c724624b2e41eaa180306f9b63c30b6fa67bc41",
+      "families": ["agent transcript", "tool evidence"]
+    },
+    {
+      "surface": "cursor",
+      "path": "cursor-text/.cursor/projects/demo/agent-transcripts/legacy-session/legacy-session.txt",
+      "sha256": "58a5ffbf67a19e8e7be32e1a6dcd48bcabf368ede74e68295d696ae7f577634a",
+      "families": ["legacy role-labelled text"]
+    }
+  ],
+  "generatedRegressionCases": [
+    "same-prefix distinct evidence occurrences",
+    "oversized and malformed JSONL source locations",
+    "Cursor null and synthetic timestamps",
+    "Grok orphan events and malformed-update fallback",
+    "Codex partial-rollout SQL recovery",
+    "Codex independent media references with bounded embedded hashes",
+    "Claude, Codex, Grok Build, and Cursor context with credential-value exclusion",
+    "Gemini immutable rewind and replacement history",
+    "Cursor tool-only composer bubbles and 25-store discovery",
+    "CSV and TSV CR/LF/quote/unicode/NUL round trip"
+  ]
+}

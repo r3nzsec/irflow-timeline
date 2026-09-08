@@ -6,6 +6,14 @@ description: Lateral Movement Tracker — interactive network graph with RDP ses
 
 The Lateral Movement Tracker visualizes network logon activity across your environment as an interactive force-directed graph, with built-in RDP session correlation, detection rules, and multi-hop chain reconstruction to help you detect and trace attacker movement between systems.
 
+::: tip Evidence-correlation hardening in v1.0.13
+Event IDs are now interpreted with their channel, so consolidated Sysmon 22/23 rows cannot fabricate
+TerminalServices sessions. Timestamp and off-hours decisions use parsed instants plus the configured
+estate UTC offset. Fixed-cadence service retries and well-known service identities are dampened,
+while password spray, alternate credentials, tunnelled RDP, RdpCoreTS failure bursts, session
+shadowing, and `ADMIN$` writes receive more precise coverage.
+:::
+
 <video autoplay loop muted playsinline style="width: 100%; border-radius: 8px;">
   <source src="/dfir-tips/Lateral-Movement-Network-Graphs.mp4" type="video/mp4">
 </video>
@@ -14,7 +22,7 @@ The Lateral Movement Tracker visualizes network logon activity across your envir
 
 - **Menu:** **Tools → Platforms → Windows → Lateral Movement Tracker**
 - **Capability launcher:** **Lateral Movement** on the home screen (after a timeline tab is loaded)
-- Supports 16 event IDs across Windows Security, TerminalServices, and RDP logs
+- Correlates Windows Security, Sysmon, TerminalServices, RemoteConnectionManager, and RdpCoreTS telemetry
 
 ## Multi-Source Correlation
 
@@ -30,7 +38,7 @@ You can also start from **File → Open Triage Collection…**, which pre-select
 
 ![Lateral Movement Tracker configuration on WKS2390 — Analyze and RDP-focused scan options before the run](/dfir-tips/Lateral-Movement-Detection-Rules.png)
 
-The tracker uses a configurable rules system with **15 built-in detection rules** across five categories. Each rule can be individually toggled on or off.
+The tracker derives acquisition from a registry of **24 built-in detector groups** across authentication, RDP, share access, execution, Kerberos, and credential access. Toggleable groups can be enabled or disabled individually; core graph inputs remain available so the tracker cannot silently remove its own correlation spine. The tables below summarize the principal event inputs.
 
 ### RDP Session Rules
 
@@ -43,6 +51,8 @@ The tracker uses a configurable rules system with **15 built-in detection rules*
 | Session Disconnected | 24 | Low | LocalSessionManager |
 | Session Reconnected | 25 | Medium | LocalSessionManager |
 | Disconnect by Other / Reason | 39, 40 | Low | LocalSessionManager |
+| NLA Authentication Failure | 131, 140 | High | RdpCoreTS |
+| Session Shadowing | 20503, 20504 | High | RemoteConnectionManager/Admin |
 
 ### Security Logon Rules
 

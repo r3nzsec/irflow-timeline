@@ -19,6 +19,12 @@
  *                         prompt text on a different lifecycle from history.jsonl and the rollouts,
  *                         so it can survive their deletion (and vice versa).
  *
+ *   memories*.sqlite      stage1_outputs — per-thread model memory: `raw_memory`, a `rollout_summary`,
+ *                         and how often / when that memory was injected into later threads. Model-
+ *                         written; tagged `thread_memory`.
+ *   goals*.sqlite         thread_goals — standing objectives with token/time budgets. `thread_goal`.
+ *   queue*.sqlite         queued_items — follow-up prompts queued for a thread. `queued_prompt`.
+ *
  * Live stores commonly use WAL, so each database is snapshotted with its -wal/-shm/-journal
  * companions before opening. SourceFile always points at the acquired artifact, never the copy.
  */
@@ -306,13 +312,24 @@ function extractAutomationRunRows(db, sourceFile, attribution, maxRows) {
  * logs*.sqlite
  * ------------------------------------------------------------------ */
 
+const MEMORIES_DB_RE = /^memories(?:_(\d+))?\.sqlite$/i;
+const GOALS_DB_RE = /^goals(?:_(\d+))?\.sqlite$/i;
+const QUEUE_DB_RE = /^queue(?:_(\d+))?\.sqlite$/i;
+const DEFAULT_MAX_MEMORY_ROWS = 2000;
+const MAX_MEMORY_TEXT = 16000;
+
 function listCodexLogsDbFiles(codexRoot) {
+  return listVersionedDbFiles(codexRoot, LOGS_DB_RE);
+}
+
+/** Newest schema version first, then newest mtime. */
+function listVersionedDbFiles(codexRoot, re) {
   let entries;
   try { entries = fs.readdirSync(codexRoot, { withFileTypes: true }); } catch { return []; }
   const files = [];
   for (const entry of entries) {
     if (!entry.isFile()) continue;
-    const match = LOGS_DB_RE.exec(entry.name);
+    const match = re.exec(entry.name);
     if (!match) continue;
     const filePath = path.join(codexRoot, entry.name);
     let mtimeMs = 0;
@@ -384,6 +401,122 @@ function extractSubmissionRows(db, sourceFile, attribution, maxRows) {
 }
 
 /* ------------------------------------------------------------------ *
+ * memories*.sqlite / goals*.sqlite / queue*.sqlite
+ * ------------------------------------------------------------------ */
+
+function capText(text, max = MAX_MEMORY_TEXT) {
+  const s = asText(text);
+  return s.length > max ? `${s.slice(0, max)}\n…[truncated ${s.length - max} chars]` : s;
+}
+
+function extractThreadMemoryRows(db, sourceFile, attribution, maxRows) {
+  let records;
+  try {
+    records = db.prepare(
+      `SELECT thread_id, source_updated_at, raw_memory, rollout_summary, rollout_slug, generated_at,
+              usage_count, last_usage, selected_for_phase2
+         FROM stage1_outputs ORDER BY generated_at DESC LIMIT ?`,
+    ).all(maxRows);
+  } catch (e) {
+    dbg("AIHIST", "codex memories query failed", { err: e.message });
+    return [];
+  }
+  return records.map((rec) => {
+    const generatedMs = parseStoreTimestamp(rec.generated_at);
+    const lastUsedMs = parseStoreTimestamp(rec.last_usage);
+    const summary = asText(rec.rollout_summary);
+    const title = /^#\s+(.+)$/m.exec(summary)?.[1]?.trim() || asText(rec.rollout_slug).replace(/[-_]+/g, " ") || "(untitled)";
+    return auxRow({
+      timestamp: formatTimestampUtc(generatedMs),
+      recordType: "thread_memory",
+      summary: `Codex memory of thread — ${title} (injected ${Number(rec.usage_count) || 0}×`
+        + `${lastUsedMs ? `, last ${formatTimestampUtc(lastUsedMs)}` : ""})`,
+      fullText: `${capText(rec.raw_memory)}${summary ? `\n\n---\n${capText(summary)}` : ""}`,
+      sessionId: asText(rec.thread_id),
+      toolInput: serializeSafe({
+        rolloutSlug: asText(rec.rollout_slug),
+        usageCount: rec.usage_count ?? null,
+        lastUsage: lastUsedMs ? formatTimestampUtc(lastUsedMs) : null,
+        sourceUpdatedAt: parseStoreTimestamp(rec.source_updated_at) ? formatTimestampUtc(parseStoreTimestamp(rec.source_updated_at)) : null,
+        selectedForPhase2: rec.selected_for_phase2 == null ? null : !!rec.selected_for_phase2,
+      }),
+      toolDescription: "Model-written memory distilled from one thread and re-injected into later threads "
+        + "(usage_count / last_usage say how often and when). Interpretation, not transcript; it can "
+        + "describe a thread whose rollout is gone.",
+      sourceFile,
+      user: attribution.user || "",
+      host: attribution.host || "",
+    });
+  });
+}
+
+function extractThreadGoalRows(db, sourceFile, attribution, maxRows) {
+  let records;
+  try { records = db.prepare("SELECT * FROM thread_goals ORDER BY updated_at_ms DESC LIMIT ?").all(maxRows); } catch { return []; }
+  return records.map((rec) => {
+    const tsMs = parseStoreTimestamp(rec.updated_at_ms ?? rec.created_at_ms);
+    return auxRow({
+      timestamp: formatTimestampUtc(tsMs),
+      recordType: "thread_goal",
+      summary: `Codex goal ${asText(rec.status) || "?"} — ${asText(rec.objective) || "(no objective)"}`,
+      fullText: serializeSafe({
+        goalId: rec.goal_id ?? null,
+        objective: asText(rec.objective),
+        status: asText(rec.status),
+        tokenBudget: rec.token_budget ?? null,
+        tokensUsed: rec.tokens_used ?? null,
+        timeUsedSeconds: rec.time_used_seconds ?? null,
+        createdAt: parseStoreTimestamp(rec.created_at_ms) ? formatTimestampUtc(parseStoreTimestamp(rec.created_at_ms)) : null,
+      }),
+      sessionId: asText(rec.thread_id),
+      messageId: asText(rec.goal_id),
+      toolDescription: "A standing objective the agent keeps working toward across turns, with its budget.",
+      sourceFile,
+      user: attribution.user || "",
+      host: attribution.host || "",
+    });
+  });
+}
+
+function extractQueuedItemRows(db, sourceFile, attribution, maxRows) {
+  let records;
+  try { records = db.prepare("SELECT * FROM queued_items ORDER BY created_at_ms DESC LIMIT ?").all(maxRows); } catch { return []; }
+  return records.map((rec) => {
+    const tsMs = parseStoreTimestamp(rec.created_at_ms);
+    let payload = null;
+    try { payload = JSON.parse(asText(rec.payload_json)); } catch { payload = null; }
+    const text = payload && typeof payload === "object"
+      ? asText(payload.text ?? payload.prompt ?? payload.content ?? (Array.isArray(payload.items) ? payload.items.map((i) => i?.text ?? "").join("\n") : ""))
+      : asText(rec.payload_json);
+    return auxRow({
+      timestamp: formatTimestampUtc(tsMs),
+      role: "user",
+      recordType: "queued_prompt",
+      summary: text || "(queued item without text)",
+      fullText: text ? `${text}\n\n${capText(rec.payload_json)}` : capText(rec.payload_json),
+      sessionId: asText(rec.thread_id),
+      messageId: rec.id != null ? String(rec.id) : "",
+      toolDescription: "A follow-up prompt queued for a thread and not yet delivered at acquisition.",
+      sourceFile,
+      user: attribution.user || "",
+      host: attribution.host || "",
+    });
+  });
+}
+
+function extractVersionedStoreRows(codexRoot, re, tableName, extractor, attribution, maxRows) {
+  const candidates = listVersionedDbFiles(codexRoot, re);
+  if (!candidates.length) return { rows: [], acquired: null };
+  const dbPath = candidates[0];
+  const rows = withSnapshot(dbPath, (db) => {
+    const tables = new Set(listTables(db));
+    if (!tables.has(tableName)) return [];
+    return extractor(db, dbPath, attribution, maxRows);
+  });
+  return { rows, acquired: rows.length ? dbPath : null };
+}
+
+/* ------------------------------------------------------------------ *
  * Orchestration
  * ------------------------------------------------------------------ */
 
@@ -452,8 +585,12 @@ function extractCodexLogsDbRows(codexRoot, attribution, options) {
 function supplementCodexFromAuxSqlite(codexRoot, attribution = {}, options = {}) {
   const devDb = extractCodexDevDbRows(codexRoot, attribution, options);
   const logsDb = extractCodexLogsDbRows(codexRoot, attribution, options);
+  const maxMemory = options.maxThreadMemoryRows ?? DEFAULT_MAX_MEMORY_ROWS;
+  const memoriesDb = extractVersionedStoreRows(codexRoot, MEMORIES_DB_RE, "stage1_outputs", extractThreadMemoryRows, attribution, maxMemory);
+  const goalsDb = extractVersionedStoreRows(codexRoot, GOALS_DB_RE, "thread_goals", extractThreadGoalRows, attribution, maxMemory);
+  const queueDb = extractVersionedStoreRows(codexRoot, QUEUE_DB_RE, "queued_items", extractQueuedItemRows, attribution, maxMemory);
 
-  const all = [...devDb.rows, ...logsDb.rows];
+  const all = [...devDb.rows, ...logsDb.rows, ...memoriesDb.rows, ...goalsDb.rows, ...queueDb.rows];
   if (!all.length) return { rows: [], stats: null };
 
   // Key on the source row identity (Timestamp + LineNumber, which carries the originating row id)
@@ -480,7 +617,10 @@ function supplementCodexFromAuxSqlite(codexRoot, attribution = {}, options = {})
       missingRolloutThreads: counts.thread_catalog_missing || 0,
       automationRows: (counts.automation || 0) + (counts.automation_run || 0),
       submissionRows: counts.submission || 0,
-      sources: [devDb.acquired, logsDb.acquired].filter(Boolean),
+      threadMemoryRows: counts.thread_memory || 0,
+      goalRows: counts.thread_goal || 0,
+      queuedPromptRows: counts.queued_prompt || 0,
+      sources: [devDb.acquired, logsDb.acquired, memoriesDb.acquired, goalsDb.acquired, queueDb.acquired].filter(Boolean),
     },
   };
 }
@@ -494,6 +634,9 @@ function buildCodexAuxSqliteNotice(stats) {
   }
   if (stats.automationRows) parts.push(`${stats.automationRows} scheduled-automation`);
   if (stats.submissionRows) parts.push(`${stats.submissionRows} logged-submission`);
+  if (stats.threadMemoryRows) parts.push(`${stats.threadMemoryRows} thread-memory`);
+  if (stats.goalRows) parts.push(`${stats.goalRows} goal`);
+  if (stats.queuedPromptRows) parts.push(`${stats.queuedPromptRows} queued-prompt`);
   const sources = stats.sources.map((p) => path.basename(p)).join(", ");
   return `OpenAI Codex: +${stats.totalRows} row(s) from auxiliary stores`
     + `${parts.length ? ` — ${parts.join(", ")}` : ""}${sources ? ` (${sources})` : ""}.`;
@@ -502,7 +645,11 @@ function buildCodexAuxSqliteNotice(stats) {
 module.exports = {
   CODEX_DEV_DB_REL,
   LOGS_DB_RE,
+  MEMORIES_DB_RE,
+  GOALS_DB_RE,
+  QUEUE_DB_RE,
   listCodexLogsDbFiles,
+  listVersionedDbFiles,
   unescapeRustString,
   extractDebugStringFields,
   parseSubmissionLogBody,

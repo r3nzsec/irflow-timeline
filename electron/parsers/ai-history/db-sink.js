@@ -8,7 +8,7 @@
  */
 
 const { AI_HISTORY_DB_OMIT_FULLTEXT } = require("./schema");
-const { sortAndNumberRows, dedupeAiHistoryRows } = require("./row-utils");
+const { sortAndNumberRows, dedupeAiHistoryRows, aiHistoryDedupeKey } = require("./row-utils");
 
 /** Rows per SQLite insert during streaming (keeps peak heap flat). */
 const AI_HISTORY_DB_BATCH = 5000;
@@ -20,25 +20,42 @@ const MAX_AI_HISTORY_ROWS = 3_000_000;
  * The single-tool path passes keepFullText=true so opening one tool's folder still stores the full
  * message body — the divergence is now an explicit, documented parameter rather than an accident.
  */
-function slimAiHistoryRowForDb(row, keepFullText = false) {
-  if (keepFullText || !AI_HISTORY_DB_OMIT_FULLTEXT || !row) return row;
-  if (!row.FullText) return row;
-  return { ...row, FullText: "" };
+function slimAiHistoryRowForDb(row, keepFullText = false, maxFullTextChars = 0) {
+  if (!row) return row;
+  if (!keepFullText && AI_HISTORY_DB_OMIT_FULLTEXT) {
+    if (!row.FullText) return row;
+    return { ...row, FullText: "" };
+  }
+  if (maxFullTextChars > 0 && row.FullText && row.FullText.length > maxFullTextChars) {
+    const dropped = row.FullText.length - maxFullTextChars;
+    return {
+      ...row,
+      FullText: `${row.FullText.slice(0, maxFullTextChars)}\n…[truncated ${dropped} chars for merged import]`,
+    };
+  }
+  return row;
 }
 
 /**
  * Dedupe (within the supplied set), sort, cap to the remaining row budget, slim, and stamp a
  * contiguous RecordId. Pass a whole SOURCE's rows (not a single flush batch) so the
  * history.jsonl↔session collapse in dedupeAiHistoryRows can actually fire.
- * @param {object} [opts] { keepFullText?: boolean }
+ * @param {object} [opts] { keepFullText?: boolean, maxFullTextChars?: number,
+ *   stats?: { fullTextTruncated: number } } — `stats.fullTextTruncated` is incremented per row
+ *   whose FullText was cut to `maxFullTextChars`, so the import notice can say so.
  */
 function prepareChunkRowsForDb(chunk, recordIdStart, maxRows, totalWritten, opts = {}) {
   const keepFullText = !!opts.keepFullText;
+  const maxFullTextChars = Number(opts.maxFullTextChars) > 0 ? Number(opts.maxFullTextChars) : 0;
   let rows = sortAndNumberRows(dedupeAiHistoryRows(chunk, { crossTool: false }));
   const remaining = maxRows - totalWritten;
   if (rows.length > remaining) rows = rows.slice(0, Math.max(0, remaining));
   for (let i = 0; i < rows.length; i++) {
-    rows[i] = slimAiHistoryRowForDb(rows[i], keepFullText);
+    const before = rows[i].FullText ? rows[i].FullText.length : 0;
+    rows[i] = slimAiHistoryRowForDb(rows[i], keepFullText, maxFullTextChars);
+    if (opts.stats && keepFullText && maxFullTextChars > 0 && before > maxFullTextChars) {
+      opts.stats.fullTextTruncated = (opts.stats.fullTextTruncated || 0) + 1;
+    }
     rows[i].RecordId = String(recordIdStart + i);
   }
   return rows;
@@ -52,22 +69,9 @@ function writeAiHistoryRowsToDb(db, tabId, headers, rows, checkAbort = () => {})
   }
 }
 
-function streamedDedupeSummary(row) {
-  return String(row?.Summary || "")
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120);
-}
-
 function streamedImportDedupeKey(row) {
-  const tool = String(row?.Tool || "").trim();
-  const sessionId = String(row?.SessionId || "").trim();
-  const timestamp = String(row?.Timestamp || "").trim();
-  const role = String(row?.Role || "").trim();
-  const summary = streamedDedupeSummary(row);
-  if (!tool || !sessionId || !timestamp || !role || !summary) return "";
-  return [tool, sessionId, timestamp, role, summary].join("\x1e");
+  if (!row || !String(row.SourceFile || "").trim()) return "";
+  return aiHistoryDedupeKey(row);
 }
 
 function filterAlreadySeenStreamedRows(rows, seenKeys) {

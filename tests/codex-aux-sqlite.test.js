@@ -238,3 +238,47 @@ test("supplementCodexFromAuxSqlite is silent when no auxiliary stores exist", ()
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("memories, goals and queue stores yield thread_memory, thread_goal and queued_prompt rows", () => {
+  const Database = requireSqlite();
+  if (!Database) return;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "irflow-codex-aux-mem-"));
+  const root = path.join(tmp, ".codex");
+  fs.mkdirSync(root, { recursive: true });
+  try {
+    let db = new Database(path.join(root, "memories_1.sqlite"));
+    db.exec(`CREATE TABLE stage1_outputs (thread_id TEXT, source_updated_at INTEGER, raw_memory TEXT, rollout_summary TEXT,
+      rollout_slug TEXT, generated_at INTEGER, usage_count INTEGER, last_usage INTEGER, selected_for_phase2 INTEGER, selected_for_phase2_source_updated_at INTEGER);
+      INSERT INTO stage1_outputs VALUES ('t-mem', 1780295000, 'User prefers rsync over scp.', '# Backend hardening\n\nRollout context: x', 'backend-hardening', 1780295796, 88, 1788000000, 1, NULL);`);
+    db.close();
+    db = new Database(path.join(root, "goals_1.sqlite"));
+    db.exec(`CREATE TABLE thread_goals (thread_id TEXT, goal_id TEXT, objective TEXT, status TEXT, token_budget INTEGER, tokens_used INTEGER, time_used_seconds INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER);
+      INSERT INTO thread_goals VALUES ('t-goal', 'g-1', 'Ship the release', 'active', 100000, 2500, 90, 1788700000000, 1788700100000);`);
+    db.close();
+    db = new Database(path.join(root, "queue_1.sqlite"));
+    db.exec(`CREATE TABLE queued_items (id INTEGER PRIMARY KEY, thread_id TEXT, payload_json TEXT, queue_order INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER);
+      INSERT INTO queued_items VALUES (7, 't-queue', '{"items":[{"type":"text","text":"also run the tests"}]}', 0, 1788700200000, 1788700200000);`);
+    db.close();
+
+    const { rows, stats } = supplementCodexFromAuxSqlite(root, { user: "subject" });
+    const mem = rows.find((r) => r.RecordType === "thread_memory");
+    assert.equal(mem.Timestamp, "2026-06-01 06:36:36");
+    assert.equal(mem.SessionId, "t-mem");
+    assert.match(mem.Summary, /Codex memory of thread — Backend hardening \(injected 88×, last 2026-08-29 10:40:00\)/);
+    assert.match(mem.FullText, /rsync over scp/);
+    assert.match(mem.ToolDescription, /Interpretation, not transcript/);
+    const goal = rows.find((r) => r.RecordType === "thread_goal");
+    assert.equal(goal.Summary, "Codex goal active — Ship the release");
+    assert.equal(goal.MessageId, "g-1");
+    const queued = rows.find((r) => r.RecordType === "queued_prompt");
+    assert.equal(queued.Role, "user");
+    assert.equal(queued.Summary, "also run the tests");
+    assert.equal(queued.Timestamp, "2026-09-06 13:10:00");
+    assert.equal(stats.threadMemoryRows, 1);
+    assert.equal(stats.goalRows, 1);
+    assert.equal(stats.queuedPromptRows, 1);
+    assert.match(buildCodexAuxSqliteNotice(stats), /1 thread-memory, 1 goal, 1 queued-prompt \(memories_1\.sqlite, goals_1\.sqlite, queue_1\.sqlite\)/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

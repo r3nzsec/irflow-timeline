@@ -33,12 +33,17 @@ Windows: `%USERPROFILE%\.cursor\projects\...`
 | `~/.cursor/projects/<slug>/agent-transcripts/**/*.{jsonl,txt}` | Parsed | Instructions, responses, tool-use text, sidechain flags, workspace attribution. |
 | `globalStorage/state.vscdb`, `workspaceStorage/*/state.vscdb`, `~/.cursor/chats/**/store.db` | Parsed when SQLite support is available | Composer/global/workspace chats that are not in the transcript files. |
 | `Cursor/User/globalStorage/conversation-search.db` plus WAL/SHM | Parsed | Local FTS index: title, indexed body, conversation ID, source/scope, archive state, update time. |
+| `hooks.json`, `mcp.json`, `.mcp.json` | Parsed | Hook commands and MCP definitions with secret environment/header/query values excluded. Configuration does not prove execution. |
+| `plans/`, `AGENTS.md`, `.cursorrules`, `rules/`, `skills/`, `plugins/` | Hashed inventory | Local plan and agent context with path, size, mtime, and SHA-256. |
+| `ai-tracking/*.db` | Hashed inventory | Raw index provenance retained without claiming an unqualified database schema. |
 
 Each JSONL line is a `user` or `assistant` message with structured `message.content` blocks (text, tool calls). IRFlow uses embedded `timestamp` / `createdAt` values when present; file birth/mtime spreading is only a fallback for rows without per-message time. Project slugs under `projects/` decode to filesystem paths when possible.
 
 `conversation-search.db` is also accepted as a standalone artifact or through its parent Cursor `User` folder. Each indexed conversation becomes a searchable row with title in **Summary**, indexed body in **FullText**, conversation ID in **SessionId**, and the recorded update time.
 
 SQLite sources are snapshotted with available WAL/SHM companions so recent composer/search rows are not silently missed.
+
+Composer bubbles with `toolFormerData`, tool results, or interpreter results are emitted even when they contain no user-visible text. The native `createdAt`, tool/call/model IDs, raw arguments, command, status, and result are retained. Discovery enumerates all eligible stores and processes up to an explicit 2,048-database safety limit; omitted stores are reported instead of silently stopping at the former 20/16 limits.
 
 ## How to import
 

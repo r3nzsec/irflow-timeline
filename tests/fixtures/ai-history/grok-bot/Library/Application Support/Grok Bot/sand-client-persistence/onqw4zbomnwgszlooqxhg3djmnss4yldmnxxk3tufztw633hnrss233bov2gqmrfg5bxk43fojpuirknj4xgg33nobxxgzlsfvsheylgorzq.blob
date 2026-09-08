@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "value": {
+    "agents": {
+      "agent-1": {
+        "text": "also check the VPN logs",
+        "updatedAt": 1788758070000
+      }
+    }
+  }
+}

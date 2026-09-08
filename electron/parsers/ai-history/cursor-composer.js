@@ -10,6 +10,7 @@ const { TOOL_CURSOR } = require("./schema");
 const { tickFileProgress } = require("./extract-plan");
 const {
   formatTimestampUtc,
+  parseIsoTimestamp,
   makeRow,
   assignLineNumber,
 } = require("./row-utils");
@@ -22,9 +23,11 @@ const {
   findVscdbFilesUnder,
   readWorkspaceJsonMap,
   safeCloseDb,
+  kvTableNames,
 } = require("./vscdb-kv");
 const { formatWorkspaceDisplay } = require("./workspace-utils");
 const { copySqliteFamilyToTemp } = require("./codex-state-sqlite");
+const { pageDiscoveryInventory } = require("./discovery-inventory");
 
 const CURSOR_DIR_NAME = ".cursor";
 const CONVERSATION_SEARCH_DB = "conversation-search.db";
@@ -108,16 +111,56 @@ function bubbleText(bubble) {
   return "";
 }
 
+function parseMaybeJson(value) {
+  if (value == null || value === "") return null;
+  if (typeof value === "object") return value;
+  const text = String(value);
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+function cursorBubbleToolEvidence(bubble) {
+  if (!bubble || typeof bubble !== "object") return null;
+  const former = bubble.toolFormerData && typeof bubble.toolFormerData === "object"
+    ? bubble.toolFormerData : null;
+  const toolResults = Array.isArray(bubble.toolResults) ? bubble.toolResults : [];
+  const interpreterResults = Array.isArray(bubble.interpreterResults) ? bubble.interpreterResults : [];
+  if (!former && !toolResults.length && !interpreterResults.length) return null;
+
+  const args = parseMaybeJson(former?.params ?? former?.rawArgs);
+  const result = parseMaybeJson(former?.result);
+  const command = args && typeof args === "object" && !Array.isArray(args)
+    ? String(args.command ?? args.cmd ?? args.script ?? "") : "";
+  const name = String(former?.name ?? former?.toolName ?? "cursor_tool");
+  const status = String(former?.status ?? former?.additionalData?.status ?? "unknown");
+  return {
+    name,
+    status,
+    command,
+    args,
+    result,
+    toolCallId: String(former?.toolCallId ?? ""),
+    modelCallId: String(former?.modelCallId ?? ""),
+    toolIndex: former?.toolIndex ?? null,
+    numericTool: former?.tool ?? null,
+    additionalData: former?.additionalData ?? null,
+    toolCallBinaryPresent: !!former?.toolCallBinary,
+    toolResults,
+    interpreterResults,
+  };
+}
+
 function parseBubbleRow(bubble, composerId, sourceFile, attribution, workspace, headerIndex) {
-  const role = bubbleRole(bubble.type);
+  const toolEvidence = cursorBubbleToolEvidence(bubble);
+  const role = toolEvidence ? "tool" : bubbleRole(bubble.type);
   if (!role) return null;
   const summary = bubbleText(bubble);
-  if (!summary) return null;
+  if (!summary && !toolEvidence) return null;
 
   let tsMs = null;
   if (bubble.createdAt != null) {
     const n = Number(bubble.createdAt);
     if (Number.isFinite(n)) tsMs = n > 1e12 ? n : n * 1000;
+    else tsMs = parseIsoTimestamp(bubble.createdAt);
   }
   if (tsMs == null && bubble.timestamp != null) {
     const n = Number(bubble.timestamp);
@@ -128,13 +171,38 @@ function parseBubbleRow(bubble, composerId, sourceFile, attribution, workspace, 
   const inputTokens = usage.inputTokens ?? usage.input_tokens ?? "";
   const outputTokens = usage.outputTokens ?? usage.output_tokens ?? "";
 
+  const evidenceBody = toolEvidence ? {
+    text: summary || null,
+    tool: toolEvidence,
+    requestId: bubble.requestId ?? null,
+    serverBubbleId: bubble.serverBubbleId ?? null,
+    attachedFiles: bubble.attachedFileCodeChunksMetadataOnly ?? [],
+    images: bubble.images ?? [],
+    relevantFiles: bubble.relevantFiles ?? [],
+    webReferences: bubble.webReferences ?? [],
+  } : null;
   return cursorComposerRow({
     timestamp: tsMs != null ? formatTimestampUtc(tsMs) : "",
+    timestampBasis: bubble.createdAt != null
+      ? "composer bubble createdAt"
+      : (bubble.timestamp != null ? "composer bubble timestamp" : "unavailable"),
     role,
-    recordType: role,
-    summary,
+    recordType: toolEvidence ? "composer_tool_evidence" : role,
+    summary: toolEvidence
+      ? `[Cursor tool: ${toolEvidence.name}] ${toolEvidence.status}` + (summary ? ` — ${summary}` : "")
+      : summary,
+    fullText: toolEvidence ? JSON.stringify(evidenceBody, null, 2) : summary,
+    toolName: toolEvidence?.name || "",
+    toolCommand: toolEvidence?.command || "",
+    toolInput: toolEvidence?.args == null
+      ? ""
+      : (typeof toolEvidence.args === "string" ? toolEvidence.args : JSON.stringify(toolEvidence.args)),
+    toolDescription: toolEvidence
+      ? `Structured Cursor composer tool evidence; native status=${toolEvidence.status}. Tool result fields are preserved in FullText.`
+      : "",
     sessionId: composerId,
-    messageId: bubble.bubbleId != null ? String(bubble.bubbleId) : "",
+    messageId: bubble.bubbleId != null ? String(bubble.bubbleId) : (toolEvidence?.toolCallId || ""),
+    parentId: toolEvidence?.modelCallId || toolEvidence?.toolCallId || "",
     workspace,
     sourceFile,
     lineNumber: headerIndex != null ? String(headerIndex) : "",
@@ -170,7 +238,7 @@ function extractComposerSessionRows(compData, composerId, db, dbPath, attributio
         workspaceLabel,
         idx,
       );
-      if (row && bubbleText(bubble || {})) rows.push(assignLineNumber(row, idx));
+      if (row) rows.push(assignLineNumber(row, idx));
     }
     return rows;
   }
@@ -291,6 +359,7 @@ function extractConversationSearchRows(db, dbPath, attribution, options = {}) {
     }, null, 2);
     rows.push(cursorComposerRow({
       timestamp: formatTimestampUtc(timestampMs),
+      timestampBasis: timestampMs != null ? "conversation index updated_at" : "unavailable",
       role: "conversation",
       recordType: "conversation_search",
       summary,
@@ -308,7 +377,7 @@ function extractConversationSearchRows(db, dbPath, attribution, options = {}) {
   return rows;
 }
 
-function listCursorComposerDbs(cursorRoot, extraUserDirs = []) {
+function listCursorComposerDbsWithStats(cursorRoot, extraUserDirs = [], options = {}) {
   // Stay inside the supplied root: never fall back to the live ~/.cursor (defaultCursorHome).
   const agentHome = cursorRoot;
 
@@ -319,19 +388,47 @@ function listCursorComposerDbs(cursorRoot, extraUserDirs = []) {
     if (fs.existsSync(globalVscdb)) dbs.add(globalVscdb);
     const conversationSearch = path.join(userDir, "globalStorage", CONVERSATION_SEARCH_DB);
     if (fs.existsSync(conversationSearch)) dbs.add(conversationSearch);
-    for (const p of findVscdbFilesUnder(userDir, { maxDepth: 6, maxFiles: 20 })) {
+    for (const p of findVscdbFilesUnder(userDir, { maxDepth: 8, maxFiles: 100000 })) {
       dbs.add(p);
     }
   }
 
   const chatsDir = path.join(agentHome, "chats");
   if (fs.existsSync(chatsDir)) {
-    for (const p of findVscdbFilesUnder(chatsDir, { maxDepth: 10, maxFiles: 16 })) {
+    for (const p of findVscdbFilesUnder(chatsDir, { maxDepth: 12, maxFiles: 100000 })) {
       dbs.add(p);
     }
   }
 
-  return [...dbs];
+  const eligiblePaths = [...dbs].sort();
+  const maxDatabases = Math.max(1, Math.min(Number(options.maxCursorDatabases) || 2048, 100000));
+  const page = pageDiscoveryInventory(eligiblePaths, {
+    limit: maxDatabases,
+    cursor: options.cursorDatabaseCursor,
+  });
+  const paths = page.paths;
+  let companions = 0;
+  for (const dbPath of eligiblePaths) {
+    for (const suffix of ["-wal", "-shm"]) if (fs.existsSync(`${dbPath}${suffix}`)) companions += 1;
+  }
+  return {
+    paths,
+    eligiblePaths,
+    stats: {
+      eligibleDatabases: eligiblePaths.length,
+      selectedDatabases: paths.length,
+      omittedDatabases: Math.max(0, eligiblePaths.length - paths.length),
+      remainingDatabasePaths: page.remainingPaths,
+      nextCursor: page.nextCursor,
+      inventoryFingerprintSha256: page.fingerprintSha256,
+      companionFiles: companions,
+      maxDatabases,
+    },
+  };
+}
+
+function listCursorComposerDbs(cursorRoot, extraUserDirs = [], options = {}) {
+  return listCursorComposerDbsWithStats(cursorRoot, extraUserDirs, options).paths;
 }
 
 /**
@@ -345,9 +442,14 @@ async function extractCursorComposerStores(cursorRoot, attribution = {}, options
     searchDatabases: 0,
     searchRows: 0,
     failed: 0,
+    unsupported: 0,
+    empty: 0,
+    acquisitions: [],
   };
   // Derive everything from the supplied (possibly forensic) root — do not touch the live host.
-  const dbPaths = listCursorComposerDbs(cursorRoot, options.userDataDirs || []);
+  const discovered = listCursorComposerDbsWithStats(cursorRoot, options.userDataDirs || [], options);
+  const dbPaths = discovered.paths;
+  Object.assign(stats, discovered.stats);
   let fileIndex = 0;
   const { onFileProgress, checkAbort, onExtractedRows } = options;
 
@@ -359,7 +461,15 @@ async function extractCursorComposerStores(cursorRoot, attribution = {}, options
     let snapshot;
     let db;
     try {
-      snapshot = copySqliteFamilyToTemp(dbPath);
+      snapshot = copySqliteFamilyToTemp(dbPath, { checkAbort });
+      stats.acquisitions.push({
+        source: dbPath,
+        method: snapshot.snapshotMethod,
+        acquiredAtMs: snapshot.acquiredAtMs,
+        integrityCheck: snapshot.integrityCheck,
+        originalIdentity: snapshot.originalIdentity,
+        snapshotIdentity: snapshot.snapshotIdentity,
+      });
       db = openVscdbReadOnly(snapshot.dbPath);
       stats.databases += 1;
       if (path.basename(dbPath) === CONVERSATION_SEARCH_DB) {
@@ -371,6 +481,10 @@ async function extractCursorComposerStores(cursorRoot, attribution = {}, options
           if (onExtractedRows) onExtractedRows(chunk);
           else rows.push(...chunk);
         }
+        continue;
+      }
+      if (!kvTableNames(db).length) {
+        stats.unsupported += 1;
         continue;
       }
       const ws = workspaceLabelForDb(dbPath, cursorUserDataDirsForRoot(cursorRoot)[0] || cursorRoot);
@@ -388,8 +502,10 @@ async function extractCursorComposerStores(cursorRoot, attribution = {}, options
       });
       const extracted = chunk._extractedCount ?? chunk.length;
       stats.messageRows += extracted;
+      if (!extracted) stats.empty += 1;
       if (!onExtractedRows) rows.push(...chunk);
     } catch (e) {
+      if (e?.canceled || e?.cancelled) throw e;
       stats.failed += 1;
       dbg("AIHIST", "cursor composer db failed", { dbPath, err: e.message });
     } finally {
@@ -409,14 +525,18 @@ async function extractCursorComposerStores(cursorRoot, attribution = {}, options
 }
 
 function buildCursorComposerImportNotice(stats) {
-  if (!stats || !stats.databases) return "";
+  if (!stats || !stats.eligibleDatabases) return "";
+  const inventory = `${stats.selectedDatabases}/${stats.eligibleDatabases} eligible SQLite store(s) selected`
+    + `${stats.omittedDatabases ? `; ${stats.omittedDatabases} omitted by the explicit database cap` : "; no database omitted"}`
+    + `${stats.failed ? `; ${stats.failed} failed` : ""}`
+    + `${stats.unsupported ? `; ${stats.unsupported} unsupported schema` : ""}`;
   if (stats.messageRows > 0) {
     const search = stats.searchRows > 0
       ? `; ${stats.searchRows} conversation-search row(s) from ${stats.searchDatabases} index`
       : "";
-    return `Cursor local DBs: ${stats.messageRows} row(s) from ${stats.databases} SQLite store(s)${search}.`;
+    return `Cursor local DBs: ${stats.messageRows} row(s) from ${stats.databases} opened SQLite store(s)${search}; ${inventory}.`;
   }
-  return `Cursor local DBs: opened ${stats.databases} store(s) but found no composer or conversation-search rows.`;
+  return `Cursor local DBs: ${inventory}; opened ${stats.databases} store(s) but found no composer or conversation-search rows.`;
 }
 
 module.exports = {
@@ -425,6 +545,8 @@ module.exports = {
   extractBubblesFromDb,
   extractConversationSearchRows,
   listCursorComposerDbs,
+  listCursorComposerDbsWithStats,
+  cursorBubbleToolEvidence,
   deriveUserHomeFromCursorRoot,
   cursorUserDataDirsForRoot,
   isCursorUserDataDir,

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "phase": "applied",
+  "mechanism": "squirrel",
+  "targetVersion": "1.4.2",
+  "fromVersion": "1.4.1",
+  "attempt": 1,
+  "stagedAtMs": 1788700000000
+}

@@ -22,11 +22,6 @@ This page outlines the planned direction for IRFlow Timeline. Priorities may shi
 - **Windows** and **Linux** builds to make IRFlow Timeline available beyond macOS
 - Platform-specific packaging (MSI/EXE for Windows, AppImage/deb for Linux)
 
-### Timeline Diffing
-- Compare two timelines or sessions side by side
-- Highlight events present in one timeline but not the other
-- Useful for comparing baseline vs. compromised host activity
-
 ### Collaborative Sessions
 - Share `.tle` session files with annotations via a link
 - Real-time collaborative analysis for team-based investigations
@@ -55,6 +50,8 @@ This page outlines the planned direction for IRFlow Timeline. Priorities may shi
 
 See the [Changelog](/about/changelog) for detailed release notes on everything shipped so far. Highlights from recent releases:
 
+- **Read-only KAPE VHDX + evidence-bounded AI forensics (v1.0.13)** — opens KAPE VHDX collections directly on macOS; adds versioned AI source coverage, acquisition metrics, SQLite snapshots, Grok Bot and deeper Claude/Codex/Grok Build/Gemini/Cursor context; and hardens Process Inspector and Lateral Movement against false positives
+- **Diff Tabs and triage correctness (v1.0.12)** — compares two imported files as Added / Removed / Changed with field-level before/after; repairs annotation persistence and bulk scope; signs/notarizes/staples the DMG; and supports Hayabusa v2/v3/v4 command shapes
 - **Computer History verified (v1.0.11)** — re-tests the 1.0.10 analysis against a live capture; credential rows are timing anchors (not recovered passwords); recorder-restart gaps stay unassessed; and Grok Build / Claude Desktop stores that outlive a deleted conversation are now collected
 - **ChatGPT Computer History (v1.0.10)** — Skysight interaction telemetry as its own 54-column tab, plus crash-safe session recovery, a global worker budget, Electron 43, and a macOS 12 floor
 - **Large EVTX reliability (v1.0.9)** — replaces whole-file EVTX reads with bounded native 64 KiB chunk parsing, supports logs up to the format's approximately 4 GiB limit, and suppresses duplicate pending imports and repeated failure notifications

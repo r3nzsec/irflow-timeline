@@ -1,0 +1,46 @@
+{
+  "firstStartTime": "2026-01-15T08:00:00.000Z",
+  "numStartups": 12,
+  "installMethod": "global",
+  "hasUsedRemoteControl": true,
+  "userID": "abc123user",
+  "machineID": "deadbeefmachine",
+  "lastReleaseNotesSeen": "2.1.0",
+  "oauthAccount": {
+    "emailAddress": "analyst@example.com",
+    "accountUuid": "11111111-1111-4111-8111-111111111111",
+    "organizationUuid": "22222222-2222-4222-8222-222222222222",
+    "organizationName": "Example Org",
+    "billingType": "subscription",
+    "seatTier": "pro",
+    "displayName": "Analyst",
+    "accessToken": "SHOULD-NEVER-APPEAR",
+    "refreshToken": "SHOULD-NEVER-APPEAR-EITHER"
+  },
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/work"],
+      "env": { "FS_TOKEN": "SHOULD-NEVER-APPEAR" }
+    }
+  },
+  "skillUsage": { "init": 3, "review": 1 },
+  "toolUsage": { "Bash": 10, "Read": 4 },
+  "githubRepoPaths": { "org/repo": "/Users/analyst/repo" },
+  "projects": {
+    "/Users/analyst/case": {
+      "lastSessionId": "sess-current",
+      "lastStartTime": 1700000000000,
+      "lastCost": 1.25,
+      "lastDuration": 5000,
+      "lastLinesAdded": 10,
+      "lastLinesRemoved": 2,
+      "hasTrustDialogAccepted": true,
+      "allowedTools": ["Bash"],
+      "enabledMcpjsonServers": [],
+      "disabledMcpjsonServers": [],
+      "mcpServers": {},
+      "lastVersionBase": "2.1.0"
+    }
+  }
+}

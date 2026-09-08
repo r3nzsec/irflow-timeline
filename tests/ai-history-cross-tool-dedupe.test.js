@@ -1,8 +1,6 @@
 "use strict";
 
-// dedupeCrossToolPrompts collapses the SAME prompt across DIFFERENT tools, but must not silently
-// drop distinct prompts that merely share a 120-char opening (the old key ignored tool + full body
-// and dropped same-tool collisions with no AlsoInTools marker — forensic data loss).
+// Cross-tool correlation annotates matching bodies while preserving every source occurrence.
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
@@ -22,19 +20,16 @@ test("same tool + shared 120-char prefix but different bodies are kept (no silen
   assert.equal(out.length, 2, "distinct same-tool prompts survive");
 });
 
-test("same prompt across different tools merges with AlsoInTools provenance", () => {
+test("same prompt across different tools keeps both source occurrences with correlation provenance", () => {
   const out = dedupeCrossToolPrompts([row("Claude Code", " identical body"), row("Cursor", " identical body")]);
-  assert.equal(out.length, 1, "the cross-tool duplicate collapses");
-  assert.equal(out[0].AlsoInTools, "Claude Code, Cursor");
+  assert.equal(out.length, 2);
+  assert.ok(out.every((item) => item.AlsoInTools === "Claude Code, Cursor"));
 });
 
-test("the same prompt across tools merges on the shared prefix (visible via AlsoInTools)", () => {
-  // Mirrors the real case where one tool captured extra context: cross-tool merge stays
-  // prefix-based and VISIBLE (AlsoInTools is set). The finding only required eliminating the
-  // SILENT same-tool collapse, not the cross-tool dedup feature itself.
+test("shared prefixes with different bodies are not correlated", () => {
   const out = dedupeCrossToolPrompts([row("Claude Code", " alpha"), row("Cursor", " beta")]);
-  assert.equal(out.length, 1);
-  assert.equal(out[0].AlsoInTools, "Claude Code, Cursor");
+  assert.equal(out.length, 2);
+  assert.ok(out.every((item) => item.AlsoInTools === ""));
 });
 
 test("rows without a cross-tool key (short/non-user) pass through untouched", () => {

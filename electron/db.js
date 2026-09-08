@@ -178,12 +178,12 @@ class TimelineDB {
     );
 
     // Detect timestamp columns based on header names.
-    // Exclusion: names containing "elapsed" or "duration" are durations (integers), not timestamps.
+    // Exclude duration fields and timestamp metadata such as basis, precision, offset, and zone.
     const tsColumns = new Set();
     headers.forEach((h) => {
       if (
         /(time|date|timestamp|created|modified|accessed|when|start|end|written)/i.test(h) &&
-        !/elapsed|duration/i.test(h)
+        !/elapsed|duration|basis|precision|offset|timezone/i.test(h)
       ) {
         tsColumns.add(h);
       }

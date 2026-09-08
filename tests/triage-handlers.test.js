@@ -48,7 +48,7 @@ function loadHandlers({ dialogResult, jobs = [], queue = [] } = {}) {
       removeQueuedImports: (pred) => {
         const hits = queue.filter(pred);
         for (const h of hits) removedQueue.push(h);
-        return hits.length;
+        return hits;
       },
       jobManager: {
         cancelWhere: (pred) => {
@@ -94,7 +94,10 @@ test("selecting a folder grants it, and discovery then works", async (t) => {
   assert.equal(manifest.kind, "raw");
   const names = manifest.lanes.lateralMovement.items.map((i) => i.name);
   assert.ok(names.includes("Security"), `expected Security in the LM lane, got ${names.join(", ")}`);
-  assert.ok(!names.includes("Application"), "Application is not a lateral-movement channel");
+  const app = manifest.lanes.lateralMovement.items.find((i) => i.name === "Application");
+  assert.ok(app, "non-LM channels stay listed so they can still be imported");
+  assert.equal(app.defaultChecked, false);
+  assert.equal(app.lmTier, 0);
 });
 
 test("a cancelled dialog grants nothing", async (t) => {
@@ -235,10 +238,185 @@ test("cancelling a batch drops queued items and cancels running jobs", async (t)
   assert.deepEqual(cancelled, ["j1"]);
 });
 
+test("a duplicate pending import is not queued and an empty batch is an error", async (t) => {
+  const { root, logs } = makeTriage(t);
+  const origLoad = Module._load;
+  Module._load = function (request, parent, isMain) {
+    if (request === "electron") {
+      return { dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: [root] }) } };
+    }
+    return origLoad.apply(this, arguments);
+  };
+  delete require.cache[HANDLERS_PATH];
+  let register;
+  try { register = require(HANDLERS_PATH); } finally { Module._load = origLoad; }
+  const channels = {};
+  register((ch, fn) => { channels[ch] = fn; }, () => {}, {
+    _activeWindow: () => null,
+    enqueueImport: () => false,
+    nextTabId: () => "tab_dup",
+    removeQueuedImports: () => [],
+    jobManager: { cancelWhere: () => 0 },
+  });
+  await channels["triage-select-root"](null, {});
+  const res = await channels["triage-import"](null, { dir: root, paths: [path.join(logs, "Security.evtx")] });
+  assert.ok(res.error, "duplicate/empty queue must surface as an error so the toast can settle");
+  assert.equal((res.items || []).length, 0);
+});
+
 test("cancel needs something to identify the batch", async (t) => {
   const { root } = makeTriage(t);
   const { channels } = loadHandlers({ dialogResult: { canceled: false, filePaths: [root] } });
   await channels["triage-select-root"](null, {});
   const res = await channels["triage-cancel-batch"](null, {});
   assert.ok(res.error);
+});
+
+// ── VHDX images ──────────────────────────────────────────────────────────────────────
+//
+// A `.vhdx` picked in the same dialog is granted under its own scope, extracted by a
+// worker into a scratch folder, and only that folder becomes a triage root. The image
+// path is never handed to discovery or import, and nothing is extractable until picked.
+
+const { buildNtfsVolume: _buildVol, wrapMbr: _wrapMbr, wrapRawInVhdx: _wrapVhdx } = require("./helpers/ntfs-image-builder");
+const { extractVhdxCollection: _extract } = require("../electron/parsers/vhdx-triage");
+
+function makeVhdx(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "triage-vhdx-ipc-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const vol = _buildVol({
+    files: [
+      { name: "C", isDir: true },
+      { name: "Windows", isDir: true, parent: 16 },
+      { name: "System32", isDir: true, parent: 17 },
+      { name: "winevt", isDir: true, parent: 18 },
+      { name: "logs", isDir: true, parent: 19 },
+      { name: "Security.evtx", parent: 20, content: Buffer.alloc(250000, 1) },
+      { name: "Application.evtx", parent: 20, content: Buffer.alloc(90000, 2) },
+    ],
+  });
+  const vhdx = path.join(dir, "host.vhdx");
+  fs.writeFileSync(vhdx, _wrapVhdx(_wrapMbr(vol.image)));
+  const notVhdx = path.join(dir, "notes.txt");
+  fs.writeFileSync(notVhdx, "plain text");
+  return { dir, vhdx, notVhdx };
+}
+
+/** A jobManager stub that runs the extractor inline and honours cancel(). */
+function inlineJobManager(log = []) {
+  return {
+    startWorkerJob({ type, worker, workerData }) {
+      log.push({ type, worker, workerData });
+      const jobId = `job_${log.length}`;
+      const promise = type === "triage-discover"
+        ? require("../electron/analyzers/triage-collection").discoverTriageCollection(workerData.root)
+        : _extract(workerData.vhdxPath, workerData.outDir);
+      return { jobId, promise };
+    },
+    cancel(jobId) { log.push({ cancel: jobId }); return { ok: true }; },
+    cancelWhere() { return 0; },
+  };
+}
+
+test("picking a .vhdx returns a vhdx grant, not a triage root", async (t) => {
+  const { vhdx } = makeVhdx(t);
+  const { channels } = loadHandlers({ dialogResult: { canceled: false, filePaths: [vhdx] } });
+  const res = await channels["triage-select-root"]();
+  assert.equal(res.vhdx, fs.realpathSync.native(vhdx));
+  assert.equal(res.dir, undefined);
+  assert.ok(res.size > 0);
+  // The image path is NOT a triage root: discovery on its folder is still refused.
+  const d = await channels["triage-discover"](null, { dir: path.dirname(vhdx) });
+  assert.match(d.error, /not authorized/);
+});
+
+test("picking a file that is not a VHDX is refused", async (t) => {
+  const { notVhdx } = makeVhdx(t);
+  const { channels } = loadHandlers({ dialogResult: { canceled: false, filePaths: [notVhdx] } });
+  const res = await channels["triage-select-root"]();
+  assert.match(res.error, /\.vhdx/);
+});
+
+test("triage-open-vhdx refuses an image that was not picked in the dialog", async (t) => {
+  const { vhdx } = makeVhdx(t);
+  const { channels } = loadHandlers();
+  const res = await channels["triage-open-vhdx"](null, { file: vhdx });
+  assert.match(res.error, /not authorized|not been authorized/i);
+});
+
+test("triage-open-vhdx extracts into a scratch root that discovery and import then accept", async (t) => {
+  const { vhdx } = makeVhdx(t);
+  const jobs = [];
+  const { channels, enqueued } = loadHandlers({ dialogResult: { canceled: false, filePaths: [vhdx] } });
+  // Swap in the inline job manager: loadHandlers builds its own ctx, so re-register with ours.
+  const ctxJobs = inlineJobManager(jobs);
+  const picked = await channels["triage-select-root"]();
+  assert.ok(picked.vhdx);
+
+  // Register a fresh handler set sharing the same authorizer is not exposed; instead, drive
+  // the real module with a ctx that has the inline job manager.
+  const origLoad = Module._load;
+  Module._load = function (request) {
+    if (request === "electron") return { dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: [vhdx] }) } };
+    return origLoad.apply(this, arguments);
+  };
+  delete require.cache[HANDLERS_PATH];
+  let register;
+  try { register = require(HANDLERS_PATH); } finally { Module._load = origLoad; }
+  const ch = {};
+  const queued = [];
+  let n = 0;
+  register((c, fn) => { ch[c] = fn; }, () => {}, {
+    _activeWindow: () => null,
+    enqueueImport: (p, opts) => queued.push({ path: p, ...opts }),
+    nextTabId: () => `tab_${++n}`,
+    jobManager: ctxJobs,
+  });
+
+  const sel = await ch["triage-select-root"]();
+  const opened = await ch["triage-open-vhdx"](null, { file: sel.vhdx });
+  t.after(() => fs.rmSync(opened.dir, { recursive: true, force: true }));
+  assert.equal(opened.error, undefined, JSON.stringify(opened));
+  assert.ok(opened.dir && fs.existsSync(opened.dir));
+  assert.ok(path.basename(opened.dir).startsWith("tle_vhdx_"));
+  assert.equal(opened.extracted.count, 2);
+  assert.deepEqual(opened.extracted.byKind, { evtx: 2 });
+  assert.equal(jobs[0].worker, "vhdx-extract-worker.js");
+  assert.equal(jobs[0].type, "vhdx-extract");
+  assert.equal(jobs[0].workerData.vhdxPath, sel.vhdx);
+
+  // The scratch root behaves like any picked folder.
+  const manifest = await ch["triage-discover"](null, { dir: opened.dir });
+  assert.equal(manifest.error, undefined);
+  const sec = manifest.lanes.lateralMovement.items.find((i) => i.name === "Security");
+  assert.ok(sec, "Security.evtx surfaced in the LM lane");
+  const imp = await ch["triage-import"](null, { dir: opened.dir, paths: [sec.path] });
+  assert.equal(imp.items.length, 1);
+  assert.equal(queued[0].path, fs.realpathSync.native(sec.path));
+
+  // Cancel plumbing: unknown ids are rejected, a live one reaches the job manager.
+  assert.equal((await ch["triage-cancel-vhdx"](null, { jobId: "nope" })).ok, false);
+  assert.equal(enqueued.length, 0, "the first handler set never queued anything");
+});
+
+test("triage-open-vhdx cleans up the scratch folder when extraction fails", async (t) => {
+  const { dir } = makeVhdx(t);
+  const bogus = path.join(dir, "bogus.vhdx");
+  fs.writeFileSync(bogus, Buffer.alloc(8192, 9));
+  const origLoad = Module._load;
+  Module._load = function (request) {
+    if (request === "electron") return { dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: [bogus] }) } };
+    return origLoad.apply(this, arguments);
+  };
+  delete require.cache[HANDLERS_PATH];
+  let register;
+  try { register = require(HANDLERS_PATH); } finally { Module._load = origLoad; }
+  const ch = {};
+  const jobs = [];
+  register((c, fn) => { ch[c] = fn; }, () => {}, { _activeWindow: () => null, enqueueImport: () => {}, nextTabId: () => "t", jobManager: inlineJobManager(jobs) });
+  const sel = await ch["triage-select-root"]();
+  assert.ok(sel.vhdx, "extension alone is enough to be offered to the extractor");
+  const opened = await ch["triage-open-vhdx"](null, { file: sel.vhdx });
+  assert.match(opened.error, /Not a VHDX file/);
+  assert.ok(!fs.existsSync(jobs[0].workerData.outDir), "scratch folder removed");
 });

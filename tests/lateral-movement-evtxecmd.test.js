@@ -526,3 +526,37 @@ test("multi-source surfaces per-tab execution-technique findings (db-gated detec
   const ids = (result.findings || []).map((f) => f.id);
   assert.equal(new Set(ids).size, ids.length, "merged finding ids must be unique");
 });
+
+test("4648 uses the logging Computer as source and TargetServerName as destination", () => {
+  const rows = [
+    rowFor("4648", {
+      rec: "1",
+      computer: "WKS01.corp.local",
+      pd1: "Target: CORP\\admin",
+      pd3: "TargetServerName: DC01",
+      remoteHost: "- (10.1.1.10)",
+    }),
+  ];
+  const { meta, ctx } = makeStub(EVTXECMD_HEADERS, rows);
+  const result = getLateralMovement(meta, { excludeServiceAccounts: false, excludeLocalLogons: true }, ctx);
+  assert.equal(result.error, null, result.error);
+  const edge = (result.edges || []).find((e) => e.source === "WKS01" || e.source === "WKS01.CORP.LOCAL" || e.source.startsWith("WKS01"));
+  assert.ok(edge, `expected an edge from WKS01, got ${JSON.stringify((result.edges || []).map((e) => `${e.source}->${e.target}`))}`);
+  assert.match(edge.target, /DC01/);
+  assert.ok(!/10\.1\.1\.10/.test(edge.source), "4648 IpAddress is the destination, not the source");
+});
+
+test("console logons with short WorkstationName vs FQDN Computer are treated as local", () => {
+  const rows = [
+    rowFor("4624", {
+      rec: "1",
+      computer: "WKS01.corp.local",
+      pd1: "Target: CORP\\jsmith",
+      pd2: "LogonType 2",
+      remoteHost: "WKS01 (127.0.0.1)",
+    }),
+  ];
+  const { meta, ctx } = makeStub(EVTXECMD_HEADERS, rows);
+  const result = getLateralMovement(meta, { excludeServiceAccounts: false, excludeLocalLogons: true }, ctx);
+  assert.equal((result.edges || []).length, 0, `console logon must not create a lateral edge, got ${JSON.stringify(result.edges)}`);
+});

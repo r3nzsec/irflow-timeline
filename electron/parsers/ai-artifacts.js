@@ -12,7 +12,8 @@ const {
   COPILOT_PRODUCT_NAMES,
   isCopilotWorkspaceStorageRoot,
 } = require("./ai-history/artifact-paths");
-const { isChatgptAppDir } = require("./ai-history/chatgpt");
+const { isChatgptAppDir, isCodexDesktopAppDir } = require("./ai-history/chatgpt");
+const { isClaudeJsonStateFile, claudeJsonFileKind } = require("./ai-history/claude-code-state");
 const { isGeminiCliRoot, GEMINI_DIR_NAME } = require("./ai-history/gemini-cli");
 const { isCodexDir, countRolloutFiles, CODEX_DIR_NAME } = require("./ai-history/codex");
 const {
@@ -20,6 +21,13 @@ const {
   countGrokDataFiles,
   GROK_DIR_NAME,
 } = require("./ai-history/grok-build");
+const {
+  isGrokBotDaemonRoot,
+  isGrokBotAppRoot,
+  countGrokBotExtractFiles,
+  GROKBOT_DIR_NAME,
+  GROKBOT_APP_DIR_NAME,
+} = require("./ai-history/grok-bot");
 const {
   isCursorHome,
   isCursorUserDataDir,
@@ -47,6 +55,7 @@ const KIND_LABELS = {
   aiClaude: "Claude Code (AI query history)",
   aiCodex: "OpenAI Codex (AI query history)",
   aiGrokBuild: "Grok Build (AI query history)",
+  aiGrokBot: "Grok Bot (AI query history)",
   aiChatgpt: "ChatGPT Desktop (AI query history)",
   aiGemini: "Gemini CLI (AI query history)",
   aiCursor: "Cursor (AI query history)",
@@ -91,6 +100,7 @@ function dirHasDataFiles(dirPath, maxDepth = 5) {
 }
 
 function classifyChatgptDir(full) {
+  if (isCodexDesktopAppDir(full)) return true;
   const dirName = path.basename(full);
   const lower = full.toLowerCase();
 
@@ -144,6 +154,7 @@ function scanAiArtifacts(dir, opts = {}) {
   const claudeCode = [];
   const codex = [];
   const grokBuild = [];
+  const grokBot = [];
   const chatgpt = [];
   const geminiCli = [];
   const cursor = [];
@@ -153,6 +164,7 @@ function scanAiArtifacts(dir, opts = {}) {
   const seenClaude = new Set();
   const seenCodex = new Set();
   const seenGrokBuild = new Set();
+  const seenGrokBot = new Set();
   const seenChatgpt = new Set();
   const seenGemini = new Set();
   const seenCursor = new Set();
@@ -170,6 +182,20 @@ function scanAiArtifacts(dir, opts = {}) {
     try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { continue; }
 
     for (const e of entries) {
+      if (e.isFile() && isClaudeJsonStateFile(path.join(d, e.name))) {
+        const full = path.join(d, e.name);
+        scanned++;
+        // A `.claude.json.backup*` next to a live `.claude.json` is already covered by the
+        // live file's sibling pass (project_removed / claude_json_backup rows); listing it as
+        // its own root would extract every project twice and burn a maxPerKind slot.
+        const shadowedBackup = claudeJsonFileKind(full) === "backup"
+          && entries.some((sib) => sib.isFile() && sib.name === ".claude.json");
+        if (!shadowedBackup && !seenClaude.has(full) && claudeCode.length < maxPerKind) {
+          seenClaude.add(full);
+          claudeCode.push({ path: full, username: extractUsername(full) });
+        }
+        continue;
+      }
       if (!e.isDirectory()) continue;
       const full = path.join(d, e.name);
       scanned++;
@@ -205,6 +231,18 @@ function scanAiArtifacts(dir, opts = {}) {
             path: full,
             username: extractUsername(full),
             sessionCount: countGrokDataFiles(full),
+          });
+        }
+      }
+
+      if ((e.name === GROKBOT_DIR_NAME && isGrokBotDaemonRoot(full))
+        || (e.name === GROKBOT_APP_DIR_NAME && isGrokBotAppRoot(full))) {
+        if (!seenGrokBot.has(full) && grokBot.length < maxPerKind) {
+          seenGrokBot.add(full);
+          grokBot.push({
+            path: full,
+            username: extractUsername(full),
+            sessionCount: countGrokBotExtractFiles(full),
           });
         }
       }
@@ -337,6 +375,7 @@ function scanAiArtifacts(dir, opts = {}) {
     claudeCode,
     codex,
     grokBuild,
+    grokBot,
     chatgpt,
     geminiCli,
     cursor,

@@ -1,0 +1,4 @@
+User: Investigate the suspicious launch agent
+and preserve its source metadata.
+
+Assistant: I found a launch agent and captured the path.

@@ -65,6 +65,17 @@ function getProcessTree(meta, options = {}, ctx) {
     tgtPid:           detect([/^TargetProcessId$/i, /^Target_?Process_?Id$/i]),
     tgtGuid:          detect([/^TargetProcessGuid$/i, /^TargetProcessGUID$/i, /^Target_?Process_?Guid$/i]),
     grantedAccess:    detect([/^GrantedAccess$/i, /^Granted_?Access$/i]),
+    // Adjacent-telemetry payload columns. Sysmon EID 7 and 11 each carry TWO paths:
+    // the host process (Image) and the artifact (ImageLoaded / TargetFilename). The
+    // enrichment below used to fall back to Image when it could not find the artifact,
+    // which meant "unsigned DLL from a writable path" and "PE written to a writable
+    // path" were really being evaluated against the process's OWN binary — so any
+    // process running from %APPDATA% scored high or critical on both.
+    imageLoaded:      detect([/^ImageLoaded$/i, /^Image_?Loaded$/i]),
+    targetFilename:   detect([/^TargetFilename$/i, /^Target_?File_?Name$/i]),
+    destIp:           detect([/^DestinationIp$/i, /^Destination_?IP$/i, /^DestIp$/i]),
+    destPort:         detect([/^DestinationPort$/i, /^Destination_?Port$/i]),
+    queryName:        detect([/^QueryName$/i, /^Query_?Name$/i, /^DnsQuery$/i]),
     // EID 4673 / 4674 (Security, Sensitive Privilege Use / Privileged Object Ops).
     // Present in raw Windows Security exports; Hayabusa/EvtxECmd embed it in
     // Details/PayloadData blobs and the block below extracts it at query time.
@@ -99,13 +110,55 @@ function getProcessTree(meta, options = {}, ctx) {
     columns.elevation = extraCol || detailsCol || columns.elevation;
     columns.integrity = extraCol || detailsCol || columns.integrity;
   }
+  // --- Row-level column aliases (raw EVTX / plain CSV) ------------------------
+  // detect() picks ONE column per role for the whole tab, but the correct column
+  // depends on the EVENT, not the dataset: a Security 4688 puts the created process
+  // in NewProcessId and its creator in ProcessId, while a 4689 / 4673 / 4674 puts
+  // the subject process in ProcessId, and Sysmon uses ProcessId for the subject on
+  // every event. One tab-wide choice therefore has to be wrong for one of them —
+  // on a mixed Sysmon+Security tab the 4688 nodes took the CREATOR's pid (so they
+  // collided and chained to each other), and on a Security-only tab the 4689
+  // lifetime and 4673/4674 privilege correlations never matched anything.
+  //
+  // These are emitted IN ADDITION to the role columns (duplicated column refs are
+  // fine in SQL) so each row can pick the right one at parse time.
+  const ROW_LEVEL_ALIAS_PATTERNS = {
+    _subjectPid:  /^ProcessId$/i,
+    _newPid:      /^NewProcessId$/i,
+    _creatorPid:  /^CreatorProcessId$/i,
+    _parentPid:   /^ParentProcessId$/i,
+    _newImage:    /^NewProcessName$/i,
+    _procName:    /^ProcessName$/i,
+    _parentName:  /^ParentProcessName$/i,
+  };
+  const rowLevelCols = {};
+  if (!isEvtxECmdPT && !isHayabusaPT && !isChainsawPT) {
+    for (const [alias, pat] of Object.entries(ROW_LEVEL_ALIAS_PATTERNS)) {
+      const c = detect([pat]);
+      if (c && meta.colMap[c]) rowLevelCols[alias] = meta.colMap[c];
+    }
+  }
+  const appendRowLevelAliases = (parts) => {
+    for (const [alias, safeCol] of Object.entries(rowLevelCols)) parts.push(`${safeCol} as [${alias}]`);
+    return parts;
+  };
+
+  // Which Security event a row is, for row-level resolution. Matched loosely because
+  // exports render the id as "4688", "EventID 4688" or "4688 - A new process...".
+  const _isEid = (value, eid) => new RegExp(`(^|\\D)${eid}(\\D|$)`).test(String(value || "").trim());
+
   columns._isEvtxECmd = isEvtxECmdPT;
   columns._isHayabusa = isHayabusaPT;
   columns._isChainsaw = isChainsawPT;
 
   const useGuid = !!(columns.guid && columns.parentGuid) || isEvtxECmdPT;
   if (!columns.pid && !columns.guid && !isEvtxECmdPT && !isHayabusaPT && !isChainsawPT) return { processes: [], stats: {}, columns, error: "Cannot detect ProcessId or ProcessGuid column" };
-  if (!columns.ppid && !columns.parentGuid && !isEvtxECmdPT && !isHayabusaPT && !isChainsawPT) return { processes: [], stats: {}, columns, error: "Cannot detect ParentProcessId or ParentProcessGuid column" };
+  // A Security-only export has NO ParentProcessId column at all — the parent of a
+  // 4688 is its ProcessId field. Without this the analyzer refused the entire tab
+  // with "Cannot detect ParentProcessId", so Security-only data could not be
+  // analysed even though the parent link is fully recoverable.
+  const hasRowLevelParent = !!(rowLevelCols._creatorPid || (rowLevelCols._newPid && rowLevelCols._subjectPid));
+  if (!columns.ppid && !columns.parentGuid && !hasRowLevelParent && !isEvtxECmdPT && !isHayabusaPT && !isChainsawPT) return { processes: [], stats: {}, columns, error: "Cannot detect ParentProcessId or ParentProcessGuid column" };
 
   const db = meta.db;
   const params = [];
@@ -169,6 +222,21 @@ function getProcessTree(meta, options = {}, ctx) {
     }
   }
 
+  appendRowLevelAliases(selectParts);
+
+  // EvtxECmd spreads a Security 4688 across PayloadData2-6 (NewProcessId, ProcessName,
+  // CreatorProcessId), so PD1/PD5 — which are mapped for the Sysmon EID 1 shape — are
+  // not enough on their own. Fetch the rest as fallback fields for the parser below.
+  if (isEvtxECmdPT) {
+    for (const [alias, pat] of [["_pd2", /^PayloadData2$/i], ["_pd3", /^PayloadData3$/i], ["_pd4", /^PayloadData4$/i], ["_pd6", /^PayloadData6$/i]]) {
+      const c = detect([pat]);
+      if (c && meta.colMap[c] && !selectedCols.has(c)) {
+        selectParts.push(`${meta.colMap[c]} as [${alias}]`);
+        selectedCols.add(c);
+      }
+    }
+  }
+
   // Use sort_datetime for chronological order — raw lexical sort on a TEXT column
   // mis-orders any non-ISO format (US dates, locale strings, Excel serials).
   const orderCol = columns.ts ? meta.colMap[columns.ts] : null;
@@ -209,16 +277,50 @@ function getProcessTree(meta, options = {}, ctx) {
         // PayloadData1: "ProcessID: 5668, ProcessGUID: 7bf9956e-0a95-6931-a700-000000000700"
         // row.pid holds PayloadData1 (may also be aliased as guid due to same column)
         const pd1 = row.pid || row.guid || "";
-        const pidMatch = pd1.match(/ProcessID:\s*(\d+)/i);
-        const guidMatch = pd1.match(/ProcessGUID:\s*([0-9a-f-]+)/i);
-        if (pidMatch) pid = pidMatch[1];
-        if (guidMatch) guid = guidMatch[1];
-
         // PayloadData5: "ParentProcessID: 4408, ParentProcessGUID: 7bf9956e-..."
         const pd5 = row.ppid || row.parentGuid || "";
-        const ppidMatch = pd5.match(/ParentProcessID:\s*(\d+)/i);
+        const pdBlob = [pd1, row._pd2, row._pd3, row._pd4, pd5, row._pd6].filter(Boolean).join(" | ");
+        const evtId = String(row.eventId || "").trim();
+        const isSec4688 = /(^|\D)4688(\D|$)/.test(evtId);
+
+        // Security 4688 writes its PIDs in HEX ("NewProcessId: 0x1a2c"). The old
+        // `(\d+)` regex matched the "0" of "0x1a2c" — every 4688 process got PID 0,
+        // so they all collapsed onto one node and chained to each other. Accept both
+        // bases and normalise to decimal, which is what the rest of the tree uses.
+        const _pdNum = (blob, ...keys) => {
+          for (const key of keys) {
+            const m = String(blob || "").match(new RegExp(`(?:^|[^A-Za-z])${key}\\s*:\\s*(0x[0-9a-fA-F]+|\\d+)`, "i"));
+            if (!m) continue;
+            const n = /^0x/i.test(m[1]) ? parseInt(m[1], 16) : parseInt(m[1], 10);
+            if (Number.isFinite(n) && n > 0) return String(n);
+          }
+          return "";
+        };
+        const _pdText = (blob, ...keys) => {
+          for (const key of keys) {
+            const m = String(blob || "").match(new RegExp(`(?:^|[^A-Za-z])${key}\\s*:\\s*([^,|]+)`, "i"));
+            if (m) {
+              const v = m[1].trim();
+              if (v && v !== "-") return v;
+            }
+          }
+          return "";
+        };
+
+        if (isSec4688) {
+          // 4688 semantics: NewProcessId is the process that was created; ProcessId /
+          // CreatorProcessId is its parent. Reading a bare "ProcessID:" here would have
+          // used the CREATOR's pid as the child's.
+          pid = _pdNum(pdBlob, "NewProcessId");
+          ppid = _pdNum(pdBlob, "CreatorProcessId", "ParentProcessId", "ProcessId");
+        } else {
+          pid = _pdNum(pd1, "ProcessID") || _pdNum(pdBlob, "ProcessID", "NewProcessId");
+          ppid = _pdNum(pd5, "ParentProcessID") || _pdNum(pdBlob, "ParentProcessID", "CreatorProcessId");
+        }
+
+        const guidMatch = pd1.match(/ProcessGUID:\s*([0-9a-f-]+)/i);
         const pguidMatch = pd5.match(/ParentProcessGUID:\s*([0-9a-f-]+)/i);
-        if (ppidMatch) ppid = ppidMatch[1];
+        if (guidMatch) guid = guidMatch[1];
         if (pguidMatch) parentGuid = pguidMatch[1];
 
         // ExecutableInfo: full command line — may be aliased as image or cmdLine depending on dedup order
@@ -229,6 +331,11 @@ function getProcessTree(meta, options = {}, ctx) {
           const qm = execInfo.match(/^"([^"]+)"/);
           imagePath = qm ? qm[1] : execInfo.split(/\s/)[0];
         }
+        // With command-line auditing off, ExecutableInfo is empty and a 4688 still
+        // names the binary in NewProcessName. Without this every such row became an
+        // "unknown" node with no image, so no rule could ever match it.
+        if (!imagePath) imagePath = _pdText(pdBlob, "NewProcessName", "ProcessName", "Image");
+        if (!parentImageRaw) parentImageRaw = _pdText(pdBlob, "ParentProcessName", "CreatorProcessName", "ParentImage");
       } else if (isHayabusaPT) {
         const compact = parseCompactKeyValues(row.details, row.extra);
         const eventId = String(row.eventId || "").trim();
@@ -277,6 +384,26 @@ function getProcessTree(meta, options = {}, ctx) {
         resolvedElevation = cleanWrappedField(row.elevation);
         resolvedIntegrity = cleanWrappedField(row.integrity);
         if (!pid && !guid) pid = `chainsaw-${row._rowid}`;
+      } else {
+        // Raw EVTX / plain CSV: resolve the PID and image roles from THIS row's
+        // event id rather than the tab-wide column choice (see ROW_LEVEL_ALIAS_PATTERNS).
+        const evtId = row.eventId;
+        if (_isEid(evtId, "4688")) {
+          // Only a row that actually carries NewProcessId has Security-4688
+          // semantics. A Sysmon-shaped or synthetic CSV can be labelled 4688 while
+          // still using ProcessId for the subject, and remapping that would invert
+          // its parent link.
+          if (row._newPid) {
+            pid = row._newPid;                                                 // the created process
+            const creator = row._creatorPid || row._subjectPid;                // ProcessId = its creator
+            if (creator) ppid = creator;
+          }
+          if (!imagePath) imagePath = row._newImage || "";
+          if (!parentImageRaw) parentImageRaw = row._parentName || "";
+        } else if (_isEid(evtId, "4689") || _isEid(evtId, "4673") || _isEid(evtId, "4674")) {
+          if (row._subjectPid) pid = row._subjectPid;                          // the subject process
+          if (!imagePath) imagePath = row._procName || "";
+        }
       }
 
       // Hex PID conversion (Security 4688 format: "0x1a2c")
@@ -329,6 +456,9 @@ function getProcessTree(meta, options = {}, ctx) {
         // Null means no EID 10 events correlated (either the dataset lacks them or
         // this target wasn't accessed). Never guaranteed to be present.
         injectionIndicators: null,
+        // Credential access — populated by the EID 10 pass below when THIS process
+        // opened a handle to lsass. Null when no such event correlated.
+        credentialAccess: null,
         // Privilege use — populated by EID 4673 / 4674 matching below. Null when
         // the dataset carries no sensitive-privilege audit events for this process.
         privilegeUse: null,
@@ -361,7 +491,24 @@ function getProcessTree(meta, options = {}, ctx) {
     const _sessionBucket = (node) => node.sessionScope || "__nosession__";
     const _hostPidKey = (node, pid) => `${_hostBucket(node.normHost)}|${pid}`;
     const _scopedPidKey = (node, pid, scope = _sessionBucket(node)) => `${_hostBucket(node.normHost)}|${scope}|${pid}`;
-    const PID_RELINK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+    // A PID is a 32-bit value that Windows recycles aggressively; a week-wide window
+    // means the "parent" is frequently a completely unrelated process that merely
+    // held the number days earlier. Narrowed to 24 hours, and further cut at a boot
+    // boundary below (PIDs restart from scratch at boot, so a pre-boot parent is
+    // never the real one).
+    const PID_RELINK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+    // Processes that legitimately create children in a DIFFERENT logon/session scope.
+    // Every one of these is an OS boundary crossing, not PID reuse:
+    //   services  -> a service starts under its own service logon
+    //   winlogon  -> userinit/dwm start the interactive session being created
+    //   userinit  -> explorer, same handover
+    //   svchost   -> Task Scheduler and DCOM launch children as other principals
+    //   lsass/csrss/smss/wininit — session and subsystem setup
+    //   consent/runas/UAC — the whole point is to change token and logon id
+    //   taskeng/taskhostw/schedule — a scheduled task runs as its configured user
+    //   wmiprvse/wsmprovhost — remote execution impersonates the caller
+    const _RX_SCOPE_BOUNDARY_PARENT = /^(services|winlogon|userinit|svchost|lsass|csrss|smss|wininit|consent|runas|taskeng|taskhostw|schtasks|wmiprvse|wsmprovhost|dllhost|logonui|sihost|ctfmon)(\.exe)?$/i;
     const pidToNodes = new Map();
     const hostPidToNodes = new Map();
     for (const node of processes) {
@@ -413,12 +560,56 @@ function getProcessTree(meta, options = {}, ctx) {
       node.linkReason = link.reason;
       node.linkWarnings = link.warnings || [];
     };
+    // Boot boundary. PIDs restart from scratch at every boot, so a candidate that
+    // was created before the machine last booted can never be the parent of a
+    // process created after it — yet the fallback join happily reached across.
+    // Sysmon 4 (service state change / start), Security 4608 (Windows starting) and
+    // System 6005/6009 all mark the start of a session of the machine's life.
+    const _bootMsByHost = (() => {
+      const out = new Map();
+      if (!columns.eventId || !meta.colMap[columns.eventId]) return out;
+      try {
+        const safeEid = meta.colMap[columns.eventId];
+        const safeTs = columns.ts ? meta.colMap[columns.ts] : null;
+        const safeHost = columns.hostname ? meta.colMap[columns.hostname] : null;
+        if (!safeTs) return out;
+        const bootEids = ["4608", "6005", "6009", "12"];
+        const rowsBoot = db.prepare(
+          `SELECT ${safeTs} as ts${safeHost ? `, ${safeHost} as host` : ""} FROM data WHERE ${safeEid} IN (${bootEids.map(() => "?").join(",")}) LIMIT 5000`,
+        ).all(...bootEids);
+        for (const r of rowsBoot) {
+          const ms = normalizeTimestamp(cleanWrappedField(r.ts || ""));
+          if (!Number.isFinite(ms)) continue;
+          const h = normalizeHost(r.host || "") || "__nohost__";
+          if (!out.has(h)) out.set(h, []);
+          out.get(h).push(ms);
+        }
+        for (const arr of out.values()) arr.sort((a, b) => a - b);
+      } catch (_) { /* boot events are optional */ }
+      return out;
+    })();
+    const _bootBetween = (parentMs, childMs, host) => {
+      if (!Number.isFinite(parentMs) || !Number.isFinite(childMs)) return false;
+      const arr = _bootMsByHost.get(host || "__nohost__");
+      if (!arr || arr.length === 0) return false;
+      for (const b of arr) {
+        if (b > parentMs && b <= childMs) return true;
+        if (b > childMs) break;
+      }
+      return false;
+    };
+
     const choosePidParent = (node, candidates) => {
       if (!candidates || candidates.length === 0) return null;
       const childTs = node.tsMs;
       for (let i = candidates.length - 1; i >= 0; i--) {
         const cand = candidates[i];
         if (cand.key === node.key) continue;
+        // A candidate that had already exited cannot be the parent. Terminate
+        // matching now runs before this loop, so terminateTsMs is populated.
+        if (Number.isFinite(cand.terminateTsMs) && Number.isFinite(childTs) && cand.terminateTsMs < childTs) continue;
+        // Nor can one from before the machine last booted — the PID was reissued.
+        if (_bootBetween(cand.tsMs, childTs, node.normHost)) continue;
         // Parent must precede child in time when both timestamps are known.
         // Also cap fallback joins to a sane investigative window to reduce PID
         // recycle errors in multi-day Security 4688-only datasets.
@@ -435,6 +626,126 @@ function getProcessTree(meta, options = {}, ctx) {
       }
       return null;
     };
+    // --- Terminate event matching (runs BEFORE the PID relink) ---
+    // Ordering matters: the relink below picks the latest process that held the
+    // parent PID before the child started, and a process that had ALREADY EXITED
+    // cannot be that parent. Terminate matching used to run after the relink, so
+    // that information did not exist yet and PID-reuse mislinks were accepted.
+    // --- Terminate event matching ---
+    // Query Sysmon EID 5 and Security EID 4689 from the same table, match back
+    // to create events by GUID (preferred) or PID+host (fallback), compute duration.
+    const terminateEids = ["5", "4689"];
+    let terminateMatched = 0;
+    if (columns.eventId && processes.length > 0) {
+      try {
+        const safeEid = meta.colMap[columns.eventId];
+        if (safeEid) {
+          // Fast COUNT probe — skip entirely if no terminate events exist
+          const termCountSql = `SELECT COUNT(*) as n FROM data WHERE ${safeEid} IN (${terminateEids.map(() => "?").join(",")}) LIMIT 1`;
+          const termCount = db.prepare(termCountSql).get(...terminateEids);
+          if (termCount && termCount.n > 0) {
+            // Build the same SELECT parts for terminate events
+            const termSelectParts = ["data.rowid as _rowid"];
+            const termSelectedCols = new Set();
+            for (const [key, colName] of Object.entries(columns)) {
+              if (key.startsWith("_")) continue;
+              if (colName && meta.colMap[colName] && !termSelectedCols.has(colName)) {
+                termSelectParts.push(`${meta.colMap[colName]} as [${key}]`);
+                termSelectedCols.add(colName);
+              }
+            }
+            appendRowLevelAliases(termSelectParts);
+            const orderCol = columns.ts ? meta.colMap[columns.ts] : null;
+            const termOrderClause = orderCol ? `ORDER BY sort_datetime(${orderCol}) ASC` : "ORDER BY data.rowid ASC";
+            const termSql = `SELECT ${termSelectParts.join(", ")} FROM data WHERE ${safeEid} IN (${terminateEids.map(() => "?").join(",")}) ${termOrderClause} LIMIT ${maxRows}`;
+            const termRows = db.prepare(termSql).all(...terminateEids);
+
+            // Build lookup maps from create events for matching
+            const guidToNode = new Map();
+            const pidHostToNodes = new Map();
+            for (const node of processes) {
+              if (node.guid) guidToNode.set(node.guid, node);
+              const pidHostKey = `${node.pid}|${node.normHost || "__nohost__"}`;
+              if (!pidHostToNodes.has(pidHostKey)) pidHostToNodes.set(pidHostKey, []);
+              pidHostToNodes.get(pidHostKey).push(node);
+            }
+
+            for (const tRow of termRows) {
+              let tPid = tRow.pid || "";
+              let tGuid = tRow.guid || "";
+              let tExitCode = "";
+              let tTs = cleanWrappedField(tRow.ts || "");
+              const tHost = normalizeHost(tRow.hostname || "");
+
+              // Parse format-specific fields
+              if (isEvtxECmdPT) {
+                const pd1 = tRow.pid || tRow.guid || "";
+                const pidM = pd1.match(/ProcessID:\s*(\d+)/i);
+                const guidM = pd1.match(/ProcessGUID:\s*([0-9a-f-]+)/i);
+                if (pidM) tPid = pidM[1];
+                if (guidM) tGuid = guidM[1];
+                // EvtxECmd exit code may be in payload fields
+                const pd = [tRow.pid, tRow.ppid, tRow.cmdLine, tRow.image].join(" ");
+                const ecM = pd.match(/(?:ExitStatus|Status|ProcessExitCode):\s*(\S+)/i);
+                if (ecM) tExitCode = ecM[1];
+              } else if (isHayabusaPT) {
+                const compact = parseCompactKeyValues(tRow.details, tRow.extra);
+                tPid = compactGetInt(compact, "PID", "ProcessId");
+                tGuid = compactGet(compact, "PGUID", "ProcessGuid", "ProcessGUID");
+                tExitCode = compactGet(compact, "ExitStatus", "Status", "ProcessExitCode");
+              } else {
+                // Standard Sysmon / CSV format. A Security 4689 names the exiting
+                // process ProcessId — which is NOT necessarily what `columns.pid`
+                // resolved to on a tab that also holds 4688s, so lifetime matching
+                // silently found nothing there.
+                if (_isEid(tRow.eventId, "4689") && tRow._subjectPid) tPid = tRow._subjectPid;
+                if (typeof tPid === "string" && /^0x[0-9a-f]+$/i.test(tPid.trim())) tPid = String(parseInt(tPid.trim(), 16));
+                tExitCode = cleanWrappedField(tRow.elevation || ""); // Security 4689: Status field often mapped to elevation slot
+              }
+
+              const normTGuid = normalizeGuid(tGuid);
+              const normTPid = normalizePid(tPid);
+              const tTsMs = normalizeTimestamp(tTs);
+
+              // Match by GUID (preferred — 1:1, no ambiguity)
+              let matched = null;
+              if (normTGuid && guidToNode.has(normTGuid)) {
+                matched = guidToNode.get(normTGuid);
+              }
+              // Fallback: PID + host, pick the latest create event that precedes this terminate
+              if (!matched && normTPid && Number.isFinite(tTsMs)) {
+                const pidHostKey = `${normTPid}|${tHost || "__nohost__"}`;
+                const candidates = pidHostToNodes.get(pidHostKey);
+                if (candidates) {
+                  let best = null;
+                  for (const c of candidates) {
+                    if (Number.isFinite(c.tsMs) && c.tsMs <= tTsMs && (!Number.isFinite(c.durationMs))) {
+                      if (!best || c.tsMs > best.tsMs) best = c;
+                    }
+                  }
+                  matched = best;
+                }
+              }
+
+              if (matched && Number.isFinite(tTsMs)) {
+                matched.terminateTs = tTs;
+                matched.terminateTsMs = tTsMs;
+                if (Number.isFinite(matched.tsMs)) {
+                  matched.durationMs = tTsMs - matched.tsMs;
+                  if (matched.durationMs < 0) matched.durationMs = NaN; // clock skew guard
+                }
+                if (tExitCode) matched.exitCode = tExitCode;
+                terminateMatched++;
+              }
+            }
+          }
+        }
+      } catch (_termErr) {
+        // Non-fatal — lifetime analysis is best-effort. Tree building must not fail
+        // because terminate events are malformed or the query errors.
+      }
+    }
+
     for (const node of processes) {
       const needsPidRelink = !useGuid || !node.parentGuid;
       if (!needsPidRelink || !node.ppid) continue;
@@ -447,12 +758,36 @@ function getProcessTree(meta, options = {}, ctx) {
         linkSource = node.logonId ? "pid-logon" : "pid-session";
         if (!candidates || candidates.length === 0) {
           // Some parent rows lack LogonId/SessionId even when child rows have it.
-          // Allow unknown-session parents, but never parents from a different
-          // known session/logon scope.
           candidates = (hostPidToNodes.get(_hostPidKey(node, node.ppid)) || [])
             .filter((cand) => _sessionBucket(cand) === "__nosession__");
           linkSource = "pid-host";
           sourceWarnings.push("parent_session_unknown");
+        }
+        if (!candidates || candidates.length === 0) {
+          // Cross-scope fallback (audit P4). Refusing every parent from a DIFFERENT
+          // known logon/session used to be absolute, which fractured the tree at
+          // exactly the handovers that define a Windows session: services -> a
+          // service running as its own principal, winlogon -> userinit, UAC
+          // elevation, runas, and every scheduled task. Those branches simply
+          // disappeared, and the analyst saw orphans instead of a chain.
+          //
+          // The link is now made, but marked: low confidence, an explicit warning,
+          // and (outside the known boundary parents) only when the candidate is the
+          // sole PID holder, so this cannot resurrect ambiguous PID-reuse guesses.
+          const crossScope = (hostPidToNodes.get(_hostPidKey(node, node.ppid)) || [])
+            .filter((cand) => _sessionBucket(cand) !== "__nosession__" && _sessionBucket(cand) !== scope);
+          if (crossScope.length > 0) {
+            const boundary = crossScope.filter((cand) => _RX_SCOPE_BOUNDARY_PARENT.test(cand.processName || ""));
+            if (boundary.length > 0) {
+              candidates = boundary;
+              linkSource = "pid-host";
+              sourceWarnings.push("parent_scope_boundary");
+            } else if (crossScope.length === 1) {
+              candidates = crossScope;
+              linkSource = "pid-host";
+              sourceWarnings.push("parent_scope_mismatch");
+            }
+          }
         }
       } else {
         candidates = hostPidToNodes.get(_hostPidKey(node, node.ppid)) || null;
@@ -536,116 +871,6 @@ function getProcessTree(meta, options = {}, ctx) {
     let maxDepth = 0;
     for (const p of processes) { if (p.depth > maxDepth) maxDepth = p.depth; }
 
-    // --- Terminate event matching ---
-    // Query Sysmon EID 5 and Security EID 4689 from the same table, match back
-    // to create events by GUID (preferred) or PID+host (fallback), compute duration.
-    const terminateEids = ["5", "4689"];
-    let terminateMatched = 0;
-    if (columns.eventId && processes.length > 0) {
-      try {
-        const safeEid = meta.colMap[columns.eventId];
-        if (safeEid) {
-          // Fast COUNT probe — skip entirely if no terminate events exist
-          const termCountSql = `SELECT COUNT(*) as n FROM data WHERE ${safeEid} IN (${terminateEids.map(() => "?").join(",")}) LIMIT 1`;
-          const termCount = db.prepare(termCountSql).get(...terminateEids);
-          if (termCount && termCount.n > 0) {
-            // Build the same SELECT parts for terminate events
-            const termSelectParts = ["data.rowid as _rowid"];
-            const termSelectedCols = new Set();
-            for (const [key, colName] of Object.entries(columns)) {
-              if (key.startsWith("_")) continue;
-              if (colName && meta.colMap[colName] && !termSelectedCols.has(colName)) {
-                termSelectParts.push(`${meta.colMap[colName]} as [${key}]`);
-                termSelectedCols.add(colName);
-              }
-            }
-            const orderCol = columns.ts ? meta.colMap[columns.ts] : null;
-            const termOrderClause = orderCol ? `ORDER BY sort_datetime(${orderCol}) ASC` : "ORDER BY data.rowid ASC";
-            const termSql = `SELECT ${termSelectParts.join(", ")} FROM data WHERE ${safeEid} IN (${terminateEids.map(() => "?").join(",")}) ${termOrderClause} LIMIT ${maxRows}`;
-            const termRows = db.prepare(termSql).all(...terminateEids);
-
-            // Build lookup maps from create events for matching
-            const guidToNode = new Map();
-            const pidHostToNodes = new Map();
-            for (const node of processes) {
-              if (node.guid) guidToNode.set(node.guid, node);
-              const pidHostKey = `${node.pid}|${node.normHost || "__nohost__"}`;
-              if (!pidHostToNodes.has(pidHostKey)) pidHostToNodes.set(pidHostKey, []);
-              pidHostToNodes.get(pidHostKey).push(node);
-            }
-
-            for (const tRow of termRows) {
-              let tPid = tRow.pid || "";
-              let tGuid = tRow.guid || "";
-              let tExitCode = "";
-              let tTs = cleanWrappedField(tRow.ts || "");
-              const tHost = normalizeHost(tRow.hostname || "");
-
-              // Parse format-specific fields
-              if (isEvtxECmdPT) {
-                const pd1 = tRow.pid || tRow.guid || "";
-                const pidM = pd1.match(/ProcessID:\s*(\d+)/i);
-                const guidM = pd1.match(/ProcessGUID:\s*([0-9a-f-]+)/i);
-                if (pidM) tPid = pidM[1];
-                if (guidM) tGuid = guidM[1];
-                // EvtxECmd exit code may be in payload fields
-                const pd = [tRow.pid, tRow.ppid, tRow.cmdLine, tRow.image].join(" ");
-                const ecM = pd.match(/(?:ExitStatus|Status|ProcessExitCode):\s*(\S+)/i);
-                if (ecM) tExitCode = ecM[1];
-              } else if (isHayabusaPT) {
-                const compact = parseCompactKeyValues(tRow.details, tRow.extra);
-                tPid = compactGetInt(compact, "PID", "ProcessId");
-                tGuid = compactGet(compact, "PGUID", "ProcessGuid", "ProcessGUID");
-                tExitCode = compactGet(compact, "ExitStatus", "Status", "ProcessExitCode");
-              } else {
-                // Standard Sysmon / CSV format
-                if (typeof tPid === "string" && /^0x[0-9a-f]+$/i.test(tPid.trim())) tPid = String(parseInt(tPid.trim(), 16));
-                tExitCode = cleanWrappedField(tRow.elevation || ""); // Security 4689: Status field often mapped to elevation slot
-              }
-
-              const normTGuid = normalizeGuid(tGuid);
-              const normTPid = normalizePid(tPid);
-              const tTsMs = normalizeTimestamp(tTs);
-
-              // Match by GUID (preferred — 1:1, no ambiguity)
-              let matched = null;
-              if (normTGuid && guidToNode.has(normTGuid)) {
-                matched = guidToNode.get(normTGuid);
-              }
-              // Fallback: PID + host, pick the latest create event that precedes this terminate
-              if (!matched && normTPid && Number.isFinite(tTsMs)) {
-                const pidHostKey = `${normTPid}|${tHost || "__nohost__"}`;
-                const candidates = pidHostToNodes.get(pidHostKey);
-                if (candidates) {
-                  let best = null;
-                  for (const c of candidates) {
-                    if (Number.isFinite(c.tsMs) && c.tsMs <= tTsMs && (!Number.isFinite(c.durationMs))) {
-                      if (!best || c.tsMs > best.tsMs) best = c;
-                    }
-                  }
-                  matched = best;
-                }
-              }
-
-              if (matched && Number.isFinite(tTsMs)) {
-                matched.terminateTs = tTs;
-                matched.terminateTsMs = tTsMs;
-                if (Number.isFinite(matched.tsMs)) {
-                  matched.durationMs = tTsMs - matched.tsMs;
-                  if (matched.durationMs < 0) matched.durationMs = NaN; // clock skew guard
-                }
-                if (tExitCode) matched.exitCode = tExitCode;
-                terminateMatched++;
-              }
-            }
-          }
-        }
-      } catch (_termErr) {
-        // Non-fatal — lifetime analysis is best-effort. Tree building must not fail
-        // because terminate events are malformed or the query errors.
-      }
-    }
-
     // --- ProcessAccess (EID 10) matching ---
     // Query Sysmon EID 10 events and correlate them to target processes. Flags memory
     // access patterns consistent with injection (PROCESS_VM_WRITE) or hollowing
@@ -706,6 +931,10 @@ function getProcessTree(meta, options = {}, ctx) {
             const INJECT_MASK = 0x0028; // VM_OPERATION | VM_WRITE
             const WRITE_BIT = 0x0020;
             const FULL_ACCESS = 0x1F0FFF;
+            const VM_READ = 0x0010;
+            const QUERY_INFO = 0x0400;      // PROCESS_QUERY_INFORMATION
+            const QUERY_LIMITED = 0x1000;   // PROCESS_QUERY_LIMITED_INFORMATION
+            const _isLsass = (node) => /(^|[\\/])lsass(\.exe)?$/i.test(String(node?.processName || node?.image || ""));
 
             for (const aRow of accRows) {
               let tgtPidRaw = "";
@@ -778,6 +1007,47 @@ function getProcessTree(meta, options = {}, ctx) {
               // Self-access (debugger-inside-self, GetCurrentProcess handles) is noisy
               // and not injection. Skip when source PID equals target PID on the same host.
               if (normSrcPid && normSrcPid === target.pid) continue;
+
+              // --- Credential access: attribute the handle to the SOURCE process ---
+              // injectionIndicators below describe the process being ACCESSED, which is
+              // the right shape for hollowing but the wrong one for credential theft:
+              // it left every indicator on lsass.exe and nothing at all on the tool that
+              // opened it, so the canonical mimikatz / procdump pattern produced no
+              // finding on the attacker's process. Reading lsass also does not require
+              // VM_WRITE — 0x1010 (VM_READ|QUERY_INFORMATION) and 0x1410 are the classic
+              // masks — so the inject-like test above cannot be the gate either.
+              if (_isLsass(target) && normSrcPid) {
+                const srcKey = `${normSrcPid}|${aHost || "__nohost__"}`;
+                const srcCandidates = pidHostToNodes.get(srcKey);
+                let srcNode = null;
+                if (srcCandidates) {
+                  for (const cand of srcCandidates) {
+                    if (cand === target) continue;
+                    if (Number.isFinite(cand.tsMs) && Number.isFinite(aTsMs) && cand.tsMs > aTsMs) continue;
+                    if (!srcNode || (Number.isFinite(cand.tsMs) && cand.tsMs > srcNode.tsMs)) srcNode = cand;
+                  }
+                }
+                if (srcNode) {
+                  const readsMemory = Number.isFinite(accessBits) && (accessBits & VM_READ) === VM_READ;
+                  const queries = Number.isFinite(accessBits) && ((accessBits & QUERY_INFO) === QUERY_INFO || (accessBits & QUERY_LIMITED) === QUERY_LIMITED);
+                  if (!srcNode.credentialAccess) {
+                    srcNode.credentialAccess = {
+                      lsassAccessCount: 0, lsassReadCount: 0, maxGrantedAccess: NaN,
+                      firstAccessMs: NaN, targetPids: [],
+                    };
+                  }
+                  const ca = srcNode.credentialAccess;
+                  ca.lsassAccessCount++;
+                  // A read handle (or full access) on lsass is the credential-dump
+                  // primitive. A bare query-only handle is what Task Manager and every
+                  // AV agent does, so it is counted but not treated as a read.
+                  if (readsMemory || (Number.isFinite(accessBits) && (accessBits & FULL_ACCESS) === FULL_ACCESS)) ca.lsassReadCount++;
+                  else if (queries) ca.queryOnly = true;
+                  if (Number.isFinite(accessBits) && (!Number.isFinite(ca.maxGrantedAccess) || accessBits > ca.maxGrantedAccess)) ca.maxGrantedAccess = accessBits;
+                  if (Number.isFinite(aTsMs) && (!Number.isFinite(ca.firstAccessMs) || aTsMs < ca.firstAccessMs)) ca.firstAccessMs = aTsMs;
+                  if (target.pid && !ca.targetPids.includes(target.pid) && ca.targetPids.length < 5) ca.targetPids.push(target.pid);
+                }
+              }
 
               if (!target.injectionIndicators) {
                 target.injectionIndicators = {
@@ -863,6 +1133,7 @@ function getProcessTree(meta, options = {}, ctx) {
                 privSelectedCols.add(colName);
               }
             }
+            appendRowLevelAliases(privSelectParts);
             const privOrderCol = columns.ts ? meta.colMap[columns.ts] : null;
             const privOrderClause = privOrderCol ? `ORDER BY sort_datetime(${privOrderCol}) ASC` : "ORDER BY data.rowid ASC";
             const privSql = `SELECT ${privSelectParts.join(", ")} FROM data WHERE ${safeEid} IN (${privEids.map(() => "?").join(",")})${provFilter} ${privOrderClause} LIMIT ${maxRows}`;
@@ -920,6 +1191,8 @@ function getProcessTree(meta, options = {}, ctx) {
                 evService = compactGet(compact, "Service", "ServiceName") || "";
               } else {
                 // Raw Security export — PrivilegeList usually lives in its own column.
+                // 4673/4674 identify the subject by ProcessId, same reasoning as 4689.
+                if (pRow._subjectPid) evPid = pRow._subjectPid;
                 evPrivs = pRow.privilegeList || "";
               }
 
@@ -1030,6 +1303,7 @@ function getProcessTree(meta, options = {}, ctx) {
                 seen.add(colName);
               }
             }
+            appendRowLevelAliases(parts);
             return parts.join(", ");
           };
           const orderCol = columns.ts ? meta.colMap[columns.ts] : null;
@@ -1067,8 +1341,9 @@ function getProcessTree(meta, options = {}, ctx) {
               } else {
                 srcGuid = r.guid || r.srcGuid || "";
                 srcPid = r.pid || r.srcPid || "";
-                destIp = compactGet(parseCompactKeyValues(r.details, r.extra), "DestinationIp", "DestIp") || r.destIp || "";
+                destIp = r.destIp || compactGet(parseCompactKeyValues(r.details, r.extra), "DestinationIp", "DestIp") || "";
                 // Destination often only in details for some exports
+                destPort = r.destPort || "";
                 if (!destIp && r.cmdLine) destIp = (String(r.cmdLine).match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/) || [])[0] || "";
               }
               const target = resolveTarget(srcGuid, srcPid, host, tsMs);
@@ -1111,7 +1386,7 @@ function getProcessTree(meta, options = {}, ctx) {
               } else {
                 srcGuid = r.guid || "";
                 srcPid = r.pid || "";
-                query = compactGet(parseCompactKeyValues(r.details, r.extra), "QueryName", "Query") || r.queryName || "";
+                query = r.queryName || compactGet(parseCompactKeyValues(r.details, r.extra), "QueryName", "Query") || "";
               }
               const target = resolveTarget(srcGuid, srcPid, host, tsMs);
               if (!target) continue;
@@ -1143,7 +1418,7 @@ function getProcessTree(meta, options = {}, ctx) {
                 const blob = [r.pid, r.ppid, r.cmdLine, r.image, r.guid].filter(Boolean).join(" ");
                 srcGuid = (blob.match(/ProcessGuid:\s*([0-9a-f-{}]+)/i) || [])[1] || "";
                 srcPid = (blob.match(/ProcessId:\s*(\d+)/i) || [])[1] || "";
-                loaded = (blob.match(/ImageLoaded:\s*([^\r\n]+)/i) || [])[1] || r.image || "";
+                loaded = (blob.match(/ImageLoaded:\s*([^\r\n,|]+)/i) || [])[1] || "";
                 signed = (blob.match(/Signed:\s*(\w+)/i) || [])[1] || "";
                 sigStatus = (blob.match(/SignatureStatus:\s*([^\s,]+)/i) || [])[1] || "";
               } else if (isHayabusaPT) {
@@ -1156,7 +1431,8 @@ function getProcessTree(meta, options = {}, ctx) {
               } else {
                 srcGuid = r.guid || "";
                 srcPid = r.pid || "";
-                loaded = r.image || compactGet(parseCompactKeyValues(r.details, r.extra), "ImageLoaded") || "";
+                // ImageLoaded ONLY. `r.image` is the loading process, not the module.
+                loaded = r.imageLoaded || compactGet(parseCompactKeyValues(r.details, r.extra), "ImageLoaded") || "";
                 signed = r.signed || "";
                 sigStatus = r.signatureStatus || "";
               }
@@ -1191,7 +1467,7 @@ function getProcessTree(meta, options = {}, ctx) {
                 const blob = [r.pid, r.ppid, r.cmdLine, r.image, r.guid].filter(Boolean).join(" ");
                 srcGuid = (blob.match(/ProcessGuid:\s*([0-9a-f-{}]+)/i) || [])[1] || "";
                 srcPid = (blob.match(/ProcessId:\s*(\d+)/i) || [])[1] || "";
-                targetFile = (blob.match(/TargetFilename:\s*([^\r\n]+)/i) || [])[1] || r.cmdLine || "";
+                targetFile = (blob.match(/TargetFilename:\s*([^\r\n,|]+)/i) || [])[1] || "";
               } else if (isHayabusaPT) {
                 const compact = parseCompactKeyValues(r.details, r.extra);
                 srcGuid = compactGet(compact, "ProcessGuid", "ProcessGUID", "PGUID");
@@ -1200,7 +1476,8 @@ function getProcessTree(meta, options = {}, ctx) {
               } else {
                 srcGuid = r.guid || "";
                 srcPid = r.pid || "";
-                targetFile = compactGet(parseCompactKeyValues(r.details, r.extra), "TargetFilename", "FileName") || r.image || r.cmdLine || "";
+                // TargetFilename ONLY — see the column comment above.
+                targetFile = r.targetFilename || compactGet(parseCompactKeyValues(r.details, r.extra), "TargetFilename", "FileName") || "";
               }
               const target = resolveTarget(srcGuid, srcPid, host, tsMs);
               if (!target) continue;
@@ -1452,6 +1729,11 @@ function previewProcessTree(meta, options = {}, ctx) {
       .split(",")
       .map((s) => String(s).trim())
       .filter(Boolean);
+    // The Event ID box is a free-text field in the config phase, and these values are
+    // INTERPOLATED into the normalization CASE expression below (they cannot be bound
+    // there). Anything non-numeric produced either a hard SQL error ("no such column:
+    // sysmon") or an injection point, so the interpolated form is integers only.
+    const uiEidInts = [...new Set(uiEids.map((e) => parseInt(e, 10)).filter((n) => Number.isSafeInteger(n)))];
     if (uiEids.length > 0 && columns.eventId && meta.colMap[columns.eventId]) {
       const eidSafe = meta.colMap[columns.eventId];
       const eidWhere = wc ? `${wc} AND` : "WHERE";
@@ -1464,7 +1746,9 @@ function previewProcessTree(meta, options = {}, ctx) {
       }
       // Normalized EID expression: extracts integer from formats like "4688", "EventID 4688", "4688 - A new process"
       // CAST handles leading-digit values; LIKE fallback catches embedded IDs
-      const eidNormExpr = `CASE WHEN CAST(${eidSafe} AS INTEGER) IN (${uiEids.join(",")}) THEN CAST(${eidSafe} AS INTEGER) WHEN ${eidSafe} LIKE '%4688%' THEN 4688 WHEN ${eidSafe} LIKE '% 1' OR ${eidSafe} LIKE '% 1 %' OR ${eidSafe} = '1' THEN 1 ELSE NULL END`;
+      const eidNormExpr = uiEidInts.length > 0
+        ? `CASE WHEN CAST(${eidSafe} AS INTEGER) IN (${uiEidInts.join(",")}) THEN CAST(${eidSafe} AS INTEGER) WHEN ${eidSafe} LIKE '%4688%' THEN 4688 WHEN ${eidSafe} LIKE '% 1' OR ${eidSafe} LIKE '% 1 %' OR ${eidSafe} = '1' THEN 1 ELSE NULL END`
+        : `CASE WHEN ${eidSafe} LIKE '%4688%' THEN 4688 WHEN ${eidSafe} LIKE '% 1' OR ${eidSafe} LIKE '% 1 %' OR ${eidSafe} = '1' THEN 1 ELSE NULL END`;
       // Phase 1: exact match (fast path for clean data)
       const eidRows = db.prepare(`SELECT ${eidSafe} as eid, COUNT(*) as cnt FROM data ${eidWhere} ${eidSafe} IN (${uiEids.map(() => "?").join(",")})${provClause} GROUP BY ${eidSafe}`).all(...params, ...uiEids);
       for (const r of eidRows) { if (r.eid != null) { const k = String(r.eid).trim(); eventCounts[k] = r.cnt; trackedEvents += r.cnt; } }
@@ -1839,6 +2123,25 @@ function getProcessInspectorContext(meta, options = {}, ctx) {
     selectParts.push(`${meta.colMap[colName]} as [${key}]`);
     added.add(colName);
   }
+  // Row-level aliases — see ROW_LEVEL_ALIAS_PATTERNS in getProcessTree. Without
+  // them the context window for a Security 4688 was centred on the CREATOR's pid
+  // (the tab-wide `pid` column resolves to ProcessId), so the analyst got the
+  // parent's neighbourhood instead of the selected process's.
+  const ctxRowLevel = {};
+  if (!isEvtxECmd && !isHayabusa && !isChainsaw) {
+    for (const [alias, pat] of Object.entries({
+      _subjectPid: /^ProcessId$/i,
+      _newPid: /^NewProcessId$/i,
+      _creatorPid: /^CreatorProcessId$/i,
+      _newImage: /^NewProcessName$/i,
+      _procName: /^ProcessName$/i,
+      _parentName: /^ParentProcessName$/i,
+    })) {
+      const c = detect([pat]);
+      if (c && meta.colMap[c]) { ctxRowLevel[alias] = meta.colMap[c]; selectParts.push(`${meta.colMap[c]} as [${alias}]`); }
+    }
+  }
+  const _ctxIsEid = (value, eid) => new RegExp(`(^|\\D)${eid}(\\D|$)`).test(String(value || "").trim());
   const selectSql = selectParts.join(", ");
   const db = meta.db;
 
@@ -1924,6 +2227,17 @@ function getProcessInspectorContext(meta, options = {}, ctx) {
       user = clean(row.user || user);
       logonType = extractFirstInteger(row.logonType || logonType) || clean(row.logonType || logonType);
     } else if (row) {
+      // Row-level resolution first: a 4688 identifies itself with NewProcessId and
+      // its creator with ProcessId; a 4689/4673/4674 uses ProcessId for the subject.
+      if (_ctxIsEid(row.eventId, "4688") && row._newPid) {
+        pid = row._newPid;
+        ppid = row._creatorPid || row._subjectPid || ppid;
+        if (!image) image = row._newImage || "";
+        if (!parentImage) parentImage = row._parentName || "";
+      } else if ((_ctxIsEid(row.eventId, "4689") || _ctxIsEid(row.eventId, "4673") || _ctxIsEid(row.eventId, "4674")) && row._subjectPid) {
+        pid = row._subjectPid;
+        if (!image) image = row._procName || "";
+      }
       pid = normalizePid(pid) || compactGetInt(compact, "PID", "ProcessId", "NewProcessId");
       ppid = normalizePid(ppid) || compactGetInt(compact, "ParentPID", "ParentProcessId", "CreatorProcessId", "ProcessId");
       guid = clean(guid) || compactGet(compact, "PGUID", "ProcessGuid", "ProcessGUID");

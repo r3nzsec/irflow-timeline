@@ -299,3 +299,21 @@ test("RDP session stats roll into the account", () => {
   assert.equal(a.rdpConcurrentCount, 1);
   assert.equal(a.rdpSuspiciousCount, 1);
 });
+
+test("incomplete / connecting RDP activity is not counted as a proven session", () => {
+  const accounts = aggregateAccounts(state({
+    rdpSessions: [
+      { user: "CORP\\attacker", source: "10.0.0.5", target: "HOST01", status: "incomplete", startTime: "2026-03-10T08:00:00Z" },
+      { user: "CORP\\attacker", source: "10.0.0.6", target: "HOST01", status: "connecting", startTime: "2026-03-10T08:01:00Z" },
+      { user: "CORP\\attacker", source: "10.0.0.7", target: "HOST01", status: "failed", attemptCount: 3 },
+      { user: "CORP\\attacker", source: "10.0.0.8", target: "HOST01", status: "disconnected", hasAdmin: true },
+    ],
+  }));
+  const a = accounts.find((x) => x.user === "CORP\\attacker");
+  assert.equal(a.rdpSessionCount, 1, "only the disconnected (proven) session counts");
+  assert.equal(a.rdpAdminCount, 1);
+  assert.equal(a.rdpFailedCount, 1);
+  assert.equal(a.rdpFailedAttemptCount, 3);
+  assert.ok(a.sourceHosts.includes("10.0.0.5"), "1149-only sources still land on the account");
+  assert.equal(a.firstSeen, "2026-03-10T08:00:00Z");
+});

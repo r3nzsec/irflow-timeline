@@ -1,4 +1,4 @@
-import { CHAIN_RULE_MAP, SUS_PATHS, SAFE_PROCS, ENCODED_PS, CRED_DUMP_CMD, NTDS_EXTRACT, LSASS_TOOLS, ACCOUNT_MANIP, DEFENSE_EVASION, NETWORK_SCANNERS, AD_RECON_TOOLS, RMM_TOOLS, EXFIL_TOOLS, ARCHIVE_SUSPECT, TOOL_ENTRIES } from "../detection-rules.js";
+import { CHAIN_RULE_MAP, resolveChainRule, SUS_PATHS, USER_WRITABLE_PATH, BENIGN_INSTALL_PATH, SAFE_PROCS, ENCODED_PS, CRED_DUMP_CMD, NTDS_EXTRACT, LSASS_TOOLS, LSASS_TARGET_CMD, ACCOUNT_MANIP, DEFENSE_EVASION, NETWORK_SCANNERS, AD_RECON_TOOLS, RMM_TOOLS, EXFIL_TOOLS, TUNNEL_TOOLS, ARCHIVE_SUSPECT, TOOL_ENTRIES } from "../detection-rules.js";
 import { PI_ANALYST_PROFILE_DEFAULT } from "../constants/presets.js";
 
 // Process Inspector allowlist — known-good EDR/AV/RMM/update agents by exact name + expected vendor path
@@ -104,7 +104,34 @@ const _PI_TRUSTED_ROOT_PREFIXES = [
   ":\\programdata\\",
   ":\\windows\\",
 ];
+// NOT the canonical USER_WRITABLE_PATH: this one answers a different question —
+// "is this path under a writable SUBDIRECTORY of a trusted root" — and must not
+// list the trusted roots themselves (\ProgramData\, \Users\ appear in
+// _PI_TRUSTED_ROOT_PREFIXES), or every path under them would reject itself.
 const _RX_PI_USER_WRITABLE_SEGMENT = /\\(users|temp|tmp|appdata|downloads|public|recycle|perflogs)\\/i;
+
+// Canonicalise an image path ONCE so every path anchor compares the same shape.
+// Windows hands the same binary to different providers in at least five forms:
+//   C:\Windows\System32\svchost.exe      (Sysmon Image)
+//   \??\C:\Windows\System32\svchost.exe  (native object-manager form, 4688/EID 10)
+//   \SystemRoot\System32\smss.exe        (boot-time processes)
+//   \Device\HarddiskVolume3\Windows\...  (kernel/device form)
+//   "C:/Windows/System32/svchost.exe"     (quoted / forward slashes from some exporters)
+// The masquerade anchors were written against the first form only, so the others
+// looked like "a system binary running from an unexpected path" — a critical
+// finding on the most normal processes on the machine. Trailing NUL/whitespace and
+// wrapping quotes are stripped for the same reason.
+const _canonImagePath = (img) => {
+  let p = String(img == null ? "" : img).trim().toLowerCase();
+  if (!p) return "";
+  p = p.replace(/^["']+|["']+$/g, "").replace(/\0+$/g, "").trim();
+  p = p.replace(/\//g, "\\");
+  p = p.replace(/^\\\\\?\\/, "").replace(/^\\\?\?\\/, "");
+  p = p.replace(/^\\device\\harddiskvolume\d+\\/, "c:\\");
+  p = p.replace(/^(\\systemroot|%systemroot%|%windir%)\\/, "c:\\windows\\");
+  p = p.replace(/^system32\\/, "c:\\windows\\system32\\");
+  return p;
+};
 const _isUnderTrustedRoot = (lowerImg) => {
   if (!lowerImg) return false;
   const colon = lowerImg.indexOf(":\\");
@@ -130,8 +157,17 @@ const _RX_MGMT_PARENTS = /^(ccmexec|intunemanagementextension|pdqdeployrunner|sa
 // Remote-access RMM subset of _RX_MGMT_PARENTS that threat actors routinely abuse for
 // hands-on-keyboard access. High-fidelity attack semantics (explicit LSASS dump) under these
 // parents must NOT be downgraded the way config-management / patch agents are.
-const _RX_RMM_REMOTE_PARENTS = /^(connectwisecontrol|screenconnect\.clientservice|ninjaoneagent|action1_agent|automateagent)(\.exe)?$/i;
-const _RX_USER_WRITABLE = /(\\temp\\|\\tmp\\|\\appdata\\|\\downloads\\|\\public\\)/i;
+const _RX_RMM_REMOTE_PARENTS = /^(connectwisecontrol|screenconnect\.clientservice|screenconnect\.windowsclient|ninjaoneagent|ninjaonesession|action1_agent|automateagent|atera|ateraagent|syncrosetup|splashtop|sragent|srmanager|anydesk|teamviewer|tvnserver|dwagent|supremo|gotohttp|remotepc|rustdesk)(\.exe)?$/i;
+
+// The management-agent DISCOUNT applies only to unattended configuration and patch
+// agents (SCCM, Intune, Puppet, Chef, Salt, Tanium, PDQ...). A remote-ACCESS tool is
+// a human at a keyboard, which is precisely the hands-on-keyboard case an intrusion
+// looks like — discounting it meant encoded PowerShell launched through a hijacked
+// ScreenConnect / ConnectWise / NinjaOne / AnyDesk session was demoted to context,
+// and that is the single most common ransomware access pattern in the wild.
+const _isMgmtDiscountParent = (pn) => _RX_MGMT_PARENTS.test(pn) && !_RX_RMM_REMOTE_PARENTS.test(pn);
+// Unified — see USER_WRITABLE_PATH in detection-rules.js (audit P19).
+const _RX_USER_WRITABLE = USER_WRITABLE_PATH;
 const _RX_PROG_FILES = /(\\program files\\|\\program files \(x86\)\\)/i;
 const _RX_PS_NAME = /^(powershell|pwsh)(\.exe)?$/i;
 const _RX_SERVICES_NAME = /^services(\.exe)?$/i;
@@ -192,10 +228,31 @@ const _RX_DOMAIN_FLAG = /\/domain\b/i;
 const _RX_WMI_SUBSCRIPTION = /\b(set-wminstance|__eventfilter|__eventconsumer|commandlineeventconsumer)\b/i;
 const _RX_SCHTASKS_REMOTE = /schtasks\b.*\/create\b.*\/s\s+\S/i;
 const _RX_SCHTASKS_CREATE = /schtasks\b.*\/create\b/i;
+// Strip the invoking executable so a pattern meant for the PAYLOAD cannot match the
+// launcher itself. Without this, _RX_PERSIST_HOTPAY (which lists powershell / cmd /
+// mshta / rundll32 as hot payloads) matched the word "powershell" in
+// `powershell -c Set-Service ...` and promoted every PowerShell-issued service or
+// task tweak to high.
+const _cmdArgsOnly = (cmd) => {
+  const s = String(cmd || "").trimStart();
+  if (!s) return "";
+  if (s[0] === '"') {
+    const end = s.indexOf('"', 1);
+    return end < 0 ? "" : s.slice(end + 1);
+  }
+  const sp = s.search(/\s/);
+  return sp < 0 ? "" : s.slice(sp + 1);
+};
 const _RX_PERSIST_HOTPAY = /(\\temp\\|\\tmp\\|\\appdata\\|\\downloads\\|\\public\\|powershell|cmd\.exe|mshta|rundll32|regsvr32|wscript|cscript|https?:\/\/|\\\\[a-z0-9_.-]+\\)/i;
 const _RX_SC_CREATE = /\bsc\s+(create|config)\b/i;
 const _RX_REG_AUTORUN = /\breg\b.*\badd\b.*\\(Run|RunOnce|Image\s*File\s*Execution\s*Options|AppInit_DLLs|Winlogon\\(Userinit|Shell))\b/i;
-const _RX_PS_PERSIST = /\b(register-scheduledtask|new-scheduledtask|new-service|set-service)\b/i;
+// new-service / register-scheduledtask CREATE something that survives a reboot.
+// set-service mostly changes an existing service's start type or description and is
+// what every installer, GPO script and admin runbook does — it only matters when it
+// repoints the binary or enables something that was disabled.
+const _RX_PS_PERSIST = /\b(register-scheduledtask|new-scheduledtask|new-service)\b/i;
+const _RX_PS_SET_SERVICE = /\bset-service\b/i;
+const _RX_PS_SET_SERVICE_HOT = /-(binarypathname|path)\s+\S+|-startuptype\s+(automatic|boot|system)\b/i;
 const _RX_PS_RUN_KEY = /\bset-itemproperty\b.*\\(Run|RunOnce)\b/i;
 const _RX_WMIC_PROC_CALL_LOCAL = /\bwmic\b.*\bprocess\s+call\s+create\b/i;
 const _RX_WMIC_NODE = /\/node:/i;
@@ -203,6 +260,12 @@ const _RX_WMIC_REMOTE_EXEC = /wmic\b.*\/node:\s*\S+.*\bprocess\s+call\s+create\b
 const _RX_WMIC_SHADOW_DEL = /wmic\b.*\/node:\s*\S+.*\bshadowcopy\s+delete\b/i;
 const _RX_WINRM_LOCAL_CFG = /winrm\s+(quickconfig|get|enumerate|set|identify)\b/i;
 const _RX_PS_REMOTING = /\b(invoke-command|enter-pssession|new-pssession)\b/i;
+// Invoke-Command is routinely used with -ScriptBlock against the LOCAL machine (it is
+// the standard way to run a scriptblock with arguments), and -ComputerName localhost
+// is a common build-script idiom. Only an explicit remote target makes it lateral
+// movement. Without this gate every packaging and CI script scored critical.
+const _RX_PS_REMOTING_TARGET = /-(computername|cn|hostname|vmname|containerid|connectionuri|session)\s+\S+|-computername\s*:?\s*\S+|\b(pssession|cimsession)\s*-computername/i;
+const _RX_PS_REMOTING_LOCAL_TARGET = /-(computername|cn)\s+["']?(localhost|127\.0\.0\.1|\.|\$env:computername)["']?(\s|$)/i;
 const _RX_WMIC_NODE_ANY = /wmic\b.*\/node:/i;
 // Anchor to actual remote-execution verbs / the winrs shell — bare "winrm" as a
 // substring (paths, service names, config queries like `winrm get/quickconfig`) is benign.
@@ -230,6 +293,19 @@ const _chainCorroborated = (cmd) => !!cmd && (
 // CORRELATED (whoami+net+nltest+systeminfo in a window), which the sequence engine handles. As a
 // standalone chain it's context, not a primary finding. (net/wmic excluded — they have lateral uses.)
 const _RX_DISCOVERY_SINGLETON = /^(whoami|hostname|ipconfig|arp|nslookup|netstat|route|nbtstat|tracert|pathping|tasklist|systeminfo|quser|qwinsta)$/i;
+
+// Service hosts noisy enough that a shell child of theirs is meaningless without a
+// corroborating command line. This list used to be the WHOLE pi-2 parent set, which
+// also contains wsmprovhost (an inbound WinRM session), dllhost and mmc (DCOM
+// lateral movement) and services (a launched service) — the exact remote-execution
+// parents an intrusion produces. Those were demoted to context and scored zero.
+const _RX_NOISY_SERVICE_PARENTS = /^(svchost|taskeng|taskhostw)(\.exe)?$/i;
+
+// Parents where even a single built-in discovery command matters, because the
+// parent itself should never be running one: an IIS worker, a WinRM session host,
+// a DCOM surrogate or a database engine executing `whoami` is a web shell or a
+// hands-on-keyboard operator, not a login script.
+const _RX_HIGH_SIGNAL_PARENTS = /^(w3wp|wsmprovhost|dllhost|mmc|httpd|nginx|tomcat\d*|java|javaw|php-cgi|php|sqlservr|sqlagent|exchange\w*|umworkerprocess|msexchange\w*)(\.exe)?$/i;
 const _RX_LSASS_RUNDLL = /rundll32(\.exe)?\s+.*comsvcs\.dll\s*,?\s*minidump.*\blsass\b/i;
 const _RX_LSASS_PROCDUMP = /procdump(\.exe)?\s+.*\b(-ma|-mm|-mp)?\b.*\blsass\b/i;
 const _RX_OFFICE_STAGED = /(https?:\/\/|javascript:|vbscript:|scrobj\.dll|\/i:http|\bfrombase64string\b|\b(downloadstring|invoke-expression|iex)\b|\s-enc\b)/i;
@@ -278,6 +354,36 @@ const _RX_SHORT_LIVED_SAFE = /^(conhost|consent|werfault|wermgr|splwow64|dllhost
 const _RX_TASK_SERVICE_PARENTS = /^(taskhostw|taskeng|taskmgr|svchost|services|wmiprvse)(\.exe)?$/i;
 // Browser → shell (dedicated, higher confidence than generic chain)
 const _RX_BROWSER_PARENTS = /^(chrome|msedge|firefox|iexplore|opera|brave|safari|microsoftedgecp|browser_broker)(\.exe)?$/i;
+
+// --- Adjacent-telemetry (pi-61..pi-64) false-positive control -----------------
+// These four rules fire purely on the PRESENCE and volume of Sysmon 3/22/7/11
+// events. Volume alone is not evidence: a browser opens hundreds of connections
+// and resolves dozens of names, an updater drops PEs into a writable path, and a
+// Python venv or Electron app loads unsigned modules from under \Users by design.
+// Scoring those as high/critical made every workstation with full Sysmon coverage
+// look compromised. The telemetry stays visible; it just needs a reason to score.
+
+// Applications whose normal operation IS network + DNS + file-drop + odd module loads.
+const _RX_NETWORK_NATIVE_APPS = /^(chrome|msedge|msedgewebview2|firefox|iexplore|opera|brave|safari|vivaldi|chromium|teams|ms-teams|slack|discord|zoom|outlook|onedrive|onedrivestandaloneupdater|dropbox|googledrivesync|googleupdate|microsoftedgeupdate|updater|squirrel|setup|install|installer|msiexec|tiworker|wuauclt|usoclient|mousocoreworker|spotify|steam|epicgameslauncher|code|devenv|node|python|python3|pythonw|java|javaw|git|git-remote-https|curl|wget|svchost|backgroundtransferhost|smartscreen|mpcmdrun|msmpeng|sensendr|cbcomms|falcon|sentinelagent)(\.exe)?$/i;
+
+// The signature of DLL sideloading is a binary in a TRUSTED location loading an
+// unsigned module from a writable one. When the process itself lives in a
+// writable directory (venv, Electron app, portable tool), an unsigned neighbour
+// module is the norm rather than the exception.
+const _RX_TRUSTED_IMAGE_ROOT = /^[a-z]:[\\/](windows|program files|program files \(x86\))[\\/]/i;
+
+// Does anything OTHER than the raw telemetry volume justify scoring this process?
+const _pi6xCorroborated = (c) => (
+  _chainCorroborated(c.cmd)
+  || (SUS_PATHS.test(c.il) && !BENIGN_INSTALL_PATH.test(c.ilc || c.il) && !SAFE_PROCS.test(c.n))
+  || _RX_SHELL_CHILDREN.test(c.n)
+  || _RX_PS_NAME.test(c.n)
+  || _RX_SHELL_CHILDREN.test(c.pn)
+  || _RX_PS_NAME.test(c.pn)
+  || c.signed === "false"
+  || /invalid|expired|revoked|untrusted|error/.test(c.sigStatus || "")
+  || !!c.injection
+);
 // BITS persistence: /SetNotifyCmdLine sets a callback program
 const _RX_BITS_PERSIST = /\bbitsadmin\b.*\/setnotifycmdline\b/i;
 const _RX_BITS_ADDFILE_SETNOTIFY = /\bbitsadmin\b.*\/(addfile|setnotify|resume|complete)\b/i;
@@ -312,7 +418,10 @@ const _EXPECTED_SYSTEM_PATHS = new Map([
   ["rundll32",  /\\(system32|syswow64)\\rundll32\.exe$/i],
   ["regsvr32",  /\\(system32|syswow64)\\regsvr32\.exe$/i],
   ["mshta",     /\\(system32|syswow64)\\mshta\.exe$/i],
-  ["explorer",  /\\windows\\explorer\.exe$/i],
+  // 32-bit explorer genuinely lives in SysWOW64 on x64 Windows; anchoring on
+  // \windows\explorer.exe alone made it a critical masquerade on every host that
+  // ever launched a 32-bit shell extension host.
+  ["explorer",  /\\windows\\(syswow64\\)?explorer\.exe$/i],
   ["wmiprvse",  /\\(system32|syswow64)\\wbem\\wmiprvse\.exe$/i],
   ["wuauclt",   /\\system32\\wuauclt\.exe$/i],
   ["dllhost",   /\\(system32|syswow64)\\dllhost\.exe$/i],
@@ -322,7 +431,7 @@ const _RX_PS_SHELLCODE = /\b(Invoke-Shellcode|Invoke-ReflectivePEInjection|Invok
 const _RX_PS_PINVOKE = /\[System\.Runtime\.InteropServices\.Marshal\]::Copy\b|\bGetDelegateForFunctionPointer\b|\b\[IntPtr\].*::Zero\b.*VirtualAlloc/i;
 
 // Context-signal regexes (post-loop section 4)
-const _RX_USER_WRITABLE_EXTENDED = /(\\temp\\|\\tmp\\|\\appdata\\|\\downloads\\|\\public\\|\\recycle|\\perflogs\\)/i;
+const _RX_USER_WRITABLE_EXTENDED = USER_WRITABLE_PATH;
 const _RX_UNC_PATH_PAREN = /(\\\\[a-z0-9_.-]+\\)/i;
 const _RX_NETWORK_URL = /(https?:\/\/|ftp:\/\/)/i;
 const _RX_UPDATER_PATTERN = /(\/update|\/install|\/silent|\/passive|trustedinstaller|windows\s*update)/i;
@@ -414,7 +523,7 @@ const PI_RULES = [
       if (!_RX_PS_NAME.test(c.n) || !ENCODED_PS.test(c.cmd)) return false;
       const hasStealth = _RX_PS_STEALTH.test(c.cmd);
       const hasCradle = _RX_PS_CRADLE_BASIC.test(c.cmd);
-      if (_RX_MGMT_PARENTS.test(c.pn) && !hasStealth && !hasCradle) return { override: 1, cat: "context" };
+      if (_isMgmtDiscountParent(c.pn) && !hasStealth && !hasCradle) return { override: 1, cat: "context" };
       if (hasStealth || hasCradle) return { override: 3 };
       return true;
     } },
@@ -440,7 +549,7 @@ const PI_RULES = [
       // Under management parents (SCCM/GPO/RMM) weak PS semantics are often legitimate, but a
       // genuine cradle under a compromised agent shouldn't vanish — record it as visible context
       // (not a silent drop) so it still correlates and surfaces in hunt views.
-      if (_RX_MGMT_PARENTS.test(c.pn) && score < 3) return score > 0 ? { override: 1, cat: "context" } : false;
+      if (_isMgmtDiscountParent(c.pn) && score < 3) return score > 0 ? { override: 1, cat: "context" } : false;
       if (hasIex && (hasDownload || hasB64)) return true;
       if (score >= 3) return true;
       return false;
@@ -469,8 +578,15 @@ const PI_RULES = [
       if (_RX_REGSVR32_NAME.test(c.n) && _RX_REGSVR32_REMOTE.test(c.cmd)) return { override: 3 };
       if (_RX_RUNDLL32_NAME.test(c.n)) {
         if (_RX_JS_HANDLER.test(c.cmd)) return { override: 3 };
-        if (_RX_USER_WRITABLE.test(c.cmd)) return true;
+        // rundll32 is how Windows itself invokes control-panel applets, printer UI,
+        // shell verbs and per-user installers, and those references live under
+        // \AppData\ and \ProgramData\ constantly. Requiring a MODULE argument in a
+        // writable path — rather than any writable path anywhere on the line — keeps
+        // the sideload case and drops the "rundll32 mentioned AppData" case.
+        const _dllArg = (c.cmd.match(/[a-z]:\\[^",]*?\.(dll|ocx|cpl)\b/i) || [])[0] || "";
+        if (_dllArg && _RX_USER_WRITABLE.test(_dllArg) && !BENIGN_INSTALL_PATH.test(_dllArg)) return true;
         if (_RX_UNC_PATH.test(c.cmd)) return true;
+        if (_RX_USER_WRITABLE.test(c.cmd)) return { override: 1, cat: "context" };
       }
       if (_RX_DOTNET_LOLBINS.test(c.n) && _RX_DOTNET_LOLBIN_ARGS.test(c.cmd)) return true;
       if (_RX_FORFILES_NAME.test(c.n) && _RX_FORFILES_C.test(c.cmd)) return true;
@@ -483,7 +599,7 @@ const PI_RULES = [
     logic: [{ label: "CommandLine", value: "regex: net\\s+(user|group|localgroup)\\s+.*/add" }, { label: "Condition", value: "Account or group creation via net.exe commands" }],
     test: (c) => {
       if (!ACCOUNT_MANIP.test(c.cmd)) return false;
-      if (_RX_MGMT_PARENTS.test(c.pn) && !_RX_PRIV_GROUPS.test(c.cmd)) return { override: 1, cat: "context" };
+      if (_isMgmtDiscountParent(c.pn) && !_RX_PRIV_GROUPS.test(c.cmd)) return { override: 1, cat: "context" };
       if (_RX_NET_GROUP_PRIV_ADD.test(c.cmd)) return { override: 3 };
       if (_RX_DOMAIN_FLAG.test(c.cmd)) return { override: 2 };
       return true;
@@ -499,15 +615,19 @@ const PI_RULES = [
       if (_RX_WMI_SUBSCRIPTION.test(c.cmd)) return { override: 3 };
       if (_RX_SCHTASKS_REMOTE.test(c.cmd)) return { override: 3 };
       if (_RX_SCHTASKS_CREATE.test(c.cmd)) {
-        if (_RX_PERSIST_HOTPAY.test(c.cmd)) return true;
+        if (_RX_PERSIST_HOTPAY.test(_cmdArgsOnly(c.cmd))) return true;
         return { override: 1, cat: "context" };
       }
       if (_RX_SC_CREATE.test(c.cmd)) {
-        if (_RX_PERSIST_HOTPAY.test(c.cmd)) return true;
+        if (_RX_PERSIST_HOTPAY.test(_cmdArgsOnly(c.cmd))) return true;
         return { override: 1, cat: "context" };
       }
       if (_RX_REG_AUTORUN.test(c.cmd)) return true;
       if (_RX_PS_PERSIST.test(c.cmd)) return true;
+      if (_RX_PS_SET_SERVICE.test(c.cmd)) {
+        if (_RX_PS_SET_SERVICE_HOT.test(c.cmd) || _RX_PERSIST_HOTPAY.test(_cmdArgsOnly(c.cmd))) return true;
+        return { override: 1, cat: "context" };
+      }
       if (_RX_PS_RUN_KEY.test(c.cmd)) return true;
       if (_RX_WMIC_PROC_CALL_LOCAL.test(c.cmd) && !_RX_WMIC_NODE.test(c.cmd)) return true;
       return false;
@@ -519,7 +639,13 @@ const PI_RULES = [
       if (_RX_WMIC_REMOTE_EXEC.test(c.cmd)) return { override: 3 };
       if (_RX_WMIC_SHADOW_DEL.test(c.cmd)) return { override: 3 };
       if (_RX_WINRM_LOCAL_CFG.test(c.cmd)) return false;
-      if (_RX_PS_REMOTING.test(c.cmd)) return { override: 3 };
+      if (_RX_PS_REMOTING.test(c.cmd)) {
+        if (_RX_PS_REMOTING_LOCAL_TARGET.test(c.cmd)) return { override: 0, cat: "context" };
+        if (_RX_PS_REMOTING_TARGET.test(c.cmd)) return { override: 3 };
+        // Remoting cmdlet with no target named on the command line: the scriptblock
+        // form. Keep it visible for correlation, do not score it as lateral movement.
+        return { override: 1, cat: "context" };
+      }
       if (_RX_WMIC_NODE_ANY.test(c.cmd) || _RX_WINRM_GENERIC.test(c.cmd)) return { override: 1, cat: "context" };
       return false;
     } },
@@ -556,9 +682,20 @@ const PI_RULES = [
     logic: [{ label: "CommandLine", value: "regex: \\b(7z|7za|winrar|rar)\\b.*-h?p (password flag)" }, { label: "Condition", value: "Archive tool invoked with a password flag (-p/-hp) \u2014 potential encrypted data staging. Plain archive creation without a password is not flagged (too noisy)." }],
     test: (c) => ARCHIVE_SUSPECT.test(c.cmd) },
   { id: "pi-6", group: "cred", level: 3, reason: "LSASS access tool", tid: ["T1003.001"], beh: "cred",
-    sev: "critical", name: "LSASS Access Tools (procdump/processhacker)", technique: "T1003.001",
-    logic: [{ label: "Process", value: "regex: ^(processhacker|procdump|sqldumper|avdump|handlekatz)(\\.exe)?$" }, { label: "Condition", value: "Process name matches known LSASS dumping tools" }],
-    test: (c) => LSASS_TOOLS.test(c.n) },
+    sev: "critical", name: "Memory-Dump Tool targeting LSASS", technique: "T1003.001",
+    logic: [
+      { label: "Process", value: "A known memory-dump utility (procdump, ProcessHacker/SystemInformer, nanodump, createdump, rdrleakdiag, dumpert, sqldumper, avdump, handlekatz, \u2026)" },
+      { label: "Critical", value: "The command line names lsass, OR a correlated Sysmon EID 10 shows this process opening a handle to lsass" },
+      { label: "Context", value: "Tool present with no lsass target \u2014 procdump on a dev box, ProcessHacker used by support, sqldumper run by SQL Server itself. Recorded, not scored." },
+      { label: "Why", value: "The rule used to fire on the NAME alone and go straight to critical, so every workstation with Sysinternals installed produced a credential-theft finding." },
+    ],
+    test: (c) => {
+      if (!LSASS_TOOLS.test(c.n)) return false;
+      if (LSASS_TARGET_CMD.test(c.cmd)) return true;
+      // Corroboration from telemetry: this process was seen opening lsass.
+      if ((c.credAccess?.lsassReadCount || 0) > 0) return true;
+      return { override: 0, cat: "context" };
+    } },
   { id: "pi-10", group: "discovery", level: 2, reason: "AD recon tool", tid: ["T1087.002"], beh: "recon",
     sev: "high", name: "AD Recon Tools (BloodHound/SharpHound/ADFind/Rubeus)", technique: "T1087.002",
     logic: [{ label: "Process", value: "regex: ^(adfind|sharphound|bloodhound|sharpview|seatbelt|rubeus|certify|certipy)(\\.exe)?$" }, { label: "Condition", value: "Process name matches known Active Directory enumeration tools" }],
@@ -604,7 +741,7 @@ const PI_RULES = [
     ],
     test: (c) => {
       if (!RMM_TOOLS.test(c.n)) return false;
-      if (_RX_MGMT_PARENTS.test(c.pn)) return { override: 1, cat: "context" };
+      if (_isMgmtDiscountParent(c.pn)) return { override: 1, cat: "context" };
       // Service-installed RMM is the legitimate MSP deployment pattern: the agent runs as a
       // Windows service, so its parent is services.exe/svchost.exe and it often installs to a
       // writable dir (ProgramData/AppData). Threat-actor RMM abuse launches from a shell/
@@ -629,6 +766,15 @@ const PI_RULES = [
       if (_RX_SSH_NAME.test(c.n) && _RX_TUNNEL_RING_FLAGS.test(c.cmd)) return true;
       if (_RX_PROXY_NAMES.test(c.n) && _RX_TUNNEL_VERBS.test(c.cmd)) return true;
       if (_RX_TUNNEL_FULL_CMD.test(c.cmd)) return true;
+      // The canonical catalogue. TUNNEL_TOOLS was derived from tool-aliases.js and
+      // exported, but nothing ever imported it — so every tunnel name that was not
+      // in the four hardcoded regexes above (ligolo, gost, nps/npc, iox, revsocks,
+      // EarthWorm, Stowaway, socat, and every Go release-artifact filename such as
+      // frpc_windows_amd64.exe) was invisible.
+      if (TUNNEL_TOOLS.test(c.n)) return true;
+      // The tunnel may also be established by a native binary: netsh portproxy is
+      // the built-in equivalent and needs no dropped tool at all.
+      if (/\bnetsh\b[\s\S]*\bportproxy\b[\s\S]*\b(add|set)\b/i.test(c.cmd)) return true;
       return false;
     } },
   { id: "pi-25", group: "evasion", level: 2, reason: "PowerShell stealth flag combo", tid: ["T1059.001", "T1027"], beh: "script-exec",
@@ -663,9 +809,15 @@ const PI_RULES = [
     ],
     test: (c) => {
       if (!_RX_SERVICES_NAME.test(c.pn)) return false;
-      if (_RX_USER_WRITABLE.test(c.il) && _RX_SHELL_CHILDREN.test(c.n)) return { override: 3 };
-      if (_RX_USER_WRITABLE.test(c.il)) return { override: 1, cat: "context" };
-      return false;
+      // \ProgramData\ is writable by BUILTIN\Users on a default install and is the
+      // classic drop location for a planted service binary; the old path set left it
+      // out entirely, so services.exe -> C:\ProgramData\<random>\svc.exe scored zero.
+      // Vendor subdirectories under ProgramData are excluded (agents legitimately
+      // run their service binaries from there).
+      const writable = _RX_USER_WRITABLE.test(c.il) && !BENIGN_INSTALL_PATH.test(c.ilc || c.il);
+      if (!writable) return false;
+      if (_RX_SHELL_CHILDREN.test(c.n)) return { override: 3 };
+      return { override: 1, cat: "context" };
     } },
   { id: "pi-27", group: "evasion", level: 3, reason: "svchost path anomaly", tid: ["T1036"], beh: "service-exec",
     sev: "critical", name: "svchost Path Anomaly", technique: "T1036",
@@ -676,8 +828,12 @@ const PI_RULES = [
     ],
     test: (c) => {
       if (!_RX_SVCHOST_NAME.test(c.n)) return false;
-      if (!c.il || !c.il.includes("\\")) return false;
-      if (_RX_SVCHOST_PATH_OK.test(c.il)) return false;
+      if (!c.ilc || !c.ilc.includes("\\")) return false;
+      // The SAME anchor pi-46 uses. These two rules previously carried different
+      // regexes — pi-27 additionally required a literal "\windows\" segment — so a
+      // \SystemRoot\System32\svchost.exe fired one and not the other.
+      const expected = _EXPECTED_SYSTEM_PATHS.get("svchost");
+      if (expected.test(c.ilc)) return false;
       return { override: 3 };
     } },
   { id: "pi-28", group: "lateral", level: 2, reason: "WMI provider spawning shell/proxy", tid: ["T1047", "T1021"], beh: "lateral",
@@ -703,7 +859,7 @@ const PI_RULES = [
         // procdump is a legit Sysinternals tool patch/config agents deploy for crash diagnostics,
         // so downgrade under config-management parents — but NOT under remote-access RMM, where
         // procdump against lsass is hands-on-keyboard credential theft.
-        if (_RX_MGMT_PARENTS.test(c.pn) && !_RX_RMM_REMOTE_PARENTS.test(c.pn)) return { override: 1, cat: "context" };
+        if (_isMgmtDiscountParent(c.pn)) return { override: 1, cat: "context" };
         return { override: 3 };
       }
       return false;
@@ -732,12 +888,19 @@ const PI_RULES = [
     test: (c) => {
       if (!_RX_DLL_LOADER_NAME.test(c.n)) return false;
       if (!_RX_DLL_EXT.test(c.cmd)) return false;
-      // Extract the DLL path from the command line for path analysis
       if (_RX_SYSTEM_DLL_PATH.test(c.cmd)) return false; // legit system DLL
+      // Sideloading needs a MODULE PATH. A bare module name — `rundll32
+      // shell32.dll,Control_RunDLL desk.cpl`, `regsvr32 /s scrobj.dll` — resolves
+      // through the normal search order out of System32, but matched "any other
+      // non-system path" below and scored high on some of the most common command
+      // lines on Windows. Require an actual directory reference before judging it.
+      const _dllRef = (c.cmd.match(/(?:[a-z]:[\\/]|\\\\|%\w+%[\\/]|\.[\\/])[^",;]*?\.(dll|ocx)\b/i) || [])[0] || "";
+      if (!_dllRef) return false;
+      if (_RX_SYSTEM_DLL_PATH.test(_dllRef)) return false;
       // DLL in user-writable or UNC path = high confidence
-      if (_RX_USER_WRITABLE.test(c.cmd) || _RX_UNC_PATH.test(c.cmd)) return true;
+      if ((_RX_USER_WRITABLE.test(_dllRef) && !BENIGN_INSTALL_PATH.test(_dllRef)) || _RX_UNC_PATH.test(_dllRef)) return true;
       // DLL somewhere else (e.g. Program Files) = context only
-      if (_RX_PROG_FILES.test(c.cmd)) return { override: 1, cat: "context" };
+      if (_RX_PROG_FILES.test(_dllRef) || BENIGN_INSTALL_PATH.test(_dllRef)) return { override: 1, cat: "context" };
       // Any other non-system path
       return true;
     } },
@@ -798,7 +961,7 @@ const PI_RULES = [
     ],
     test: (c) => {
       if (c.signed !== "false") return false; // explicit false only — missing metadata never fires
-      if (!_isUnderTrustedRoot(c.il)) return false;
+      if (!_isUnderTrustedRoot(c.ilc)) return false;
       return true;
     } },
   { id: "pi-36", group: "trust", level: 2, reason: "Expired/revoked/invalid signature", tid: ["T1553.002"], beh: "evasion",
@@ -986,12 +1149,15 @@ const PI_RULES = [
     ],
     test: (c) => {
       const baseName = c.n.replace(/\.exe$/i, "");
+      // svchost is also covered by the dedicated pi-27. Both are kept (they carry
+      // different behaviours and technique tags) but they now share ONE anchor, so
+      // they can no longer return different verdicts for the same path.
       const expected = _EXPECTED_SYSTEM_PATHS.get(baseName);
       if (!expected) return false;
-      if (!c.il) return false;
-      // Expected-path regexes are suffix-anchored on the interior \system32\<name>.exe segment,
-      // so NT/device prefixes ("\??\C:\...", "\Device\HarddiskVolume3\...") do not defeat them.
-      return !expected.test(c.il);
+      if (!c.ilc) return false;
+      // Compared against the canonicalised path (see _canonImagePath), so NT,
+      // device, \SystemRoot and forward-slash renderings are not read as anomalies.
+      return !expected.test(c.ilc);
     } },
   { id: "pi-47", group: "evasion", level: 3, reason: "Process access with injection-like rights", tid: ["T1055"], beh: "evasion",
     sev: "critical", name: "Target of ProcessAccess with VM_WRITE / Full Access (EID 10)", technique: "T1055",
@@ -1057,12 +1223,13 @@ const PI_RULES = [
       if ((c.privilege.uniqueHighRisk || 0) >= 3) return { override: 3 };
       return false;
     } },
-  { id: "pi-49", group: "trust", level: 2, reason: "Parent process spoofing (reported vs. linked parent)", tid: ["T1134.004"], beh: "evasion",
-    sev: "high", name: "Parent PID Spoofing (child\u2019s ParentImage differs from actual parent)", technique: "T1134.004",
+  { id: "pi-49", group: "trust", level: 0, cat: "context", reason: "Parent link disagreement (reported vs. linked parent)", tid: [], beh: "evasion",
+    sev: "info", name: "Parent Link Disagreement (reported ParentImage \u2260 linked parent)", technique: "",
     logic: [
-      { label: "Condition", value: "The child\u2019s ParentImage field names a different binary than the process actually running at that PID on the same host" },
-      { label: "Context", value: "Attackers abuse PROC_THREAD_ATTRIBUTE_PARENT_PROCESS (CreateProcess updateProcThreadAttribute) to make a malicious child appear to inherit from a trusted parent such as explorer.exe" },
-      { label: "Critical", value: "Upgrade when the reported parent is a Microsoft binary but the linked parent carries no trusted signer" },
+      { label: "Condition", value: "The child\u2019s ParentImage field names a different binary than the process this tree linked it to" },
+      { label: "What it means", value: "Almost always a LINK-QUALITY problem: the parent PID was recycled and the relink attached to a later process with the same PID. Read it as \u2018do not trust this branch of the tree\u2019, not as an attack." },
+      { label: "Why not T1134.004", value: "Real parent-PID spoofing sets PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, so the OS records the SPOOFED parent in both the event and the actual parent field \u2014 the two AGREE. A disagreement is evidence of the opposite: a reconstruction error. Spoofing is caught by the parent/child plausibility rules instead." },
+      { label: "Level", value: "Low when the link was a 1:1 GUID join (a genuine field disagreement); context otherwise" },
       { label: "Caveat", value: "Requires both fields populated \u2014 skipped when ParentImage is missing or was backfilled from the linked parent (basenames match by construction)" },
     ],
     test: (c) => {
@@ -1071,19 +1238,30 @@ const PI_RULES = [
       const lnk = c.pil.split(/[\\/]/).pop().replace(/\.exe$/i, "").trim();
       if (!rep || !lnk) return false;
       if (rep === lnk) return false;
-      // Upgrade to critical when the reported parent looks like a Microsoft
-      // trusted binary (common spoof target) AND the linked parent carries no
-      // Microsoft signer \u2014 the attacker is dressing up as something trusted
-      // while the actual parent is unsigned/unknown.
-      const reportedTrusted = _EXPECTED_SIGNERS.has(rep);
-      const linkedSignerTrusted = c.parentSigner && c.parentSigner.includes("microsoft");
-      if (reportedTrusted && !linkedSignerTrusted) return { override: 3 };
-      return true;
+      // A GUID link is an identity join, so the two fields genuinely disagree —
+      // worth a low finding. A PID-based relink disagreeing is the expected
+      // symptom of PID reuse and stays context.
+      if (c.linkSource === "guid") return { override: 1, cat: "context" };
+      return { override: 0, cat: "context" };
     } },
-  { id: "pi-15", group: "misc", level: 2, reason: "Script from user profile", tid: ["T1059.005"], beh: "script-exec",
+  { id: "pi-15", group: "misc", level: 2, reason: "Script engine running a script from a user profile path", tid: ["T1059.005"], beh: "script-exec",
     sev: "high", name: "Script from User Profile Path", technique: "T1059.005",
-    logic: [{ label: "Process", value: "wscript.exe OR cscript.exe" }, { label: "Image Path", value: "regex: \\\\users\\\\[^\\\\]+\\\\ OR \\\\appdata\\\\" }, { label: "Condition", value: "Script engine executing from user-writable profile directory" }],
-    test: (c) => _RX_WSCRIPT_NAME.test(c.n) && _RX_USER_PROFILE_PATH.test(c.img) },
+    logic: [
+      { label: "Process", value: "wscript.exe OR cscript.exe" },
+      { label: "Condition", value: "The SCRIPT named on the command line lives under \\Users\\<name>\\ or \\AppData\\" },
+      { label: "Why", value: "The rule used to test the IMAGE path, but wscript.exe and cscript.exe always live in System32 \u2014 so it could never fire. The interesting path is the script's, which is an argument." },
+      { label: "Fallback", value: "A script engine genuinely running from outside System32 is itself an anomaly and still fires" },
+    ],
+    test: (c) => {
+      if (!_RX_WSCRIPT_NAME.test(c.n)) return false;
+      // The interpreter is in System32 by definition; the script is the argument.
+      const _scriptArg = (c.cmd.match(/[^\s"']*\.(vbs|vbe|js|jse|wsf|wsh|hta|ps1|bat|cmd)\b/i) || [])[0] || "";
+      if (_scriptArg && _RX_USER_PROFILE_PATH.test(_scriptArg) && !BENIGN_INSTALL_PATH.test(_scriptArg)) return true;
+      // No script path on the line (or an unqualified name) — fall back to the old
+      // test, which still catches a relocated interpreter.
+      if (_RX_USER_PROFILE_PATH.test(c.img)) return true;
+      return false;
+    } },
   { id: "pi-16", group: "misc", level: 1, reason: "Suspicious path", cat: "context", tid: ["T1204"], beh: "path",
     sev: "medium", name: "Suspicious Execution Path (temp/appdata/downloads)", technique: "T1204",
     logic: [{ label: "Image Path", value: "regex: \\\\temp\\\\ | \\\\tmp\\\\ | \\\\appdata\\\\ | \\\\downloads\\\\ | \\\\public\\\\ | \\\\recycle | \\\\perflogs\\\\" }, { label: "Exclusions", value: "Safe processes: mpcmdrun, msmpeng, tiworker, trustedinstaller, msiexec, etc." }, { label: "Condition", value: "Non-whitelisted process executing from user-writable or staging directory" }],
@@ -1092,6 +1270,10 @@ const PI_RULES = [
       // updater/installer stub (Chrome/Teams/Slack/Zoom/Squirrel/MSI) — the single highest-volume
       // path FP. Skip those; keep the genuine "unsigned/untrusted EXE from a staging dir" case.
       if (c.signed === "true" && (!c.sigStatus || !_RX_SIG_BAD.test(c.sigStatus))) return false;
+      // USER_WRITABLE_PATH now also covers \Users\ and \ProgramData\ (audit P19),
+      // which is where per-user and per-vendor installs legitimately live — exclude
+      // those so closing the coverage gap does not open a false-positive one.
+      if (BENIGN_INSTALL_PATH.test(c.ilc || c.il)) return false;
       return SUS_PATHS.test(c.img) && !SAFE_PROCS.test(c.n);
     } },
   // pi-17 (RMM Tools \u2014 Normal Parent) removed: it fired on every endpoint that merely HAS
@@ -1109,8 +1291,14 @@ const PI_RULES = [
       if (!c.network || !(c.network.eventCount > 0)) return false;
       const dests = c.network.destCount || 0;
       const rare = c.network.rareDestCount || 0;
+      // Talking to the internet is what a browser, updater or sync client is FOR.
+      if (_RX_NETWORK_NATIVE_APPS.test(c.n)) return { override: 0, cat: "context" };
+      const corroborated = _pi6xCorroborated(c);
+      if (!corroborated) {
+        // Volume alone: record it, do not score it.
+        return { override: 0, cat: "context" };
+      }
       if (rare >= 1 || dests >= 5) return { override: dests >= 10 || rare >= 3 ? 3 : 2 };
-      // Lower-signal presence when shell-like process
       if (_RX_SHELL_CHILDREN.test(c.n) || _RX_PS_NAME.test(c.n)) return { override: 1, cat: "context" };
       return false;
     } },
@@ -1123,6 +1311,9 @@ const PI_RULES = [
     test: (c) => {
       if (!c.dns || !(c.dns.eventCount > 0)) return false;
       const names = c.dns.queryCount || 0;
+      // Name resolution volume is not a detection on its own — every browser tab
+      // and every telemetry agent produces more of it than any implant.
+      if (_RX_NETWORK_NATIVE_APPS.test(c.n) || !_pi6xCorroborated(c)) return { override: 0, cat: "context" };
       if (names >= 8) return { override: 2 };
       if (names >= 2) return { override: 1 };
       return { override: 0, cat: "context" };
@@ -1137,9 +1328,25 @@ const PI_RULES = [
       if (!c.imageLoads || !(c.imageLoads.eventCount > 0)) return false;
       const unsigned = c.imageLoads.unsignedCount || 0;
       const writable = c.imageLoads.writablePathCount || 0;
-      if (unsigned >= 1 && writable >= 1) return { override: 3 };
-      if (unsigned >= 2 || writable >= 1) return { override: 2 };
-      if (unsigned >= 1) return { override: 1 };
+      // Sideloading means a binary in a TRUSTED location pulling in an unsigned
+      // module from a writable one. A process that itself lives under \Users
+      // (venv, Electron app, portable tool) loading unsigned neighbours is normal.
+      const hostTrusted = _RX_TRUSTED_IMAGE_ROOT.test(c.il || "");
+      // Deliberately NOT _pi6xCorroborated: that helper treats "the process lives in
+      // a writable path" as corroboration, which is exactly the condition that makes
+      // an unsigned module load UNREMARKABLE here (a venv, an Electron app or a
+      // portable tool loading its own bundled modules). Only signals independent of
+      // the host's location count.
+      const _sideloadCorroborated = _chainCorroborated(c.cmd)
+        || c.signed === "false"
+        || /invalid|expired|revoked|untrusted|error/.test(c.sigStatus || "")
+        || !!c.injection
+        || _RX_SHELL_CHILDREN.test(c.n)
+        || _RX_PS_NAME.test(c.n);
+      if (!hostTrusted && !_sideloadCorroborated) return { override: 0, cat: "context" };
+      if (unsigned >= 1 && writable >= 1) return { override: hostTrusted ? 3 : 2 };
+      if (unsigned >= 2 || writable >= 1) return { override: hostTrusted ? 2 : 1 };
+      if (unsigned >= 1) return { override: 1, cat: "context" };
       return false;
     } },
   { id: "pi-64", group: "evasion", level: 2, reason: "File create then execute staging", tid: ["T1105"], beh: "file-drop",
@@ -1153,10 +1360,27 @@ const PI_RULES = [
       const pe = c.fileCreates.peCount || 0;
       const script = c.fileCreates.scriptCount || 0;
       const writable = c.fileCreates.writablePathCount || 0;
-      if ((pe >= 1 || script >= 1) && writable >= 1) return { override: pe >= 1 ? 3 : 2 };
-      if (pe >= 1 || script >= 2) return { override: 2 };
+      // Writing executables into a writable directory is precisely what an
+      // installer, an updater and a package manager do.
+      if (_RX_NETWORK_NATIVE_APPS.test(c.n) || SAFE_PROCS.test(c.n)) return { override: 0, cat: "context" };
+      const corroborated = _pi6xCorroborated(c);
+      if ((pe >= 1 || script >= 1) && writable >= 1) return { override: corroborated ? (pe >= 1 ? 3 : 2) : 1 };
+      if (pe >= 1 || script >= 2) return { override: corroborated ? 2 : 1 };
       if (c.fileCreates.eventCount >= 5) return { override: 1, cat: "context" };
       return false;
+    } },
+  { id: "pi-65", group: "cred", level: 3, reason: "Opened LSASS with memory-read access", tid: ["T1003.001"], beh: "cred",
+    sev: "critical", name: "LSASS Memory Read (Sysmon EID 10, source side)", technique: "T1003.001",
+    logic: [
+      { label: "Condition", value: "A correlated Sysmon EID 10 shows THIS process opening a handle to lsass.exe that includes PROCESS_VM_READ (or full access)" },
+      { label: "Why it matters", value: "0x1010 / 0x1410 / 0x1438 on lsass is the mimikatz, procdump, nanodump and comsvcs.dll MiniDump signature. It needs no VM_WRITE, so the injection rules never saw it." },
+      { label: "Context", value: "Query-only handles (0x400 / 0x1000) are what Task Manager, EDR agents and every process enumerator take \u2014 recorded, not scored" },
+      { label: "Coverage", value: "Requires Sysmon EID 10 with lsass in scope. The event is attributed to the ACCESSING process; previously all EID 10 indicators landed on the target, so the tool itself carried no finding." },
+    ],
+    test: (c) => {
+      if (!c.credAccess || !(c.credAccess.lsassAccessCount > 0)) return false;
+      if ((c.credAccess.lsassReadCount || 0) > 0) return { override: 3 };
+      return { override: 0, cat: "context" };
     } },
 ];
 
@@ -1212,6 +1436,8 @@ export const getSusInfo = (node, parentNode, opts) => {
   const disabled = opts?.disabledRules;
   const il = img.toLowerCase();
   const pil = (parentNode?.image || "").toLowerCase();
+  const ilc = _canonImagePath(img);
+  const pilc = _canonImagePath(parentNode?.image);
   // Allowlist check — name must match, then: vendor path OR command-line test.
   // Path matches now require the image to live under a trusted system root with
   // no user-writable segment (see _isUnderTrustedRoot). An entry can also opt
@@ -1224,7 +1450,7 @@ export const getSusInfo = (node, parentNode, opts) => {
   if (_alEntries) {
     for (const ae of _alEntries) {
       if (ae.cmdUntrust && ae.cmdUntrust.test(cmd)) continue;
-      if (ae.paths && _isUnderTrustedRoot(il) && ae.paths.some(p => il.includes(p))) {
+      if (ae.paths && _isUnderTrustedRoot(ilc) && ae.paths.some(p => ilc.includes(p))) {
         _alEntry = ae; _allowlisted = true; break;
       }
       if (ae.cmdTest && ae.cmdTest.test(cmd)) { _alEntry = ae; _allowlisted = true; break; }
@@ -1232,8 +1458,22 @@ export const getSusInfo = (node, parentNode, opts) => {
   }
   const evidence = [];
   // 1. Chain evidence (no early return — collect alongside standalone)
-  if (pnBase) {
-    const chainHit = CHAIN_RULE_MAP.get(pnBase + ":" + nBase);
+  // Skipped when the caller tells us the parent edge is a PID-reuse mislink: a
+  // parent->child RULE is only meaningful if the edge is real. Standalone callers
+  // (tests, the row-detail panel) pass no flag and are unaffected.
+  const _edgeTrusted = opts?.parentEdgeConsistent !== false;
+  if (pnBase && !_edgeTrusted) {
+    evidence.push({
+      cat: "context", level: 0, ruleId: "pi-49",
+      reason: "Parent chain rules skipped — the reported parent does not match the linked parent",
+      tid: [], beh: "evasion",
+    });
+  }
+  if (pnBase && _edgeTrusted) {
+    // resolveChainRule (not a bare map lookup): pairs whose severity depends on the
+    // arguments — vssadmin/wmic/bcdedit/wevtutil/wbadmin/reg/sc/netsh/psexec — are
+    // capped at low until the command line proves the destructive variant.
+    const chainHit = resolveChainRule(pnBase + ":" + nBase, cmd);
     if (chainHit) {
       const ruleId = _classifyChain(pnBase, nBase);
       if (!disabled?.has(ruleId)) {
@@ -1245,7 +1485,12 @@ export const getSusInfo = (node, parentNode, opts) => {
         // (level 0) — still feeds the allowlist/suppression + sequence/cluster engine, but no
         // longer scores as a standalone primary finding. Office (pi-0) and the specific pi-18
         // chains (LSASS, accessibility, browser-exploit, etc.) keep full severity.
-        if ((ruleId === "pi-1" || ruleId === "pi-2" || _RX_DISCOVERY_SINGLETON.test(nBase)) && !_chainCorroborated(cmd)) {
+        // Narrowed gate (audit P6). pi-2 is only demoted for the genuinely noisy
+        // service hosts, and no chain under a high-signal parent is demoted at all.
+        const _noisyChain = ruleId === "pi-1"
+          || (ruleId === "pi-2" && _RX_NOISY_SERVICE_PARENTS.test(pn))
+          || _RX_DISCOVERY_SINGLETON.test(nBase);
+        if (_noisyChain && !_RX_HIGH_SIGNAL_PARENTS.test(pn) && !_chainCorroborated(cmd)) {
           evidence.push({ cat: "context", level: 0, reason: chainHit.reason + " — no corroborating command-line indicator", ruleId, tid: chainHit.techniques, beh: _chainBeh });
         } else {
           evidence.push({ cat: "chain", level: chainHit.level, reason: chainHit.reason, ruleId, tid: chainHit.techniques, beh: _chainBeh });
@@ -1274,7 +1519,7 @@ export const getSusInfo = (node, parentNode, opts) => {
   // array (and its 80+ regexes) is built once at load, not per process row.
   // Each rule.test(ctx) takes the per-call context object below.
   const ctx = {
-    n, pn, cmd, img, il, pil,
+    n, pn, cmd, img, il, pil, ilc, pilc,
     // Trust metadata (may be empty depending on dataset — Sysmon only)
     origFn: (node.originalFileName || "").toLowerCase().replace(/\.exe$/i, ""),
     signed: (node.signed || "").toLowerCase(),
@@ -1287,6 +1532,8 @@ export const getSusInfo = (node, parentNode, opts) => {
     exitCode: node.exitCode || "",
     // Injection metadata (populated by backend EID 10 ProcessAccess matching)
     injection: node.injectionIndicators || null,
+    // Credential access — this process opened a handle to lsass (EID 10, source side).
+    credAccess: node.credentialAccess || null,
     // Privilege-use metadata (populated by backend EID 4673 / 4674 matching).
     // Shape: { eventCount, privileges: { <lowername>: count }, highRiskCount,
     // uniqueHighRisk, services: [...] }. Null means no privilege audit events
@@ -1305,6 +1552,11 @@ export const getSusInfo = (node, parentNode, opts) => {
     // on backfilled data.
     parentImageReported: (node.parentImage || "").toLowerCase(),
     parentSigner: (parentNode?.signer || "").toLowerCase(),
+    // How the parent link was established. "guid" is a 1:1 identity join; anything
+    // else is a PID-based relink that can attach to a recycled PID. pi-49 needs this
+    // to tell a genuine field disagreement from a mislink.
+    linkSource: node.linkSource || "",
+    linkConfidence: node.linkConfidence || "",
     // Dataset-level flag (set by the pipeline): does ANY process in this dataset carry a
     // matched terminate event? When false the source simply lacks 4689/Sysmon-5 records, so a
     // missing termination is a logging gap — not a signal. Defaults true for standalone calls.

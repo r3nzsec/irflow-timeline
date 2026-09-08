@@ -14,6 +14,8 @@ const { runProcessServiceScan } = require("./detectors/process-service-scan");
 const { normalizeHostEndpoint } = require("./endpoint-normalize");
 const { dbg } = require("../../logger");
 const { resolveSpineEventIds } = require("./detector-registry");
+const { termSvcChannelGuard } = require("./sql-guards");
+const { tsMs, cmpTs } = require("./time");
 const {
   EXCLUDED_IPS,
   SERVICE_RE,
@@ -114,13 +116,36 @@ function getLateralMovement(meta, options = {}, ctx) {
       // (e.g. 4672 PrivilegeList rows), look at UserName which often holds
       // "DOMAIN\\user (SID)" — strip the SID suffix and use that.
       _userNameFallback: isEvtxECmd ? detect([/^UserName$/i]) : null,
+      // 4624/4625 authentication mechanism. LogonProcessName distinguishes an
+      // interactive logon (User32) from the secondary-logon service (seclogo =
+      // runas / runas /netonly) and from a network authentication (NtLmSsp / Kerberos),
+      // and AuthenticationPackage says which protocol was actually used. Together they
+      // are what separates overpass-the-hash from an ordinary Type 9 — neither column
+      // was ever read, which left the Overpass/PtH technique unreachable.
+      _logonProcess: detect([/^LogonProcessName$/i, /^Logon_Process_Name$/i, /^LogonProcess$/i]),
+      _authPackage: detect([/^AuthenticationPackageName$/i, /^AuthenticationPackage$/i, /^Authentication_Package(Name)?$/i]),
+      _logonId: detect([/^TargetLogonId$/i, /^Target_Logon_ID$/i, /^LogonId$/i, /^Logon_ID$/i]),
+      _subjectLogonId: detect([/^SubjectLogonId$/i, /^Subject_Logon_ID$/i]),
+      _subjectUser: detect([/^SubjectUserName$/i, /^Subject_User_Name$/i]),
+      _targetServerName: detect([/^TargetServerName$/i, /^Target_Server_Name$/i]),
+      _properties: detect([/^Properties$/i]),
       logonType:   userLogonTypeCol || detect([/^LogonType$/i, /^Logon_Type$/i, ...(isChainsaw ? [/^logon_type$/i] : []), ...(isEvtxECmd ? [/^PayloadData2$/i] : [])]) || detailsCol,
       eventId:     userEventIdCol   || detect([/^EventID$/i, /^event_id$/i, /^eventid$/i, /^EventId$/, ...(isChainsaw ? [/^id$/i] : [])]),
       ts:          userTsCol        || detect([/^datetime$/i, /^UtcTime$/i, /^TimeCreated$/i, /^timestamp$/i, ...(isChainsaw ? [/^system_time$/i] : [])]),
       domain:      userDomainCol    || detect([/^TargetDomainName$/i, /^Target_Domain_Name$/i, /^SubjectDomainName$/i, ...(isTermSvcEvtx ? [/^Param2$/i] : [])]) || extraCol || detailsCol,
+      // 4778/4779 name the user AccountName, not TargetUserName. Detected separately
+      // because detect() returns one column for the whole tab: on a tab that also holds
+      // 4624s, `user` resolves to TargetUserName and every reconnect row came back with
+      // an empty user, so reconnects never joined their logon session.
+      _accountName: detect([/^AccountName$/i, /^Account_Name$/i]),
       // 4778 session reconnect columns (RDP lateral movement — attacker hostname/IP)
       clientName:    detect([/^ClientName$/i, /^Client_Name$/i]),
       clientAddress: detect([/^ClientAddress$/i, /^Client_Address$/i, /^ClientIP$/i]),
+      // 5145 access rights. WriteData/AppendData/WriteAttributes on ADMIN$ or C$ is a
+      // TOOL DROP; ReadData is an inventory or backup agent reading a file. Ignoring
+      // the mask scored both identically.
+      _accessMask: detect([/^AccessMask$/i, /^Access_Mask$/i]),
+      _accessList: detect([/^AccessList$/i, /^Access_List$/i, /^Accesses$/i]),
       // 5140/5145 share access columns
       shareName: detect([/^ShareName$/i, /^Share_Name$/i]),
       relativeTargetName: detect([/^RelativeTargetName$/i, /^Relative_Target_Name$/i]),
@@ -178,6 +203,9 @@ function getLateralMovement(meta, options = {}, ctx) {
       if (safeEid) {
         whereConditions.push(`${safeEid} IN (${eventIds.map(() => "?").join(",")})`);
         params.push(...eventIds);
+        // Keep Sysmon 20-25 out of the row budget — see sql-guards.js.
+        const _tsGuard = termSvcChannelGuard(safeEid, meta.colMap[columns._channel], eventIds);
+        if (_tsGuard) { whereConditions.push(_tsGuard.sql); params.push(..._tsGuard.params); }
       }
     }
 
@@ -300,6 +328,9 @@ function getLateralMovement(meta, options = {}, ctx) {
       );
       fid = _scanResult.fid;
       const warnings = _scanResult.warnings;
+      if (!options._prequeriedRows && rows.length >= _maxRows) {
+        warnings.push(`Query hit the ${_maxRows.toLocaleString()}-row cap (oldest events kept). Newer activity may be missing — raise the row limit or filter first.`);
+      }
       const scanStats = _scanResult.scanStats;
       const _scanEidCol = _scanResult._scanEidCol;
       const _usersFromCorrelation = _scanResult._usersFromCorrelation;
@@ -318,11 +349,10 @@ function getLateralMovement(meta, options = {}, ctx) {
         .split(",")
         .map((v) => v.trim().toUpperCase())
         .filter(Boolean);
-      const _parseLmTs = (value) => {
-        if (!value) return null;
-        const d = new Date(String(value).replace("T", " ").replace("Z", ""));
-        return isNaN(d) ? null : d.getTime();
-      };
+      // UTC-anchored (see time.js). The old form stripped the zone and parsed
+      // host-local, so finding<->event correlation windows moved with the analyst's
+      // timezone and misbehaved across their DST change.
+      const _parseLmTs = (value) => tsMs(value);
       // This runs once per finding over the whole event array. Parsing each event's
       // timestamp and upper-casing its hosts inside that loop meant the same work was
       // redone for every finding — on a 500K-row tab with a few hundred findings that
@@ -392,7 +422,7 @@ function getLateralMovement(meta, options = {}, ctx) {
       // Builds its own finding-pair index now that it precedes triage.
       fid = runStage(
         "RDP scoring",
-        () => scoreRdpSessions({ timeOrdered, edgeMap, rdpSessions, _outlierHosts, findings, fid }),
+        () => scoreRdpSessions({ timeOrdered, edgeMap, rdpSessions, _outlierHosts, findings, fid, options }),
         () => ({ fid }),
       ).fid;
 
@@ -505,7 +535,7 @@ function getLateralMovement(meta, options = {}, ctx) {
           // A failed authentication episode is RDP activity, not an established
           // session. Keep the two populations explicit so the hero metric and
           // Accounts tab do not call password attempts "sessions".
-          rdpSessionCount: rdpSessions.filter((s) => s.status !== "failed").length,
+          rdpSessionCount: rdpSessions.filter((s) => s.status !== "failed" && s.status !== "incomplete").length,
           rdpActivityCount: rdpSessions.length,
           rdpFailureEpisodeCount: rdpSessions.filter((s) => s.status === "failed").length,
           rdpFailedAttemptCount: rdpSessions

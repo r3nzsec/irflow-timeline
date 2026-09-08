@@ -8,13 +8,19 @@ Release announcements and focused notes about new forensic workflows.
 
 ## Latest
 
+### [IRFlow Timeline 1.0.13 — AI Evidence With Provenance, Direct KAPE VHDX Triage, and Quieter Detections](/blog/v1.0.13-ai-forensics-and-vhdx)
+
+**September 8, 2026**
+
+Open KAPE VHDX collections directly on macOS; recover substantially more local Claude, Codex/ChatGPT, Grok Build, Grok Bot, Gemini CLI, and Cursor evidence with explicit source coverage; and reduce Process Inspector and Lateral Movement false positives without suppressing corroborated attack behavior.
+
+## Previous Releases
+
 ### [IRFlow Timeline 1.0.12 — Diff Tabs, and a Triage Layer That Was Losing Work](/blog/v1.0.12-diff-tabs-and-triage)
 
 **August 24, 2026**
 
 Diff any two imported files into an Added / Removed / Changed timeline with field-level before/after. Plus two corrections: the tag and bookmark layer was silently discarding annotations in four separate ways — including every tag written during the post-import index build — and every DMG the project has published was an unsigned disk image that tripped Gatekeeper on download.
-
-## Previous Releases
 
 ### [IRFlow Timeline 1.0.11 — Computer History, Verified Against the Artifact](/blog/v1.0.11-computer-history-verified)
 

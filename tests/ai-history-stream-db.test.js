@@ -54,6 +54,7 @@ test("extractMergedAiHistoryRootsToDb writes rows without returning a merged arr
       { user: "fixture", host: "" },
       { includeSubagents: false },
     );
+    assert.deepEqual(db.databases.get(tabId).tsColumns, new Set(["Timestamp"]));
   } catch (e) {
     if (isBetterSqliteAbiError(e)) {
       t.skip("better-sqlite3 not built for this Node ABI");

@@ -20,6 +20,7 @@ Back to [AI Query History](/dfir-tips/ai-query-history).
 |----------|----------------|
 | macOS | `~/Library/Application Support/com.openai.chat/` |
 | macOS (Atlas) | `~/Library/Application Support/OpenAI/Atlas/` |
+| macOS (merged ChatGPT/Codex app, 2026-07-09+) | `~/Library/Application Support/Codex/` |
 | Windows (standalone) | `%AppData%\Roaming\OpenAI\ChatGPT\` |
 | Windows (MS Store) | `%LocalAppData%\Packages\OpenAI.ChatGPT-Desktop_*\LocalCache\Roaming\ChatGPT\` |
 | Linux | `~/.config/com.openai.chat/` |
@@ -31,6 +32,8 @@ ChatGPT stores vary by version:
 - **Conversation bundles** — `conversations-v2-*` and `conversations-v3-*/*.data`, including project stores, become **inventory-only** rows (UUID, generation, project/store context, size, path). Message bodies are not decoded.
 
 Newer builds may keep full chat text cloud-only — local LevelDB may contain titles and timestamps only.
+
+On 2026-07-09 OpenAI folded ChatGPT desktop into the Codex app (`com.openai.codex`). The merged app writes a Chromium profile at `~/Library/Application Support/Codex` (Windows: `%APPDATA%\Codex`). IRFlow treats that folder as a ChatGPT root: in-app History visits, Local Storage metadata, and an `artifact-sessions` inventory. **Login Data and Cookies are not read.** Thread bodies still live under `~/.codex`, not in this profile. The old `com.openai.chat` tree is still scanned when present.
 
 ### How to import
 
@@ -48,21 +51,59 @@ Newer builds may keep full chat text cloud-only — local LevelDB may contain ti
 | Artifact | Contents |
 |----------|----------|
 | `history.jsonl` | Prompt log (`session_id`, `ts`, `text`) |
-| `sessions/YYYY/MM/DD/rollout-*.jsonl` | Full threads: user/assistant messages, `shell` tool calls, reasoning events |
+| `sessions/YYYY/MM/DD/rollout-*.jsonl` | Full streamed threads: user/assistant messages, tool calls/results, reasoning, and independent image/audio/video/file/document references with exact line/offset JSON pointers |
 | `archived_sessions/` | Archived rollout files |
 | `session_index.jsonl` | Thread titles (metadata) |
-| `state*.sqlite` plus WAL/SHM | Thread, spawn-edge, and dynamic-tool metadata |
+| `state*.sqlite` plus WAL/SHM | Thread, spawn-edge, dynamic-tool metadata, `remote_control_enrollments`, and the `projects` / `project_roots` catalogue (project id → folder on disk) |
+| `thread_history*.sqlite` | Desktop SQL projection used only when a rollout is missing, unreadable, or partly parsed; projection existence alone is not treated as parity proof |
+| `config.toml`, `AGENTS.md`, `instructions.md`, `skills/`, `plugins/` | Project trust, MCP/plugin settings, exact bounded instruction context, and hashed skill/plugin inventory. Secret-like values are redacted; `auth.json` is never opened or hashed |
+| `rules/*.rules` | The execpolicy allow-list. Each `prefix_rule(... decision="allow")` is a command prefix that runs **without an approval prompt**. **RecordType** `exec_policy_rule`, prefix in `ToolCommand` |
+| `shell_snapshots/<thread>.<ns>.sh` | Exported shell environment captured at thread start, world-readable. IRFlow reports variable names and which look credential-bearing; values are never read. **RecordType** `shell_snapshot` |
+| `sqlite/codex-dev.db` | `local_thread_catalog` (surface, missing-rollout flag) and `automations` (scheduled runs) |
+| `logs*.sqlite` | Tracing log; `Submission … op: UserInput` bodies carry prompt text on a lifecycle independent of the rollouts |
+| `memories*.sqlite`, `memories/{MEMORY,raw_memories,memory_summary}.md`, `memories/extensions/ad_hoc/` | The model's persistent memory of the user: per-thread `stage1_outputs` with how often each memory was re-injected, plus the consolidated files. Model-written; **RecordType** `thread_memory`, `agent_memory` |
+| `memories/rollout_summaries/*.md` | Per-thread summaries that outlive the rollout; `[rollout deleted]` when the transcript is gone |
+| `hooks.json` | Commands run on lifecycle events (execution persistence) |
+| `.codex-global-state.json` | Codex-managed SSH hosts with identity key path, which hosts Remote Control may drive, whether a phone paired, local project roots. **RecordType** `remote_control_state`, `remote_ssh_host` |
+| `ambient-suggestions/<hash>/ambient-suggestions.json` | Project roots the app was watching, with generated follow-up prompts and generation time |
+| `goals*.sqlite`, `queue*.sqlite`, `dictation-history/`, `transcription-history.jsonl` | Standing goals, queued prompts, voice input — parsed when populated |
 | VS Code-family `agentSessions.model.cache` | Embedded Codex provider evidence when rollouts are sparse |
 
-The macOS **Codex** app in `~/Library/Application Support/Codex` is UI cache only. Forensic content is under **`~/.codex`**.
+### Authorization posture and credential exposure
+
+Two files answer "what could Codex do here without asking" and "what did it leak":
+
+- **`rules/default.rules`** lists every command prefix the user has clicked *always allow* on. On a live host it allowed `docker run`, `rsync`, `pnpm install` and a `node -e` one-liner that rewrites source files. Read it alongside `remote_control_enrollments`: an enabled enrollment plus a broad allow-list means a phone could run those commands on the Mac with no prompt.
+- **`shell_snapshots/`** contains one dump of the exported environment per thread, mode 644. A live host exported `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_ID` in cleartext in every one of 31 snapshots. The row names the variables and their value lengths so the exposure is visible in the grid; treat the files as credential stores during acquisition. Common non-secret names such as `SSH_AUTH_SOCK` are not flagged.
+
+### The `thread_history` projection
+
+Rollouts stream line by line regardless of the former 48 MB threshold; the explicit `inventoryOnly` option is the only route that produces an oversized-file inventory row. A 4 MB per-line bound isolates a pathological record without dropping valid neighboring lines. IRFlow records actual per-rollout coverage and consults `thread_history*.sqlite` only for a missing, unreadable, or partly parsed rollout. Projection existence is not accepted as parity proof, because the projection may cover only a subset of rollouts. The `thread_history_coverage` row states which threads were reconstructed and why. Set `codexThreadHistoryMode: "all"` only when an examiner intentionally wants the full projection in addition to rollouts.
+
+Every eligible rollout and supported SQLite source is listed in the source-coverage ledger with WAL/SHM/journal companions. Media items also receive their own `media_reference` rows. Embedded bytes are represented by size and SHA-256; signed URL query values are not copied.
+
+Thread transcripts live under **`~/.codex`**. The Electron shell at `~/Library/Application Support/Codex` is a ChatGPT Chromium profile (see above), not a Codex CLI home — IRFlow will not treat it as `~/.codex`.
 
 Versioned `state*.sqlite` stores are snapshotted with their WAL/SHM companions. Full transcripts remain in rollout JSONL.
 
 ### How to import
 
 1. **File → Open…** and select `~/.codex`, or **Tools → Analysis → AI Artifacts → AI Apps → OpenAI Codex → Codex AI History…**
-2. Imports `history.jsonl` plus all `rollout-*.jsonl` under `sessions/` and `archived_sessions/` (deduped against session prompts).
+2. Imports `history.jsonl` plus all `rollout-*.jsonl` under `sessions/` and `archived_sessions/` (deduped against session prompts), then the SQLite and flat-file stores above.
 3. Forked threads (`parent_session_id`) are skipped unless you include subagents.
+
+### Merged desktop profile (`Application Support/Codex`)
+
+The Chromium profile of the merged ChatGPT/Codex app adds, besides in-app History visits:
+
+| Artifact | Rows |
+|----------|------|
+| `sentry/scope_v3.json`, `sentry/session.json` | `app_identity` (user id, account id, auth method, build, OS) and up to 200 `app_breadcrumb` rows: backend HTTP calls with query strings stripped, UI clicks and inputs, console errors, each to the second. `app_crash_reporter_session` brackets the run |
+| `Default/` and `codex-browser-app/` `Login Data`, `Cookies`, `Web Data` | `credential_store_inventory` by name and size, never read. `codex-browser-app` is the **agent's** in-app browser profile; a populated store there means the agent held web sessions |
+
+### ChatGPT Work-with-Apps pairings (`com.openai.chat/app_pairing_extensions/`)
+
+One JSON record per pairing: the paired application and bundle id, the workspace name, and the capability list. `setContent` / `replaceSelection` mean ChatGPT could **write into that editor**, not just read it. On a live host 55 pairings existed, all to Cursor workspaces. **RecordType** `app_pairing`, workspace in `Workspace`.
 
 ## ChatGPT Computer History (Skysight) {#chatgpt-computer-history-skysight}
 

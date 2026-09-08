@@ -11,11 +11,11 @@ const EXCLUDED_IPS = new Set(["-", "::1", "127.0.0.1", "0.0.0.0", ""]);
 const SERVICE_RE = /^(SYSTEM|LOCAL SERVICE|NETWORK SERVICE|DWM-\d+|UMFD-\d+|ANONYMOUS LOGON)$/i;
 
 // Session-only events: don't create graph edges, only used for RDP session correlation
-const SESSION_ONLY_EVENTS = new Set(["23","24","39","40","4634","4647","4672","4769","4779"]);
+const SESSION_ONLY_EVENTS = new Set(["20","23","24","32","33","34","35","39","40","4634","4647","4672","4769","4776","4779"]);
 
 // RDP event descriptions for session timeline
 const RDP_EVENT_DESC = {
-  "1149": "Network auth succeeded", "4624": "Logon succeeded", "4625": "Logon failed",
+  "1149": "RDP connection established (auth not proven)", "4624": "Logon succeeded", "4625": "Logon failed",
   "21": "Session logon succeeded", "22": "Shell start notification", "23": "Session logoff",
   "24": "Session disconnected", "25": "Session reconnected", "39": "Disconnected by another session",
   "40": "Session disconnect (reason code)", "4634": "Account logged off", "4647": "User-initiated logoff",
@@ -25,7 +25,7 @@ const RDP_EVENT_DESC = {
 
 // DC pattern: matches common naming conventions including prefixed/suffixed variants
 const DC_PAT = /(?:^|[\-_])(DC|PDC|BDC|ADDS|ADCS|ADFS)\d{0,3}(?:$|[\-_])|^AD\d{0,3}$/i;
-const SRV_PAT = /^(SVR|SRV|SERVER|FS|SQL|EXCH|MAIL|WEB|APP|DB|CA|WSUS|SCCM|SCOM|PRINT|FILE|DNS|DHCP|NPS|RADIUS|VPN|RDS|RDSH|RDCB|RDGW)/i;
+const SRV_PAT = /^(SVR|SRV|SERVER|FS|SQL|EXCH|MAIL|WEB|APP|DB|CA|WSUS|SCCM|SCOM|PRINT|FILE|DNS|DHCP|NPS|RADIUS|VPN|RDS|RDSH|RDCB|RDGW)(?=[_\-\d]|$)/i;
 
 // Outlier hostname detection patterns — always flagged regardless of frequency
 const OUTLIER_PATS_ALWAYS = [
@@ -84,7 +84,7 @@ function detectOutlier(hostname) {
 }
 
 /**
- * Build the full outlier host set, including frequency-dependent DESKTOP-*/WIN-* detection.
+ * Build the full outlier host set, including frequency-dependent DESKTOP-* and WIN-* detection.
  */
 function buildOutlierSet(hostSet) {
   const outlierHosts = new Set();

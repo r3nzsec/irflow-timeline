@@ -14,6 +14,7 @@
  */
 const { DC_PAT: _DC_PAT, SRV_PAT: _SRV_PAT, MGMT_SRC_PAT: _MGMT_SRC_PAT, SEV_ORDER: sevOrder } = require("../constants");
 const { generateConventionFindings } = require("../convention-detector");
+const { tsMs, cmpTs, gapMs } = require("../time");
 
 /**
  * Roll pair-based incidents up into multi-hop storylines.
@@ -84,7 +85,11 @@ function _buildCampaigns(state) {
           _incAdj.get(a).add(b);
           _incAdj.get(b).add(a);
         };
-        const _parseIso = (s) => { const d = new Date((s || "").replace("T", " ").replace("Z", "")); return isNaN(d) ? 0 : d.getTime(); };
+        // Was `new Date(s.replace("T"," ").replace("Z",""))`, which strips the zone and
+        // then parses HOST-LOCAL — so every campaign proximity window moved with the
+        // analyst's timezone and broke across their DST change. tsMs treats a zone-less
+        // timestamp as UTC, the app-wide convention.
+        const _parseIso = (s) => tsMs(s) ?? 0;
 
         for (let i = 0; i < incidents.length; i++) {
           const a = incidents[i];
@@ -145,7 +150,7 @@ function _buildCampaigns(state) {
           const allHosts = [...new Set(memberIncs.flatMap(inc => [inc.source, inc.target].filter(Boolean)))];
           const allUsers = [...new Set(memberIncs.flatMap(inc => inc.users || []))];
           const allTechs = [...new Set(memberIncs.flatMap(inc => inc.techniques || []))];
-          const allTs = memberIncs.flatMap(inc => [inc.timeRange?.from, inc.timeRange?.to]).filter(Boolean).sort();
+          const allTs = memberIncs.flatMap(inc => [inc.timeRange?.from, inc.timeRange?.to]).filter(Boolean).sort(cmpTs);
           const worstSev = memberIncs.reduce((b, inc) => (sevOrder[inc.severity] ?? 4) < (sevOrder[b] ?? 4) ? inc.severity : b, "low");
           const maxTriage = Math.max(...memberIncs.map(inc => inc.triageScore || 0)) + 10;
           const totalEvents = memberIncs.reduce((s, inc) => s + (inc.eventCount || 0), 0);
@@ -154,7 +159,7 @@ function _buildCampaigns(state) {
 
           // Build movement path: extract unique source→target pairs ordered by time
           const hopPairs = memberIncs
-            .sort((a, b) => ((a.timeRange?.from) || "").localeCompare((b.timeRange?.from) || ""))
+            .sort((a, b) => cmpTs(a.timeRange?.from, b.timeRange?.from))
             .map(inc => `${inc.source} \u2192 ${inc.target}`)
             .filter((v, i, arr) => arr.indexOf(v) === i);
 
@@ -323,8 +328,8 @@ function _enrichAndEmit(state) {
         if (chain.techniques.length === 1 && chain.techniques[0] === "Network Logon") { conf = Math.max(0, conf - 5); confFlags.push("Only generic logon (penalty)"); }
         let wideGaps = 0;
         for (let i = 1; i < ch.length; i++) {
-          const gap = new Date(ch[i].ts) - new Date(ch[i - 1].ts);
-          if (gap > 1800000) wideGaps++;
+          const gap = gapMs(ch[i - 1].ts, ch[i].ts);
+          if (gap != null && gap > 1800000) wideGaps++;
         }
         if (wideGaps > 0) { conf = Math.max(0, conf - wideGaps * 3); confFlags.push(`${wideGaps} wide gap${wideGaps > 1 ? "s" : ""} (penalty)`); }
         chain.confidence = conf >= 30 ? "high" : conf >= 15 ? "medium" : "low";

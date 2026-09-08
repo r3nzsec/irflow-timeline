@@ -1,0 +1,17 @@
+{
+  "firstStartTime": "2026-01-15T08:00:00.000Z",
+  "numStartups": 8,
+  "hasUsedRemoteControl": false,
+  "projects": {
+    "/Users/analyst/case": {
+      "lastSessionId": "sess-old",
+      "lastStartTime": 1690000000000,
+      "hasTrustDialogAccepted": true
+    },
+    "/Users/analyst/gone": {
+      "lastSessionId": "sess-gone",
+      "lastStartTime": 1695000000000,
+      "hasTrustDialogAccepted": false
+    }
+  }
+}

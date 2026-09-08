@@ -17,13 +17,13 @@ export default defineConfig({
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/irflow-timeline/logo.svg' }],
     ['meta', { property: 'og:title', content: 'IRFlow Timeline' }],
-    ['meta', { property: 'og:description', content: 'IRFlow Timeline 1.0.12 adds Diff Tabs — compare any two imported files into an Added / Removed / Changed timeline with field-level before/after — and fixes a tag and bookmark layer that was silently discarding annotations.' }],
+    ['meta', { property: 'og:description', content: 'IRFlow Timeline 1.0.13 adds direct KAPE VHDX triage, deeper local AI-app evidence with source coverage, and lower-noise Process Inspector and Lateral Movement analysis.' }],
     ['meta', { property: 'og:image', content: 'https://r3nzsec.github.io/irflow-timeline/IRFlow-Timeline-Home.png' }],
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:url', content: 'https://r3nzsec.github.io/irflow-timeline/' }],
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
     ['meta', { name: 'twitter:title', content: 'IRFlow Timeline' }],
-    ['meta', { name: 'twitter:description', content: 'IRFlow Timeline 1.0.12 adds Diff Tabs — compare any two imported files into an Added / Removed / Changed timeline with field-level before/after — and fixes a tag and bookmark layer that was silently discarding annotations.' }],
+    ['meta', { name: 'twitter:description', content: 'IRFlow Timeline 1.0.13 adds direct KAPE VHDX triage, deeper local AI-app evidence with source coverage, and lower-noise Process Inspector and Lateral Movement analysis.' }],
     ['meta', { name: 'twitter:image', content: 'https://r3nzsec.github.io/irflow-timeline/IRFlow-Timeline-Home.png' }],
     ['script', { 'data-goatcounter': 'https://irflowtimeline.goatcounter.com/count', async: '', src: '//gc.zgo.at/count.js' }],
     ['script', { type: 'application/ld+json' }, JSON.stringify({
@@ -31,11 +31,11 @@ export default defineConfig({
       '@type': 'SoftwareApplication',
       name: 'IRFlow Timeline',
       description: 'Native macOS DFIR timeline analysis with local AI application forensics for Grok Build, Claude, Codex, ChatGPT, Copilot, Gemini, Cursor, and other assistants.',
-      softwareVersion: '1.0.12',
+      softwareVersion: '1.0.13',
       operatingSystem: 'macOS',
       applicationCategory: 'SecurityApplication',
       url: 'https://r3nzsec.github.io/irflow-timeline/',
-      downloadUrl: 'https://github.com/r3nzsec/irflow-timeline/releases/tag/v1.0.12',
+      downloadUrl: 'https://github.com/r3nzsec/irflow-timeline/releases/tag/v1.0.13',
       author: {
         '@type': 'Person',
         name: 'Renzon Cruz',
@@ -61,11 +61,11 @@ export default defineConfig({
       { text: 'Reference', link: '/reference/keyboard-shortcuts' },
       { text: 'Author', link: '/about/author' },
       {
-        text: 'v1.0.12',
+        text: 'v1.0.13',
         items: [
+          { text: 'What’s New in v1.0.13', link: '/blog/v1.0.13-ai-forensics-and-vhdx' },
           { text: 'What’s New in v1.0.12', link: '/blog/v1.0.12-diff-tabs-and-triage' },
           { text: 'What’s New in v1.0.11', link: '/blog/v1.0.11-computer-history-verified' },
-          { text: 'What’s New in v1.0.10', link: '/blog/v1.0.10-computer-history' },
           { text: 'Changelog', link: '/about/changelog' },
           { text: 'Roadmap', link: '/about/roadmap' },
           { text: 'Credits', link: '/about/credits' }
@@ -177,6 +177,7 @@ export default defineConfig({
           text: 'IRFlow Timeline Blog',
           items: [
             { text: 'All Posts', link: '/blog/' },
+            { text: 'v1.0.13 — AI Forensics & VHDX', link: '/blog/v1.0.13-ai-forensics-and-vhdx' },
             { text: 'v1.0.12 — Diff Tabs & Triage', link: '/blog/v1.0.12-diff-tabs-and-triage' },
             { text: 'v1.0.11 — Computer History Verified', link: '/blog/v1.0.11-computer-history-verified' },
             { text: 'v1.0.10 — ChatGPT Computer History', link: '/blog/v1.0.10-computer-history' },

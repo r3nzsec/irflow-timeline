@@ -10,8 +10,11 @@ const {
   stripCodexUserText,
   parseCodexHistoryLine,
   parseRolloutEnvelope,
+  extractCodexMediaReferences,
   isCodexForkedSession,
   extractCodexDir,
+  extractCodexRolloutFile,
+  MAX_CODEX_ROLLOUT_BYTES,
   isCodexDir,
   resolveCodexHome,
 } = require("../electron/parsers/ai-history/codex");
@@ -102,6 +105,34 @@ test("parseRolloutEnvelope handles messages and preserves exact function-call ev
     tool.ToolInput,
     "{\"command\":[\"bash\",\"-lc\",\"printf '%s\\\\n' \\\"quoted value\\\"\"],\"description\":\"Run quoted command\"}",
   );
+});
+
+test("Codex media references are independent, source-addressed, and omit embedded bodies", () => {
+  const png = Buffer.from("forensic-image-bytes");
+  const embedded = `data:image/png;base64,${png.toString("base64")}`;
+  const ctx = { sessionId: "s-media", parentId: "", workspace: "/case", model: "gpt", gitBranch: "", isSidechainSession: false };
+  const rows = extractCodexMediaReferences({
+    type: "response_item",
+    timestamp: "2026-09-08T02:03:04Z",
+    payload: {
+      id: "message-1",
+      type: "message",
+      role: "user",
+      content: [
+        { type: "input_image", image_url: embedded, detail: "original" },
+        { type: "input_file", file_url: "https://evidence.invalid/sample.pdf?signature=SECRET", filename: "sample.pdf" },
+      ],
+    },
+  }, "/evidence/rollout.jsonl", ctx, {}, { byteOffset: 4096 }, 12);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].RecordType, "media_reference");
+  assert.equal(rows[0].LineNumber, "12");
+  assert.equal(rows[0].SourceOffset, "4096#/payload/content/0");
+  assert.match(rows[0].FullText, /"sha256": "[0-9a-f]{64}"/);
+  assert.doesNotMatch(rows[0].FullText, /forensic-image-bytes|base64/);
+  assert.match(rows[1].FullText, /sample\.pdf/);
+  assert.match(rows[1].FullText, /signature/);
+  assert.doesNotMatch(rows[1].FullText, /SECRET/);
 });
 
 test("parseRolloutEnvelope handles current custom tools, patches, context, and bounded outputs", () => {
@@ -207,8 +238,30 @@ test("extractCodexDir reads fixture history and rollout", async () => {
   assert.equal(functionCall.ToolCommand, "[\"bash\",\"-lc\",\"file sample.bin\"]");
   assert.equal(functionCall.ToolInput, "{\"command\":[\"bash\",\"-lc\",\"file sample.bin\"]}");
   assert.ok(rows.some((r) => r.Summary.includes("static analysis")));
-  const deduped = rows.filter((r) => r.RecordType === "history");
-  assert.equal(deduped.length, 0, "history row deduped when session has same prompt");
+  const history = rows.filter((r) => r.RecordType === "history");
+  assert.equal(history.length, 1, "history index occurrence retains its own provenance");
+});
+
+test("oversized Codex rollouts stream by default and can be inventoried explicitly", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "irflow-codex-huge-"));
+  try {
+    const huge = path.join(tmp, "rollout-too-big.jsonl");
+    fs.writeFileSync(huge, "{\"type\":\"session_meta\"}\n");
+    fs.truncateSync(huge, MAX_CODEX_ROLLOUT_BYTES + 1);
+    const rows = await extractCodexRolloutFile(huge, new Map(), { user: "u" });
+    assert.ok(rows.some((row) => row.RecordType === "session_meta"));
+    assert.ok(rows.every((row) => row.RecordType !== "oversized_rollout"));
+    const inventory = await extractCodexRolloutFile(
+      huge,
+      new Map(),
+      { user: "u" },
+      null,
+      { inventoryOnly: true },
+    );
+    assert.equal(inventory[0].RecordType, "oversized_rollout");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("detectAiHistoryImport and planImportPaths recognize .codex", () => {

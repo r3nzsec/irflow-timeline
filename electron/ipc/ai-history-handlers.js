@@ -40,6 +40,9 @@ const {
   resolveClaudeDir,
   resolveCodexHome,
   resolveGrokHome,
+  resolveGrokBotRoot,
+  grokBotExtractTargets,
+  NOT_A_GROK_BOT_DIR,
   resolveChatgptDir,
   resolveGeminiCliRoot,
   resolveCursorRoot,
@@ -89,6 +92,13 @@ const AI_HISTORY_IPC_QUERY_OPTS = {
 };
 
 const AI_HISTORY_EMPTY_COL_OMIT = ["FullText", "Description", "Transcript"];
+const AI_HISTORY_INCOMPLETE_STATUSES = new Set(["partial", "malformed", "unsupported", "excluded", "unavailable"]);
+
+function isPartialAiHistoryImport(importMeta, failures = []) {
+  return !!importMeta?.capped
+    || (failures || []).length > 0
+    || (importMeta?.sourceCoverage || []).some((entry) => AI_HISTORY_INCOMPLETE_STATUSES.has(entry?.status));
+}
 
 /**
  * Computer History rows carry two potentially huge payloads: ScreenText (a full accessibility-tree
@@ -109,10 +119,12 @@ const COMPUTER_HISTORY_IPC_QUERY_OPTS = {
 const COMPUTER_HISTORY_EMPTY_COL_OMIT = ["ScreenText", "Content", "Description"];
 
 function finishAiHistoryWorkerImport(ctx, tabId, result, {
-  fileName, sourceFormat, importNotice, sendProgress, queryOpts, emptyColOmit,
+  fileName, sourceFormat, importNotice, importMeta, failures, restoreSpec, sessionRestore,
+  sendProgress, queryOpts, emptyColOmit,
 }) {
   const { db, _tabMeta, scheduleIndexBuild, safeSend } = ctx;
   const isAiHistory = typeof sourceFormat === "string" && sourceFormat.startsWith("ai-history");
+  const aiHistoryPartial = isAiHistory && isPartialAiHistoryImport(importMeta, failures);
   // Explicit per-family overrides let a non-ai-history schema (Computer History) reuse this
   // finisher without inheriting AI-history column assumptions such as omitting FullText.
   const effectiveQueryOpts = queryOpts || (isAiHistory ? AI_HISTORY_IPC_QUERY_OPTS : null);
@@ -133,7 +145,15 @@ function finishAiHistoryWorkerImport(ctx, tabId, result, {
     numericColumns: result.numericColumns || [],
     isLargeFile: result.isLargeFile || false,
   });
-  if (_tabMeta) _tabMeta.set(tabId, { filePath: "", sourceFormat });
+  if (_tabMeta) {
+    _tabMeta.set(tabId, {
+      filePath: "",
+      sourceFormat,
+      aiHistoryImportMeta: importMeta || null,
+      aiHistoryFailures: failures || [],
+      aiHistoryRestore: restoreSpec || null,
+    });
+  }
 
   const rowCount = result.rowCount || 0;
   if (typeof sendProgress === "function") {
@@ -182,6 +202,11 @@ function finishAiHistoryWorkerImport(ctx, tabId, result, {
     emptyColumns,
     sourceFormat,
     importNotice: importNotice || null,
+    aiHistoryImportMeta: importMeta || null,
+    aiHistoryFailures: failures || [],
+    aiHistoryRestore: restoreSpec || null,
+    aiHistoryPartial,
+    sessionRestore: sessionRestore || null,
     isLargeFile: result.isLargeFile || aiHistoryLarge,
     initialRowsDeferred: isAiHistory && initialLimit === 0,
   });
@@ -194,6 +219,10 @@ function finishAiHistoryWorkerImport(ctx, tabId, result, {
     count: result.rowCount,
     sourceFormat,
     importNotice: importNotice || null,
+    importMeta: importMeta || null,
+    failures: failures || [],
+    restoreSpec: restoreSpec || null,
+    partial: aiHistoryPartial,
   };
 }
 
@@ -279,6 +308,10 @@ async function runAiHistoryProfileExtractWorker(ctx, roots, opts = {}) {
       fileName,
       sourceFormat,
       importNotice: result.importNotice || null,
+      importMeta: result.importMeta || null,
+      failures: result.failures || [],
+      restoreSpec: opts.restoreSpec || null,
+      sessionRestore: opts.sessionRestore || null,
       sendProgress,
     },
   );
@@ -301,9 +334,11 @@ async function runAiHistoryProfileExtractWorker(ctx, roots, opts = {}) {
     count: result.rowCount,
     sourceFormat,
     importNotice: result.importNotice || null,
+    importMeta: result.importMeta || null,
+    restoreSpec: opts.restoreSpec || null,
     sources: roots.map((r) => ({ tool: r.tool, path: r.path, label: r.label })),
     failures: result.failures || [],
-    partial: (result.failures || []).length > 0,
+    partial: isPartialAiHistoryImport(result.importMeta, result.failures),
     sourcesLabel,
     scanRoot: resolvedScanRoot || null,
     scanMode: resolvedScanMode || "local",
@@ -351,6 +386,11 @@ module.exports = function registerAiHistoryHandlers(safeHandle, safeSend, ctx) {
           title: "Select Grok Build artifacts",
           message: "Choose a .grok folder or a session summary/updates/chat_history/prompt_history JSONL file",
           filters: [{ name: "Grok Build JSON / JSONL", extensions: ["json", "jsonl"] }],
+        },
+        "grok-bot": {
+          title: "Select Grok Bot artifacts",
+          message: "Choose the .grokbot folder, the 'Grok Bot' application-support folder, or a sand-client-persistence .blob / local-exec-daemon.log file. The matching daemon and app roots for the same user are both read. Attachment originals are matched only inside those data folders, not Desktop/Documents/Downloads.",
+          filters: [{ name: "Grok Bot JSON / blob / log", extensions: ["json", "blob", "log"] }],
         },
         "claude-code": {
           title: "Select Claude Code artifacts",
@@ -401,24 +441,34 @@ module.exports = function registerAiHistoryHandlers(safeHandle, safeSend, ctx) {
       return { error: e.message || "Path is not authorized for AI extraction." };
     }
 
-    const root = selectedTool === "chatgpt"
-      ? (resolveChatgptDir(target) || target)
-      : selectedTool === "gemini-cli"
-        ? (resolveGeminiCliRoot(target) || target)
-        : selectedTool === "codex"
-          ? (resolveCodexHome(target) || target)
-          : selectedTool === "grok-build"
-            ? (resolveGrokHome(target) || target)
-            : selectedTool === "cursor"
-              ? (resolveCursorRoot(target) || target)
-              : selectedTool === "copilot"
-                ? (resolveCopilotRoot(target) || target)
-                : selectedTool === "windsurf"
-                  ? (resolveWindsurfUserDir(target) || target)
-                  : selectedTool === "continue"
-                    ? (continueHome(target) || target)
-                    : (resolveClaudeDir(target) || target);
-    const extractTarget = root || target;
+    let extractTarget;
+    let grokTargets = null;
+    if (selectedTool === "grok-bot") {
+      grokTargets = grokBotExtractTargets(target);
+      if (!grokTargets.length) return { error: NOT_A_GROK_BOT_DIR };
+      // Companion daemon/app roots are derived server-side and read by the extractor.
+      // Do not grant them as extra recursive scan roots — the user only selected `target`.
+      extractTarget = grokTargets.length === 1 ? grokTargets[0] : path.resolve(target);
+    } else {
+      const root = selectedTool === "chatgpt"
+        ? (resolveChatgptDir(target) || target)
+        : selectedTool === "gemini-cli"
+          ? (resolveGeminiCliRoot(target) || target)
+          : selectedTool === "codex"
+            ? (resolveCodexHome(target) || target)
+            : selectedTool === "grok-build"
+              ? (resolveGrokHome(target) || target)
+              : selectedTool === "cursor"
+                ? (resolveCursorRoot(target) || target)
+                : selectedTool === "copilot"
+                  ? (resolveCopilotRoot(target) || target)
+                  : selectedTool === "windsurf"
+                    ? (resolveWindsurfUserDir(target) || target)
+                    : selectedTool === "continue"
+                      ? (continueHome(target) || target)
+                      : (resolveClaudeDir(target) || target);
+      extractTarget = root || target;
+    }
     const user = deriveUser(extractTarget);
     const host = "";
 
@@ -440,13 +490,21 @@ module.exports = function registerAiHistoryHandlers(safeHandle, safeSend, ctx) {
     }
 
     const useSubagents = options?.includeSubagents != null ? !!options.includeSubagents : false;
-    const roots = [{
-      tool: selectedTool,
-      path: extractTarget,
-      label: meta.label,
-      endpointUser: user,
-      endpointHost: host,
-    }];
+    const roots = grokTargets && grokTargets.length
+      ? grokTargets.map((grokPath) => ({
+        tool: selectedTool,
+        path: grokPath,
+        label: meta.label,
+        endpointUser: deriveUser(grokPath) || user,
+        endpointHost: host,
+      }))
+      : [{
+        tool: selectedTool,
+        path: extractTarget,
+        label: meta.label,
+        endpointUser: user,
+        endpointHost: host,
+      }];
 
     if (options?.prepareOnly) {
       return {
@@ -477,6 +535,13 @@ module.exports = function registerAiHistoryHandlers(safeHandle, safeSend, ctx) {
             baseName: meta.tabPrefix,
             sourceFormat: `ai-history-${selectedTool}`,
             deferImportStart: true,
+            restoreSpec: {
+              kind: "single",
+              tool: selectedTool,
+              path: target,
+              includeSubagents: useSubagents,
+            },
+            sessionRestore: options?.sessionRestore || null,
           },
         );
         if (workerResult?.canceled) return { canceled: true };
@@ -504,24 +569,35 @@ module.exports = function registerAiHistoryHandlers(safeHandle, safeSend, ctx) {
       }
       const labelUser = user ? ` — ${user}` : "";
       dbg("EXEC", "decode-ai-history (inline)", { tool: selectedTool, target, count: rows.length });
+      const importMeta = {
+        copilot: buildCopilotExtractionStats(rows, getCopilotExtractionStats(rows)),
+        claudeDesktop: rows._claudeDesktopStats,
+        claudeContext: rows._claudeContextStats,
+        chatgpt: rows._chatgptStats,
+        cursor: { syntheticTimestamps: !!rows._cursorSyntheticTimestamps, composer: rows._cursorComposerStats, context: rows._cursorContextStats },
+        windsurf: rows._windsurfStats,
+        codexStateSqlite: rows._codexStateSqliteStats,
+        codexAuxSqlite: rows._codexAuxSqliteStats,
+        codexThreadHistory: rows._codexThreadHistoryStats,
+        codexLocalEvidence: rows._codexLocalEvidenceStats,
+        codexContext: rows._codexContextStats,
+        grokContext: rows._grokContextStats,
+        geminiHistory: rows._geminiHistoryStats,
+        windsurfCascade: rows._windsurfCascadeStats,
+        grokBot: rows._grokBotStats,
+        parseErrors: rows._parseErrors,
+        sourceCoverage: rows._sourceCoverage,
+      };
       return {
         rows,
         name: `${meta.tabPrefix} (${rows.length.toLocaleString()})${labelUser}`,
         count: rows.length,
         tool: selectedTool,
         sourceFormat: `ai-history-${selectedTool}`,
-        importNotice: buildAiHistoryImportNotice({
-          copilot: buildCopilotExtractionStats(rows, getCopilotExtractionStats(rows)),
-          claudeDesktop: rows._claudeDesktopStats,
-          chatgpt: rows._chatgptStats,
-          cursor: { syntheticTimestamps: !!rows._cursorSyntheticTimestamps, composer: rows._cursorComposerStats },
-          windsurf: rows._windsurfStats,
-          codexStateSqlite: rows._codexStateSqliteStats,
-          codexAuxSqlite: rows._codexAuxSqliteStats,
-          codexLocalEvidence: rows._codexLocalEvidenceStats,
-          windsurfCascade: rows._windsurfCascadeStats,
-          parseErrors: rows._parseErrors,
-        }) || null,
+        importNotice: buildAiHistoryImportNotice(importMeta) || null,
+        importMeta,
+        partial: isPartialAiHistoryImport(importMeta),
+        restoreSpec: { kind: "single", tool: selectedTool, path: target, includeSubagents: useSubagents },
       };
     } catch (e) {
       return { error: `AI history extraction failed: ${e.message}` };
@@ -626,8 +702,9 @@ module.exports = function registerAiHistoryHandlers(safeHandle, safeSend, ctx) {
       {
         fileName: baseName,
         sourceFormat,
-        importNotice: result.importNotice || null,
-        sendProgress,
+          importNotice: result.importNotice || null,
+          importMeta: result.importMeta || null,
+          sendProgress,
         queryOpts: COMPUTER_HISTORY_IPC_QUERY_OPTS,
         emptyColOmit: COMPUTER_HISTORY_EMPTY_COL_OMIT,
       },
@@ -798,6 +875,20 @@ module.exports = function registerAiHistoryHandlers(safeHandle, safeSend, ctx) {
           host,
           resolvedScanRoot,
           resolvedScanMode,
+          restoreSpec: {
+            kind: "profile",
+            roots: roots.map((root) => ({
+              tool: root.tool,
+              path: root.path,
+              label: root.label,
+              endpointUser: root.endpointUser || "",
+              endpointHost: root.endpointHost || "",
+            })),
+            includeSubagents: useSubagents,
+            scanRoot: resolvedScanRoot || null,
+            scanMode: resolvedScanMode || "local",
+          },
+          sessionRestore: options?.sessionRestore || null,
         });
         if (workerResult.error) return workerResult;
         dbg("EXEC", "extract-ai-history-profile (worker)", {
@@ -812,8 +903,9 @@ module.exports = function registerAiHistoryHandlers(safeHandle, safeSend, ctx) {
       let rows;
       let importNotice;
       let failures;
+      let importMeta;
       try {
-        ({ rows, importNotice, failures } = await extractMergedAiHistoryRoots(
+        ({ rows, importNotice, importMeta, failures } = await extractMergedAiHistoryRoots(
           roots,
           { user, host },
           {
@@ -857,9 +949,23 @@ module.exports = function registerAiHistoryHandlers(safeHandle, safeSend, ctx) {
         count: rows.length,
         sourceFormat: "ai-history-merged",
         importNotice,
+        importMeta: importMeta || null,
+        restoreSpec: {
+          kind: "profile",
+          roots: roots.map((root) => ({
+            tool: root.tool,
+            path: root.path,
+            label: root.label,
+            endpointUser: root.endpointUser || "",
+            endpointHost: root.endpointHost || "",
+          })),
+          includeSubagents: useSubagents,
+          scanRoot: resolvedScanRoot || null,
+          scanMode: resolvedScanMode || "local",
+        },
         sources: roots.map((r) => ({ tool: r.tool, path: r.path, label: r.label })),
         failures,
-        partial: failures.length > 0,
+        partial: isPartialAiHistoryImport(importMeta, failures),
         sourcesLabel,
         scanRoot: resolvedScanRoot || null,
         scanMode: resolvedScanMode || "local",

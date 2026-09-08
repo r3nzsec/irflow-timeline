@@ -15,6 +15,7 @@
  */
 const { TELEMETRY_CATEGORIES } = require("../constants");
 const { compactGet, parseCompactKeyValues } = require("../../evtx-utils");
+const { cmpTs, earlierTs, laterTs } = require("../time");
 
 function computeSysmonRdpAndCoverage(state) {
   const {
@@ -47,7 +48,9 @@ function computeSysmonRdpAndCoverage(state) {
           for (const [clientHost, info] of _msCnHosts) {
             const targets = [...info.targets];
             const inGraph = hostSet.has(clientHost);
-            _outlierHosts.add(clientHost);
+            if (!inGraph || _conventionOutliers.has(clientHost) || _outlierHosts.has(clientHost)) {
+              _outlierHosts.add(clientHost);
+            }
             const pills = [
               { text: "Sysmon EID 13 registry", type: "execution" },
               { text: `CLIENTNAME: ${clientHost}`, type: "target" },
@@ -136,7 +139,9 @@ function computeSysmonRdpAndCoverage(state) {
               let severity = "high";
               if (inGraph && !isConvOutlier && !isExistingOutlier) severity = "medium";
 
-              _outlierHosts.add(clientHost);
+              // A well-known CLIENTNAME already in the logon graph is not an
+              // attacker box — only promote unknowns / convention outliers.
+              if (!inGraph || isConvOutlier || isExistingOutlier) _outlierHosts.add(clientHost);
 
               const pills = [
                 { text: "Sysmon EID 13 registry", type: "execution" },
@@ -191,13 +196,13 @@ function computeSysmonRdpAndCoverage(state) {
         g.count++;
         g.evidenceRefs = _dedupeEvidenceRefs([...(g.evidenceRefs || []), ...(s.evidenceRefs || [])]);
         g.itemRowids = _rowidsFromRefs(g.evidenceRefs);
-        if (s.startTime && s.startTime < g.timeRange.from) g.timeRange.from = s.startTime;
+        if (s.startTime) g.timeRange.from = earlierTs(g.timeRange.from, s.startTime);
         // Use effectiveEnd so active/disconnected sessions don't collapse to startTime
         const et = s.endTime || s.effectiveEnd || s.startTime;
-        if (et && et > g.timeRange.to) g.timeRange.to = et;
+        if (et) g.timeRange.to = laterTs(g.timeRange.to, et);
       }
       const groupedSessions = [..._groupMap.values()];
-      groupedSessions.forEach(g => g.sessions.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || "")));
+      groupedSessions.forEach(g => g.sessions.sort((a, b) => cmpTs(a.startTime, b.startTime)));
 
       // === Telemetry Coverage Computation ===
       // Define telemetry categories — each maps an analyst-friendly name to a set of EIDs.

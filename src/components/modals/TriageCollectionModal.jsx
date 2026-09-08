@@ -10,8 +10,10 @@ import { updateModal } from "../../modals/modalRegistry.js";
 /**
  * TriageCollectionModal — "Open Triage Collection".
  *
- * The analyst points at a KAPE/triage folder; this shows what is inside, ranked by
- * lateral-movement relevance, and imports the selection as timeline tabs.
+ * The analyst points at a KAPE/triage folder — or a KAPE `--vhdx` image, whose artifacts
+ * are first copied out of the embedded NTFS volume into a scratch folder — and this shows
+ * what is inside, ranked by lateral-movement relevance, and imports the selection as
+ * timeline tabs.
  *
  * Two independent lanes, because they answer different questions and an analyst may want
  * either, both, or neither:
@@ -22,6 +24,14 @@ import { updateModal } from "../../modals/modalRegistry.js";
  * Artifacts this branch has no parser for are listed but never silently dropped: telling
  * the analyst "290 prefetch files are here, run PECmd" beats pretending they don't exist.
  */
+const humanBytes = (b) => {
+  const n = Number(b) || 0;
+  if (n >= 1073741824) return `${(n / 1073741824).toFixed(1)} GB`;
+  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+};
+
 export default function TriageCollectionModal() {
   const modal = useUIStore((s) => s.modal);
   const setModal = useUIStore((s) => s.setModal);
@@ -35,27 +45,87 @@ export default function TriageCollectionModal() {
   // Open the folder picker immediately — the modal has nothing to show until a folder is
   // chosen, so making the analyst click "Browse" first would be a wasted step.
   const pickedRef = useRef(false);
+  const genRef = useRef(0);
   useEffect(() => {
-    if (!isActive || pickedRef.current || modal.phase !== "picking") return;
+    if (!isActive) {
+      pickedRef.current = false;
+      genRef.current += 1;
+      return undefined;
+    }
+    if (pickedRef.current || modal.phase !== "picking") return undefined;
     pickedRef.current = true;
+    const gen = ++genRef.current;
+    const stillThisRun = () => genRef.current === gen;
     (async () => {
-      if (!tle?.triageSelectRoot) { patch({ phase: "manifest", error: "Triage import is not available in this window." }); return; }
+      if (!tle?.triageSelectRoot) { if (stillThisRun()) patch({ phase: "manifest", error: "Triage import is not available in this window." }); return; }
       const res = await tle.triageSelectRoot();
+      if (!stillThisRun()) return;
       if (isIpcError(res)) { setModal(null); toast.error("Could not open that folder", { detail: ipcErrorMessage(res) }); return; }
-      if (!res || res.canceled || !res.dir) { setModal(null); return; }
-      patch({ phase: "scanning", dir: res.dir });
-      const manifest = await tle.triageDiscover(res.dir);
+      if (!res || res.canceled) { setModal(null); return; }
+      if (res.error) { patch({ phase: "manifest", error: res.error }); return; }
+
+      let dir = res.dir;
+      let vhdx = null;
+      if (res.vhdx) {
+        // A VHDX image: copy the artifacts out of the embedded NTFS volume first. The
+        // handler resolves when extraction finishes; progress arrives on its own channel.
+        patch({ phase: "extracting", dir: "", vhdx: { path: res.vhdx, name: res.vhdx.split("/").pop(), size: res.size }, extract: { phase: "starting", percent: 0 } });
+        const out = await tle.triageOpenVhdx(res.vhdx);
+        if (!stillThisRun()) return;
+        if (isIpcError(out)) { patch({ phase: "manifest", error: ipcErrorMessage(out), extract: null }); return; }
+        if (out?.cancelled) { setModal(null); return; }
+        if (out?.error) { patch({ phase: "manifest", error: out.error, extract: null }); return; }
+        dir = out.dir;
+        vhdx = { path: res.vhdx, name: out.vhdx?.name || res.vhdx.split("/").pop(), ...out };
+      }
+      if (!dir) { setModal(null); return; }
+
+      patch({ phase: "scanning", dir, vhdx, extract: null, discover: { phase: "starting", percent: 0 } });
+      const manifest = await tle.triageDiscover(dir);
+      if (!stillThisRun()) return;
       if (isIpcError(manifest)) { patch({ phase: "manifest", error: ipcErrorMessage(manifest) }); return; }
       if (manifest?.error) { patch({ phase: "manifest", error: manifest.error, manifest: null }); return; }
       // Seed the selection from the manifest's own defaults.
       const selected = new Set(manifest.lanes.lateralMovement.items.filter((i) => i.defaultChecked).map((i) => i.id));
       patch({ phase: "manifest", manifest, selected, error: null });
     })();
+    return undefined;
   }, [isActive, modal?.phase]);
+
+  // Extraction progress (VHDX only). Subscribed for the modal's lifetime; the payload is
+  // tiny and only lands while phase === "extracting".
+  useEffect(() => {
+    if (!isActive || !tle?.onTriageVhdxProgress) return undefined;
+    return tle.onTriageVhdxProgress((p) => {
+      if (!p) return;
+      patch((prev) => (prev.phase === "extracting" ? { extract: { ...(prev.extract || {}), ...p } } : {}));
+    });
+  }, [isActive]);
+
+  useEffect(() => {
+    if (!isActive || !tle?.onTriageDiscoverProgress) return undefined;
+    return tle.onTriageDiscoverProgress((p) => {
+      if (!p) return;
+      patch((prev) => (prev.phase === "scanning" ? { discover: { ...(prev.discover || {}), ...p } } : {}));
+    });
+  }, [isActive]);
+
+  // Closing the modal mid-extraction must stop the worker: it would otherwise keep
+  // filling the scratch volume with nothing waiting for the result.
+  const closeModal = () => {
+    genRef.current += 1;
+    if (modal?.phase === "extracting" && modal?.extract?.jobId && tle?.triageCancelVhdx) {
+      tle.triageCancelVhdx(modal.extract.jobId).catch?.(() => {});
+    }
+    if (modal?.phase === "scanning" && modal?.discover?.jobId && tle?.triageCancelDiscover) {
+      tle.triageCancelDiscover(modal.discover.jobId).catch?.(() => {});
+    }
+    setModal(null);
+  };
 
   if (!isActive) return null;
 
-  const { phase, dir, manifest, error, selected, showAllEvtx } = modal;
+  const { phase, dir, manifest, error, selected, showAllEvtx, vhdx, extract, discover } = modal;
   const lm = manifest?.lanes?.lateralMovement;
   const sel = selected instanceof Set ? selected : new Set();
 
@@ -123,22 +193,70 @@ export default function TriageCollectionModal() {
       minWidth={520}
       minHeight={380}
       ariaLabel="Open Triage Collection"
-      onClose={() => setModal(null)}
+      onClose={closeModal}
     >
       {({ startDrag, height }) => (<>
         <div onMouseDown={startDrag} style={{ padding: "14px 18px 10px", borderBottom: `1px solid ${th.border}22`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, background: `linear-gradient(135deg, ${th.panelBg}ee, ${th.modalBg}dd)`, cursor: "grab" }}>
           <div>
             <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: th.text, fontFamily: "-apple-system, sans-serif" }}>Open Triage Collection</h3>
-            <p style={{ margin: "2px 0 0", ...lbl }}>{dir || "Select a KAPE / triage folder"}</p>
+            <p style={{ margin: "2px 0 0", ...lbl }}>{vhdx?.path || dir || "Select a KAPE / triage folder or VHDX image"}</p>
           </div>
-          <button onClick={() => setModal(null)} style={{ width: 24, height: 24, borderRadius: 12, background: th.textMuted + "15", border: "none", color: th.textMuted, cursor: "pointer", fontSize: 13 }}>{"✕"}</button>
+          <button onClick={closeModal} style={{ width: 24, height: 24, borderRadius: 12, background: th.textMuted + "15", border: "none", color: th.textMuted, cursor: "pointer", fontSize: 13 }}>{"✕"}</button>
         </div>
 
         <div style={{ flex: 1, overflow: "auto", padding: "14px 18px" }}>
-          {phase === "scanning" && <div style={{ ...lbl, padding: 20, textAlign: "center" }}>Scanning collection…</div>}
+          {phase === "extracting" && (
+            <div style={{ padding: "18px 16px", borderRadius: 12, background: th.glassBg, border: `1px solid ${th.glassBorder}`, boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)" }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 6 }}>
+                <strong style={{ fontSize: 12.5, color: th.text, fontFamily: "-apple-system, sans-serif" }}>
+                  {extract?.phase === "extracting" ? "Extracting artifacts from image" : extract?.phase === "finalizing" ? "Finishing" : "Reading the NTFS volume inside the image"}
+                </strong>
+                <span style={{ ...lbl, marginLeft: "auto", fontVariantNumeric: "tabular-nums" }}>{Number.isFinite(extract?.percent) ? `${extract.percent}%` : ""}</span>
+              </div>
+              <div style={{ height: 6, borderRadius: 3, background: th.bgInput, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${Math.max(2, Math.min(100, extract?.percent || 0))}%`, borderRadius: 3, background: `linear-gradient(90deg, ${th.accent}, ${th.accentHover})`, boxShadow: `0 0 10px ${th.accent}66`, transition: "width 160ms var(--ease-out, ease-out)" }} />
+              </div>
+              <div style={{ ...lbl, marginTop: 8, display: "flex", gap: 8 }}>
+                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{extract?.statusDetail || "Opening image…"}</span>
+              </div>
+              {extract?.current && <div style={{ ...lbl, marginTop: 3, fontFamily: "monospace", fontSize: 9.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{extract.current}</div>}
+              <div style={{ ...lbl, marginTop: 10, lineHeight: 1.5 }}>
+                Only recognized artifacts are copied out (event logs, $MFT/$J, hives, Prefetch, LNK, Jump Lists, browser and Defender data, EZ-Tools CSVs). The image itself is never modified.
+              </div>
+            </div>
+          )}
+
+          {phase === "scanning" && (
+            <div style={{ padding: "18px 16px", borderRadius: 12, background: th.glassBg, border: `1px solid ${th.glassBorder}` }}>
+              <div style={{ fontSize: 12.5, color: th.text, fontFamily: "-apple-system, sans-serif", fontWeight: 600, marginBottom: 8 }}>
+                Scanning collection
+              </div>
+              <div style={{ ...lbl }}>{discover?.statusDetail || "Walking the folder tree…"}</div>
+              {Number.isFinite(discover?.scanned) && (
+                <div style={{ ...lbl, marginTop: 6, fontVariantNumeric: "tabular-nums" }}>
+                  {Number(discover.scanned).toLocaleString()} files scanned
+                  {Number.isFinite(discover.classified) ? ` · ${Number(discover.classified).toLocaleString()} artifacts` : ""}
+                </div>
+              )}
+            </div>
+          )}
 
           {error && (
-            <div style={{ padding: 12, borderRadius: 8, background: th.danger + "12", border: `1px solid ${th.danger}44`, color: th.text, fontSize: 12, fontFamily: "-apple-system, sans-serif", lineHeight: 1.5 }}>{error}</div>
+            <div style={{ padding: 12, borderRadius: 8, background: th.danger + "12", border: `1px solid ${th.danger}44`, color: th.text, fontSize: 12, fontFamily: "-apple-system, sans-serif", lineHeight: 1.5 }}>
+              {error}
+              <div style={{ marginTop: 10 }}>
+                <button
+                  onClick={() => {
+                    pickedRef.current = false;
+                    genRef.current += 1;
+                    patch({ phase: "picking", error: null, manifest: null, dir: "", vhdx: null, extract: null });
+                  }}
+                  style={{ ...ms.bs, borderRadius: 8 }}
+                >
+                  Choose again
+                </button>
+              </div>
+            </div>
           )}
 
           {phase === "manifest" && manifest && (<>
@@ -150,8 +268,18 @@ export default function TriageCollectionModal() {
               <span style={{ ...lbl, marginLeft: "auto" }}>{manifest.stats?.classified} artifacts · {manifest.stats?.elapsedMs}ms</span>
             </div>
 
+            {vhdx && (
+              <div style={{ padding: "7px 10px", marginBottom: 8, borderRadius: 8, background: th.glassBg, border: `1px solid ${th.glassBorder}`, fontSize: 10.5, color: th.textDim, fontFamily: "-apple-system, sans-serif", lineHeight: 1.45 }}>
+                <span style={{ color: th.text, fontWeight: 600 }}>{vhdx.name}</span>
+                {vhdx.extracted ? ` · ${vhdx.extracted.count.toLocaleString()} artifact${vhdx.extracted.count === 1 ? "" : "s"} (${humanBytes(vhdx.extracted.bytes)}) copied out of the image` : ""}
+                {vhdx.volume?.layout === "volume" ? " · full Windows volume, not a KAPE package" : ""}
+                {vhdx.notSelected ? ` · ${vhdx.notSelected.toLocaleString()} other files left in the image` : ""}
+                {vhdx.skipped?.failed?.length ? ` · ${vhdx.skipped.failed.length} could not be copied` : ""}
+              </div>
+            )}
+
             {/* Anything the analyst must know before trusting the attribution. */}
-            {(manifest.host?.notes || []).concat(manifest.warnings || []).map((n, i) => (
+            {(manifest.host?.notes || []).concat(manifest.warnings || []).concat(vhdx?.warnings || []).map((n, i) => (
               <div key={i} style={{ padding: "7px 10px", marginBottom: 6, borderRadius: 6, background: th.warning + "10", border: `1px solid ${th.warning}33`, color: th.textDim, fontSize: 10.5, fontFamily: "-apple-system, sans-serif", lineHeight: 1.45 }}>{n}</div>
             ))}
 
@@ -173,7 +301,7 @@ export default function TriageCollectionModal() {
               ))}
               {lm.items.some((i) => i.lmTier < 2 && !i.defaultChecked) && (
                 <button onClick={() => patch({ showAllEvtx: !showAllEvtx })} style={{ ...ms.bs, border: "none", background: "transparent", color: th.accent, fontSize: 10, padding: "6px 12px" }}>
-                  {showAllEvtx ? "Show fewer channels" : "Show all graded channels"}
+                  {showAllEvtx ? "Show fewer channels" : `Show all ${lm.totalEvtx} channels`}
                 </button>
               )}
             </div>
@@ -218,6 +346,9 @@ export default function TriageCollectionModal() {
                     {a.hint && <span style={{ ...lbl, color: th.accent, minWidth: 150 }}>{a.hint}</span>}
                   </div>
                 ))}
+                {manifest.info.length > 10 && (
+                  <div style={{ ...lbl, paddingTop: 4 }}>+{manifest.info.length - 10} more</div>
+                )}
               </div>
             )}
           </>)}
@@ -231,7 +362,7 @@ export default function TriageCollectionModal() {
             Run Lateral Movement analysis after import
           </label>
           <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-            <button onClick={() => setModal(null)} style={{ ...ms.bs, borderRadius: 8 }}>Cancel</button>
+            <button onClick={closeModal} style={{ ...ms.bs, borderRadius: 8 }}>{phase === "extracting" ? "Cancel extraction" : "Cancel"}</button>
             <button onClick={startImport} disabled={phase !== "manifest" || sel.size === 0}
               style={{ ...ms.bp, borderRadius: 8, opacity: phase === "manifest" && sel.size > 0 ? 1 : 0.5 }}>
               Import {sel.size || ""}{modal.analyzeAfter ? " + Analyze" : ""}

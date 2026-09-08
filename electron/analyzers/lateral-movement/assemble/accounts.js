@@ -11,7 +11,7 @@
  * @returns {Array} accounts (sorted by suspicion score, then activity)
  */
 const { SERVICE_RE, PRIVILEGED_NAME_RE } = require("../constants");
-const { normalizeTimestamp } = require("../../../utils/forensic-normalize");
+const { normalizeTimestamp, normalizeLogonId } = require("../../../utils/forensic-normalize");
 
 function aggregateAccounts(state) {
   const { timeOrdered, rdpSessions, findings, userEventCounts, userEventOriginalName, _outlierHosts } = state;
@@ -177,15 +177,18 @@ function aggregateAccounts(state) {
         const acct = _getAcct(s.user);
         if (!acct) continue;
         const isFailedActivity = s.status === "failed";
-        if (!isFailedActivity) acct.rdpSessionCount++;
-        if (!isFailedActivity && (s.suspicionScore || 0) >= 25) acct.rdpSuspiciousCount++;
-        if (!isFailedActivity && s.hasAdmin) acct.rdpAdminCount++;
-        if (!isFailedActivity && s.isConcurrent) acct.rdpConcurrentCount++;
+        // Incomplete / connecting = 1149 (or similar) without a proven session start.
+        // Keep source/target and the activity window; do not call it an RDP session.
+        const isEstablished = !isFailedActivity && s.status !== "incomplete" && s.status !== "connecting";
+        if (isEstablished) acct.rdpSessionCount++;
+        if (isEstablished && (s.suspicionScore || 0) >= 25) acct.rdpSuspiciousCount++;
+        if (isEstablished && s.hasAdmin) acct.rdpAdminCount++;
+        if (isEstablished && s.isConcurrent) acct.rdpConcurrentCount++;
         if (isFailedActivity) {
           acct.rdpFailedCount++;
           acct.rdpFailedAttemptCount += s.attemptCount || 1;
         }
-        if (!isFailedActivity && s.isReconnect) acct.rdpReconnectCount++;
+        if (isEstablished && s.isReconnect) acct.rdpReconnectCount++;
         if (s.source) { acct.sourceHosts.add(s.source); acct.rdpSourceHosts.add(s.source); }
         if (s.target) { acct.targetHosts.add(s.target); acct.rdpTargetHosts.add(s.target); }
         // RDP sessions are scoped lateral activity — extend the First/Last Seen window
@@ -252,18 +255,32 @@ function aggregateAccounts(state) {
           return Number.isFinite(t) ? Math.floor(t / 1000) : null;
         };
         const privSeconds = new Set();
+        // Exact identity index: a 4672's SubjectLogonId IS the 4624's TargetLogonId
+        // for the same session. When both sides carry it there is nothing to guess.
+        const privLogonIds = new Set();
         for (const p of privLogonEvents) {
           const s = _sec(p.ts);
-          if (s == null || !p.host || !p.userKey) continue;
+          if (!p.host || !p.userKey) continue;
+          if (p.logonId) privLogonIds.add(`${p.userKey}|${p.host}|${p.logonId}`);
+          if (s == null) continue;
           privSeconds.add(`${p.userKey}|${p.host}|${s}`);
         }
-        if (privSeconds.size) {
+        if (privSeconds.size || privLogonIds.size) {
           const _privCount = new Map(); // userKey -> correlated privileged-logon count
           for (const evt of timeOrdered) {
             if (evt.eventId !== "4624" || !evt.user || !evt.target) continue;
+            const k = evt.user.toUpperCase();
+            const evtLogonId = normalizeLogonId(evt.logonId || "");
+            // Prefer the exact join. Only fall back to the ±1s window when one of
+            // the two sides did not record a logon id at all.
+            if (evtLogonId && privLogonIds.size > 0) {
+              if (privLogonIds.has(`${k}|${evt.target}|${evtLogonId}`)) {
+                _privCount.set(k, (_privCount.get(k) || 0) + 1);
+              }
+              continue;
+            }
             const s = _sec(evt.ts);
             if (s == null) continue;
-            const k = evt.user.toUpperCase();
             if (privSeconds.has(`${k}|${evt.target}|${s}`) ||
                 privSeconds.has(`${k}|${evt.target}|${s - 1}`) ||
                 privSeconds.has(`${k}|${evt.target}|${s + 1}`)) {

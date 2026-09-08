@@ -15,6 +15,15 @@
  *                                    "application in use" timeline that survives session deletion.
  *   scheduled-tasks.json             scheduled/automated agent runs, at any depth below the root.
  *   git-worktrees.json               working directories with last-seen timestamps.
+ *   bridge-state.json                Remote Control bridge: which local session is linked to which
+ *                                    claude.ai remote session, whether the bridge is enabled and
+ *                                    whether the user consented. No timestamp of its own.
+ *   claude_desktop_config.json       `preferences.localAgentModeTrustedFolders` (folders Cowork may
+ *                                    act in without asking), `remoteSessionFolderGrants` (folders a
+ *                                    REMOTE session was granted), `remoteFolderConsentMemory`,
+ *                                    `coworkUserFilesPath`, the security-relevant Cowork toggles,
+ *                                    and `mcpServers` (also read from config.json) — the commands
+ *                                    the desktop app launches as MCP servers.
  *
  * Measured on Claude Desktop (claude-code 2.1.229): 2 tombstones against 5 live sessions, 84
  * staged attachments totalling 58.7 MB spanning six months, and 5,189 usage samples across a month.
@@ -38,7 +47,25 @@ const PENDING_UPLOAD_RE = /^(.+?)-(\d{13})_(.+)$/;
 const PLAN_USAGE_FILE = "plan-usage-history.json";
 const SCHEDULED_TASKS_FILE = "scheduled-tasks.json";
 const WORKTREES_FILE = "git-worktrees.json";
+const BRIDGE_STATE_FILE = "bridge-state.json";
+const DESKTOP_CONFIG_FILE = "claude_desktop_config.json";
+const APP_CONFIG_FILE = "config.json";
 const MAX_SCAN_DEPTH = 8;
+/** Cowork preference keys that change what the agent is allowed to do. Others are UI state. */
+const COWORK_SECURITY_PREF_KEYS = [
+  "coworkBrowserToolsEnabled",
+  "coworkPreferredBrowser",
+  "coworkWebSearchEnabled",
+  "coworkScheduledTasksEnabled",
+  "ccdScheduledTasksEnabled",
+  "bypassPermissionsGateByAccount",
+  "coworkModelAutoFallbackByAccount",
+  "coworkHipaaRestricted",
+  "orgWorkAcrossAppsDisabled",
+  "remoteToolsDeviceName",
+  "keepAwakeEnabled",
+  "sidebarMode",
+];
 
 /**
  * Gap that splits one run of usage samples from the next. Samples land roughly every five minutes
@@ -300,11 +327,250 @@ function collectWorktreeAccess(rootDir, attribution = {}) {
   return rows;
 }
 
+/* -------------------------------------------------- remote control bridge state */
+
+function readJsonFile(filePath) {
+  try { return JSON.parse(fs.readFileSync(filePath, "utf8")); } catch { return null; }
+}
+
+/**
+ * Remote Control bridge entries.
+ *
+ * Each key is `<id>:<id>` (account and organization scope) and maps a LOCAL desktop session to the
+ * REMOTE claude.ai session that can drive it. The file carries no timestamp, so the row is dated
+ * from its mtime and says so; what it proves is the pairing and the consent flag, not when the
+ * bridge was used.
+ */
+function collectRemoteBridgeState(rootDir, attribution = {}) {
+  const filePath = path.join(rootDir, BRIDGE_STATE_FILE);
+  const parsed = readJsonFile(filePath);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+  const st = safeStat(filePath);
+  const timestamp = formatTimestampUtc(st ? st.mtimeMs : null);
+
+  const rows = [];
+  for (const [scopeKey, entry] of Object.entries(parsed)) {
+    if (!entry || typeof entry !== "object") continue;
+    const enabled = entry.enabled === true;
+    const consented = entry.userConsented === true;
+    const localSessionId = String(entry.localSessionId || "");
+    const remoteSessionId = String(entry.remoteSessionId || "");
+    const processed = Array.isArray(entry.processedMessageUuids) ? entry.processedMessageUuids.length : 0;
+    const pending = Array.isArray(entry.pendingProcessedAcks) ? entry.pendingProcessedAcks.length : 0;
+    rows.push(desktopRow({
+      timestamp,
+      role: "metadata",
+      recordType: "remote_control_bridge",
+      summary: `Remote Control bridge ${enabled ? "ENABLED" : "disabled"}`
+        + `${consented ? ", user consented" : ", no user consent recorded"}`
+        + ` — local session ${localSessionId || "?"} ↔ remote session ${remoteSessionId || "?"}`
+        + `${processed ? `; ${processed} remote message(s) processed` : ""}`,
+      fullText: JSON.stringify({
+        scopeKey,
+        scopeIds: scopeKey.split(":"),
+        enabled,
+        userConsented: consented,
+        environmentId: entry.environmentId || "",
+        localSessionId,
+        remoteSessionId,
+        processedMessageCount: processed,
+        pendingAckCount: pending,
+        timeSource: "bridge-state.json mtime (the file records no timestamp)",
+      }, null, 2),
+      sessionId: localSessionId,
+      messageId: remoteSessionId,
+      toolDescription: "Links a local Claude Desktop session to a claude.ai Remote Control session so "
+        + "a phone or web client can drive this machine. Configuration state: Timestamp is the "
+        + "file's modification time, not a use of the bridge.",
+      sourceFile: filePath,
+      user: attribution.user || "",
+      host: attribution.host || "",
+    }));
+  }
+  return rows;
+}
+
+/* ---------------------------------------------- desktop config: trust + MCP */
+
+function asStringList(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((v) => (typeof v === "string" ? v : (v && typeof v === "object" ? String(v.path || v.folder || "") : "")))
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+/** MCP server definitions → rows. Environment VALUES are never emitted — they routinely hold API keys. */
+function mcpServerRows(servers, filePath, timestamp, attribution) {
+  if (!servers || typeof servers !== "object" || Array.isArray(servers)) return [];
+  const rows = [];
+  for (const [name, def] of Object.entries(servers)) {
+    if (!def || typeof def !== "object") continue;
+    const command = def.command != null ? String(def.command) : "";
+    const args = Array.isArray(def.args) ? def.args.map((a) => String(a)) : [];
+    const url = def.url != null ? String(def.url) : "";
+    const envKeys = def.env && typeof def.env === "object" ? Object.keys(def.env) : [];
+    const commandLine = [command, ...args].filter(Boolean).join(" ");
+    rows.push(desktopRow({
+      timestamp,
+      role: "metadata",
+      recordType: "mcp_server_config",
+      summary: `MCP server configured — ${name}: ${commandLine || url || "(no command)"}`
+        + `${def.disabled === true ? " [disabled]" : ""}`,
+      fullText: JSON.stringify({
+        name,
+        command,
+        args,
+        url,
+        type: def.type || def.transport || "",
+        disabled: def.disabled === true,
+        envKeys,
+        envValuesRedacted: envKeys.length > 0,
+      }, null, 2),
+      toolName: name,
+      toolCommand: commandLine,
+      toolInput: JSON.stringify({ command, args, url }),
+      toolDescription: "A process the desktop app launches (or an endpoint it connects to) as an MCP "
+        + "server, whose tools become callable by Claude. Execution-persistence and supply-chain "
+        + "surface. Environment variable names are listed; their values are never read into the row.",
+      sourceFile: filePath,
+      user: attribution.user || "",
+      host: attribution.host || "",
+    }));
+  }
+  return rows;
+}
+
+/**
+ * Trust and permission state from claude_desktop_config.json, plus MCP servers from both config
+ * files. All of it is configuration: rows are dated from the file mtime and never claim otherwise.
+ */
+function collectDesktopConfigState(rootDir, attribution = {}) {
+  const rows = [];
+
+  const cfgPath = path.join(rootDir, DESKTOP_CONFIG_FILE);
+  const cfg = readJsonFile(cfgPath);
+  if (cfg && typeof cfg === "object") {
+    const st = safeStat(cfgPath);
+    const timestamp = formatTimestampUtc(st ? st.mtimeMs : null);
+    const prefs = cfg.preferences && typeof cfg.preferences === "object" ? cfg.preferences : {};
+
+    for (const folder of asStringList(prefs.localAgentModeTrustedFolders)) {
+      rows.push(desktopRow({
+        timestamp,
+        role: "metadata",
+        recordType: "trusted_folder",
+        summary: `Trusted folder (Cowork local agent mode) — ${folder}`,
+        fullText: JSON.stringify({ folder, source: "preferences.localAgentModeTrustedFolders" }, null, 2),
+        workspace: folder,
+        toolDescription: "The user accepted the trust dialog for this folder: Cowork sessions may read "
+          + "and write inside it without a further per-folder prompt. Dated from the config file's "
+          + "mtime — the acceptance itself is not timestamped.",
+        sourceFile: cfgPath,
+        user: attribution.user || "",
+        host: attribution.host || "",
+      }));
+    }
+
+    const grants = prefs.remoteSessionFolderGrants;
+    if (grants && typeof grants === "object" && !Array.isArray(grants)) {
+      for (const [sessionId, list] of Object.entries(grants)) {
+        for (const folder of asStringList(list)) {
+          rows.push(desktopRow({
+            timestamp,
+            role: "metadata",
+            recordType: "remote_folder_grant",
+            summary: `Remote session ${sessionId} granted folder — ${folder}`,
+            fullText: JSON.stringify({ sessionId, folder, source: "preferences.remoteSessionFolderGrants" }, null, 2),
+            sessionId,
+            workspace: folder,
+            toolDescription: "A folder on this machine that a REMOTE (claude.ai-driven) session was "
+              + "granted access to. Pairs with remote_control_bridge rows.",
+            sourceFile: cfgPath,
+            user: attribution.user || "",
+            host: attribution.host || "",
+          }));
+        }
+      }
+    }
+
+    for (const folder of asStringList(prefs.remoteFolderConsentMemory)) {
+      rows.push(desktopRow({
+        timestamp,
+        role: "metadata",
+        recordType: "remote_folder_consent",
+        summary: `Remote folder consent remembered — ${folder}`,
+        fullText: JSON.stringify({ folder, source: "preferences.remoteFolderConsentMemory" }, null, 2),
+        workspace: folder,
+        toolDescription: "The user chose to remember consent for remote sessions to use this folder, "
+          + "so later remote sessions were not asked again.",
+        sourceFile: cfgPath,
+        user: attribution.user || "",
+        host: attribution.host || "",
+      }));
+    }
+
+    if (typeof cfg.coworkUserFilesPath === "string" && cfg.coworkUserFilesPath.trim()) {
+      rows.push(desktopRow({
+        timestamp,
+        role: "metadata",
+        recordType: "cowork_user_files_path",
+        summary: `Cowork user files folder — ${cfg.coworkUserFilesPath}`,
+        fullText: JSON.stringify({ path: cfg.coworkUserFilesPath }, null, 2),
+        workspace: cfg.coworkUserFilesPath,
+        toolDescription: "Where Cowork writes artifacts and scheduled-task output for the user to "
+          + "browse. Collect it: files Claude created live there, outside the app-data tree.",
+        sourceFile: cfgPath,
+        user: attribution.user || "",
+        host: attribution.host || "",
+      }));
+    }
+
+    const present = COWORK_SECURITY_PREF_KEYS.filter((k) => prefs[k] !== undefined);
+    if (present.length) {
+      const picked = Object.fromEntries(present.map((k) => [k, prefs[k]]));
+      const onOff = (v) => (v === true ? "on" : v === false ? "off" : String(v ?? "unset"));
+      const bypassAccounts = picked.bypassPermissionsGateByAccount && typeof picked.bypassPermissionsGateByAccount === "object"
+        ? Object.entries(picked.bypassPermissionsGateByAccount).filter(([, v]) => v === true).map(([k]) => k)
+        : [];
+      rows.push(desktopRow({
+        timestamp,
+        role: "metadata",
+        recordType: "cowork_preferences",
+        summary: "Cowork preferences — "
+          + `browser tools ${onOff(picked.coworkBrowserToolsEnabled)}`
+          + `${picked.coworkPreferredBrowser ? ` (${picked.coworkPreferredBrowser})` : ""}, `
+          + `web search ${onOff(picked.coworkWebSearchEnabled)}, `
+          + `scheduled tasks ${onOff(picked.coworkScheduledTasksEnabled)}, `
+          + `bypass-permissions gate on for ${bypassAccounts.length} account(s)`,
+        fullText: JSON.stringify({ ...picked, bypassPermissionsAccounts: bypassAccounts }, null, 2),
+        toolDescription: "Security-relevant Cowork toggles as of the config file's mtime. "
+          + "bypassPermissionsGateByAccount=true means the account could run sessions with the "
+          + "permission gate off.",
+        sourceFile: cfgPath,
+        user: attribution.user || "",
+        host: attribution.host || "",
+      }));
+    }
+
+    rows.push(...mcpServerRows(cfg.mcpServers, cfgPath, timestamp, attribution));
+  }
+
+  const appCfgPath = path.join(rootDir, APP_CONFIG_FILE);
+  const appCfg = readJsonFile(appCfgPath);
+  if (appCfg && typeof appCfg === "object" && appCfg.mcpServers) {
+    const st = safeStat(appCfgPath);
+    rows.push(...mcpServerRows(appCfg.mcpServers, appCfgPath, formatTimestampUtc(st ? st.mtimeMs : null), attribution));
+  }
+
+  return rows;
+}
+
 /* ------------------------------------------------------------------ orchestration */
 
 function countClaudeDesktopStateFiles(rootDir) {
   let n = 0;
-  for (const f of [PLAN_USAGE_FILE, WORKTREES_FILE]) {
+  for (const f of [PLAN_USAGE_FILE, WORKTREES_FILE, BRIDGE_STATE_FILE, DESKTOP_CONFIG_FILE]) {
     if (fs.existsSync(path.join(rootDir, f))) n += 1;
   }
   if (fs.existsSync(path.join(rootDir, PENDING_UPLOADS_DIR))) n += 1;
@@ -332,6 +598,8 @@ function collectClaudeDesktopState(rootDir, attribution = {}, options = {}) {
   run("plan usage", () => collectPlanUsageWindows(rootDir, attribution));
   run("scheduled tasks", () => collectScheduledTasks(rootDir, attribution));
   run("worktrees", () => collectWorktreeAccess(rootDir, attribution));
+  run("remote bridge", () => collectRemoteBridgeState(rootDir, attribution));
+  run("desktop config", () => collectDesktopConfigState(rootDir, attribution));
 
   return rows;
 }
@@ -343,12 +611,18 @@ module.exports = {
   PLAN_USAGE_FILE,
   SCHEDULED_TASKS_FILE,
   WORKTREES_FILE,
+  BRIDGE_STATE_FILE,
+  DESKTOP_CONFIG_FILE,
+  APP_CONFIG_FILE,
+  COWORK_SECURITY_PREF_KEYS,
   USAGE_SESSION_GAP_MS,
   collectDeletedSessions,
   collectPendingUploads,
   collectPlanUsageWindows,
   collectScheduledTasks,
   collectWorktreeAccess,
+  collectRemoteBridgeState,
+  collectDesktopConfigState,
   countClaudeDesktopStateFiles,
   collectClaudeDesktopState,
 };

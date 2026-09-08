@@ -4,6 +4,82 @@ description: IRFlow Timeline changelog — version history, new features, perfor
 
 # Changelog
 
+## v1.0.13 — September 8, 2026
+
+### Process Inspector — correct process identity and lower-noise promotion
+
+- Security 4688/4689 process roles are now resolved per event: `NewProcessId` is the created process on 4688, while termination/privilege events continue to use their own subject PID. EvtxECmd hexadecimal PIDs are normalized instead of collapsing to PID 0
+- Sysmon EID 7 and 11 enrichment evaluates the loaded module or created file, not the host process's `Image`. Signed system DLLs and non-PE files no longer inherit a writable process path; real unsigned module loads and dropped executables remain visible
+- Administrative binaries are argument-gated: query/list operations from `wmic`, `vssadmin`, `bcdedit`, `wevtutil`, `wbadmin`, and `reg` stay low/context, while destructive or remote-execution forms retain high/critical severity and ATT&CK mapping
+- LSASS-tool names require LSASS targeting or corroborating Process Access evidence before critical promotion. Browser/DNS volume, installers, Python virtual environments, `conhost`/WerFault churn, sanctioned vendor roots, and non-remote `Invoke-Command`/`Set-Service` activity receive bounded false-positive handling
+- WinRM, DCOM, web-shell, script-from-AppData, RMM/tunnel, `netsh portproxy`, injection, and writable-path service-child coverage is retained or expanded. Chain rules are suppressed across PID-reuse mislinks, and the free-text Event ID filter is parameterized before SQL
+
+### Lateral Movement Tracker — channel-safe sessions and behavioral corroboration
+
+- Consolidated exports now gate ambiguous Event IDs by channel, preventing Sysmon 22/23 rows from becoming fabricated TerminalServices sessions. Raw single-channel logs and Hayabusa RDS-LSM/RDS-RCM aliases remain supported
+- Timestamp ordering uses parsed instants across space-separated, ISO, and offset-bearing values; gap, first-seen, and off-hours logic no longer depends on lexical order or the analyst Mac's timezone. The estate UTC offset is configurable in the tracker
+- Fixed-cadence service password retries and well-known machine, IIS app-pool, Exchange health, and Entra sync identities are dampened without suppressing ordinary accounts merely named like service accounts
+- A single fail-then-success RDP sequence is medium unless repeated or directed at a domain controller. Password spray against many accounts on one target, Type 9 alternate credentials, loopback-tunnelled RDP, RdpCoreTS 140 bursts, RDP shadowing (20503), and write activity against `ADMIN$` gain dedicated coverage
+- 4776 user attribution, 4778 client-address fallback, and 4672 admin attribution now follow their own event fields and Logon IDs instead of a nearby row or same-second coincidence
+
+### Export, session, and evidence-package integrity
+
+- CSV/TSV fields containing bare carriage returns are quoted as well as LF-bearing fields, preventing terminal/progress content from shifting columns during round-trip import
+- AI source-coverage and acquisition metadata survive session save/reopen; format-v2 export packages preserve source identity, companion files, coverage state, and a repeatable restore recipe
+- Partial extracts stay visibly partial instead of being flattened into a generic success state
+
+### AI Apps Forensics Phase 4 — bounded acquisition and measured worker performance
+
+- Every qualified extraction now carries wall time, first-result latency, rows/s, observed bytes read, eligible source bytes, peak RSS, and a versioned per-source completion ledger
+- The merged worker uses its shared atomic cancellation flag during filesystem, JSONL, hashing, and SQLite loops; cancellation errors propagate instead of being converted into per-file failures
+- Context and Cursor database inventories are sorted, fingerprinted, and resumable with deterministic cursors. Explicit limits list the remaining paths rather than hiding them
+- Live SQLite evidence is acquired with a transactionally consistent `VACUUM INTO` snapshot and verified with `PRAGMA quick_check`; original database/WAL/SHM identities and the parse snapshot identity are recorded separately
+- A repeatable Node and Electron harness qualifies tiny, six-app representative, 1 GiB Codex, malformed/oversized-line, 30-Cursor-store, GrokBot multi-account/large-attachment, and active-WAL corpora under a 512 MiB worker heap
+
+Reference qualification on an Apple M4 Max: Node 26.7.0 parsed the 1 GiB rollout in 3.06 s warm (334.4 MiB/s); Electron 43.3.0 in 3.62 s (283.2 MiB/s). Both emitted 32,602 identical rows with matching row and coverage hashes. Atomic cancellation completed in 1.19 ms and 90.74 ms. This report is the initial baseline for the next release's 20% regression gate.
+
+### AI Apps Forensics Phase 3 — context, history, independent results, and complete source accounting
+
+- **Claude Code:** parses CLI settings, permission posture, hooks, and MCP definitions; supports `CLAUDE_CONFIG_DIR`; inventories instructions, memory, skills/plugins, tasks/plans, physical file history, and backups with SHA-256. Credential files are never opened or hashed
+- **OpenAI Codex:** parses `config.toml` project trust/MCP/plugin settings and instruction/plugin context; emits independent media-reference rows; inventories every eligible rollout, SQLite store, and WAL/SHM/journal companion. Missing and partial rollouts use measured coverage before SQL projection recovery
+- **Grok Build:** parses config/trust/version/identity, hashes generated prompt bodies, reads terminal logs independently, decodes worktree rows, and inventories background-task/upload/automation state. Configuration rows never claim execution
+- **Gemini CLI:** retains immutable `history_*` rows and rewind/replacement operations alongside the reconstructed current state; supports `GEMINI_CLI_HOME`; adds MCP/tool policy, hashed memory/skill context, and backup/replacement inventory
+- **Cursor:** recovers structured tool calls/results including tool-only bubbles, retains native timestamps, inventories hooks/MCP/plans/agent context/raw AI tracking indexes, and accounts for all eligible SQLite stores up to an explicit 2,048-store limit instead of the former 20/16 discovery limits
+- Consumer Grok, Gemini desktop/web/mobile, Claude consumer chat, and Cursor cloud history remain explicitly unsupported pending qualified corpora
+
+### Collect AI Artifacts no longer OOMs the worker on large Codex stores
+
+Collect AI Artifacts runs in a worker thread inside the Electron process. A V8 out-of-memory abort on that thread (`node::OOMErrorHandler`) takes the whole app down. On a host whose `~/.codex/sessions` held multi-gigabyte `rollout-*.jsonl` files (one 861 MB), the worker accumulated every row from that source with full message bodies before flushing to SQLite.
+
+- Codex rollouts stream line by line regardless of the former 48 MB threshold; only explicit inventory-only mode skips a large rollout body
+- The merged extract flushes to SQLite every 15,000 rows and caps stored FullText at 8 KB per row (enough for secret scanning; single-tool Codex import still keeps the full body)
+- Rollout files are read two at a time with a 4 MB per-line cap
+
+### AI artifact parsers — control-plane stores from recent app updates
+
+Collect AI Artifacts now reads the consent, remote-control, and workspace-inventory files the chat transcripts do not carry.
+
+- **Grok Build** `events.jsonl` (tool start/complete, permission request/decision with wait time, MCP lifecycle) and `signals.json` (including `gcsQueue*` codebase-upload counters)
+- **Grok Bot Phase 2 evidence semantics.** Transcript permission cards now separate pending/allowed/persistent-policy/denied/expired/cancelled/unknown states from execution, preserve nested request IDs, and leave daemon results unknown unless an explicit same-scope link exists. Typed tool-call, notice, structured approval, reply/channel, and send-journal v1/v2 fields retain native lifecycle IDs and times. Current and rotated daemon logs disclose byte and detail-row omissions. Exactly 200 retained entries reports a retention boundary and unknown earlier availability rather than inventing a deleted 201st entry. Per-root counts now merge identically in direct, profile-memory, and streamed-database imports.
+- **Grok Bot attachment verification.** Hash-shaped cloud filenames are recorded as `referenceSha256`; a `computedLocalSha256` is populated only after an opt-in, bounded, cancellable local-file search proves a name + size + SHA-256 match. User folders are not searched by default.
+- **Codex** `remote_control_enrollments` and the `projects` / `project_roots` catalogue in `state*.sqlite`
+- **Codex authorization and exposure.** `rules/*.rules` (execpolicy prefixes that run without a prompt, `exec_policy_rule`) and `shell_snapshots/` (per-thread dumps of the exported shell environment; credential-like variable names reported, values never read, `shell_snapshot`)
+- **Codex `thread_history*.sqlite`.** The app's SQL projection is read for a rollout that is missing, unreadable, or measured as partly parsed, restoring prompts, commands with cwd/pid/exit code, file changes, MCP and web calls, subagent spawns and turn status without duplicating fully parsed rollouts
+- **Codex memory, remote hosts and side stores.** `memories*.sqlite` and `memories/*.md` (model memory of the user, per-section, tagged model-written), `.codex-global-state.json` (Codex-managed SSH hosts with identity key, Remote Control allowed hosts, mobile pairing, local project roots; push token never read), `ambient-suggestions/`, `goals*`/`queue*.sqlite`, voice transcription history
+- **ChatGPT / Codex desktop profile** `sentry/scope_v3.json` + `session.json` (signed-in user and account, build, and a second-precision breadcrumb trail of backend calls, UI clicks and console errors with every query string stripped) and credential-store inventory for `Default/` and the agent's `codex-browser-app/` profile
+- **ChatGPT Work-with-Apps** `com.openai.chat/app_pairing_extensions/` — one row per paired app and workspace, flagging write capabilities such as `setContent`
+- **Claude Desktop** `bridge-state.json` and `claude_desktop_config.json` (trusted folders, remote folder grants, MCP servers — env values redacted)
+- **Claude Code** `~/.claude.json` and timestamped backups: per-project last session / trust / cost / MCP, Remote Control flag, account identifiers. Workspaces that exist only in a backup are emitted as `project_removed`
+- **ChatGPT / Codex merged desktop app** Chromium profile at `~/Library/Application Support/Codex` (in-app History visits, artifact-sessions inventory). Login Data and Cookies are not read. Conversation bodies remain in `~/.codex`
+- **Gemini CLI 0.58+** `projects.json`, `settings.json` hooks / sessionRetention / Auto Memory, `trustedFolders.json`, `google_accounts.json`, and slug-based `tmp/<id>/.project_root` / `history/<id>/.project_root`. OAuth token files are inventoried by name and size, never read
+
+### Open a KAPE VHDX directly
+
+**File → Open Triage Collection…** now accepts the `.vhdx` that KAPE writes with `--vhdx`, alongside a folder. macOS cannot mount a VHDX, so IRFlow reads the image itself: a VHDX container reader (dynamic and fixed images, checksum-verified headers, in-memory replay of an unflushed log so the file on disk is never touched) plus a read-only NTFS reader (MBR / GPT / bare volume, `$MFT` walk with fixups, resident and non-resident data, fragmented, sparse and `$ATTRIBUTE_LIST`-split streams). Only the artifacts the triage pipeline recognizes are copied into a scratch folder that mirrors the collection layout; that folder then flows through the existing manifest, host attribution, Lateral Movement and Sigma lanes. Extraction runs in a worker with progress and cancel, checks free space on the Temp Storage volume first, and reports NTFS-compressed or encrypted files by path instead of writing them as garbage. Verified byte-for-byte against macOS-mounted copies of three real KAPE exports, including one that needed log replay.
+
+- Dropping a `.vhdx` on File → Open now explains where to open it instead of parsing the container header as a one-column CSV
+- Differencing (child) VHDX images and VHD v1 images are refused with a clear message
+
 ## v1.0.12 — August 24, 2026
 
 ### Diff Tabs

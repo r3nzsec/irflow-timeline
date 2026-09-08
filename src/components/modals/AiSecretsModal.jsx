@@ -47,7 +47,7 @@ const PROVIDER_BRAND = {
 };
 const TOOL_BRAND = {
   "Claude Code": ["Cl", "#D97757"], "ChatGPT": ["GPT", "#10A37F"], "OpenAI Codex": ["Cx", "#2F6FED"],
-  "Grok Build": ["Gr", "#8B5CF6"],
+  "Grok Build": ["Gr", "#8B5CF6"], "Grok Bot": ["GB", "#8B5CF6"],
   "Gemini CLI": ["Gem", "#4285F4"], "Cursor": ["Cu", "#7d8590"], "GitHub Copilot": ["Co", "#8b949e"],
   "Windsurf": ["Ws", "#58a6ff"], "Continue": ["Ct", "#3fb950"],
 };

@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const {
   normalizeHostEndpoint,
   isExcludedEndpoint,
+  hostsAreSameMachine,
   buildObservedHostAliases,
 } = require("../electron/analyzers/lateral-movement/endpoint-normalize");
 
@@ -13,10 +14,22 @@ test("normalizes address:port and bracketed IPv6 host values", () => {
 });
 
 test("rejects loopback and collector placeholder endpoints", () => {
-  for (const value of ["127.0.0.1:0", "::1:0", "[::1]:3389", "-:-", "(empty)", "LOCALHOST"]) {
+  for (const value of ["127.0.0.1:0", "::1:0", "[::1]:3389", "-:-", "(empty)", "LOCALHOST", "::ffff:127.0.0.1"]) {
     assert.equal(isExcludedEndpoint(value), true, `${value} should be excluded`);
   }
   assert.equal(isExcludedEndpoint("10.2.10.113:3389"), false);
+});
+
+test("folds IPv4-mapped IPv6 to the IPv4 form", () => {
+  assert.equal(normalizeHostEndpoint("::ffff:10.1.1.5"), "10.1.1.5");
+  assert.equal(normalizeHostEndpoint("::FFFF:10.1.1.5:3389"), "10.1.1.5");
+});
+
+test("hostsAreSameMachine equates NetBIOS and FQDN of the same box", () => {
+  assert.equal(hostsAreSameMachine("WKS01", "WKS01.corp.local"), true);
+  assert.equal(hostsAreSameMachine("WKS01.corp.local", "WKS01"), true);
+  assert.equal(hostsAreSameMachine("WKS01", "WKS02"), false);
+  assert.equal(hostsAreSameMachine("10.1.1.5", "WKS01"), false);
 });
 
 test("aliases one observed FQDN to its observed short name without cross-domain collisions", () => {

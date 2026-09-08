@@ -1,5 +1,5 @@
 ---
-description: Supported forensic file formats in IRFlow Timeline — CSV, TSV, XLSX, EVTX, Plaso, and MFT with auto-detection.
+description: Supported forensic file formats in IRFlow Timeline — CSV, TSV, XLSX, EVTX, Plaso, MFT, and KAPE VHDX images with auto-detection.
 ---
 
 # Supported Formats
@@ -204,6 +204,26 @@ Use this workflow for Windows profile artifacts under paths such as:
 Users\<user>\AppData\Local\Microsoft\Terminal Server Client\Cache
 ```
 
+## KAPE VHDX Images (Triage Collections)
+
+**Extension:** `.vhdx` (KAPE `--vhdx` output, or any VHDX holding an NTFS volume)
+
+A VHDX is a disk image, not a table, so it opens through **File → Open Triage Collection…** rather than File → Open. Pick the `.vhdx` in the same dialog you would use for a KAPE folder. macOS cannot mount a VHDX, so IRFlow reads the container and the NTFS volume inside it directly:
+
+1. The VHDX header, region table and block allocation table are parsed (dynamic and fixed images; an unflushed VHDX log is replayed in memory so the image on disk is never modified).
+2. The NTFS volume is located behind the MBR or GPT (or at offset 0 for a bare volume) and its `$MFT` is walked to enumerate every live file with its full path.
+3. Only the artifacts the triage pipeline recognizes are copied into a scratch folder that mirrors the collection's layout — event logs, `$MFT` / `$J` / `$LogFile`, registry and user hives, Amcache, Prefetch, LNK, Jump Lists, scheduled tasks, SRUM, browser and Defender data, RDP cache, KAPE's own logs, and EZ-Tools CSVs. Unrelated files stay in the image and are counted.
+4. The scratch folder becomes the triage root: the manifest, host attribution, the Lateral Movement and Sigma lanes, and `$MFT` / `$J` import all work exactly as for a folder.
+
+Extracted files are scratch data (removed when the app quits) and land on the Temp Storage volume, so point **File → Set Temp Storage Folder…** at a drive with room for the collection.
+
+### Not supported
+
+- Differencing (child) VHDX images — merge or export a full disk first.
+- VHD (v1) images — export as VHDX, or open the collection folder instead.
+- NTFS-compressed or EFS-encrypted files inside the image are reported by path and skipped rather than written as garbage.
+- Deleted files are not carved from the image; import the collected `$MFT` for deleted-file analysis.
+
 ## AI App Artifacts
 
 **Inputs:** app-data folders, KAPE / triage collection roots, `.jsonl`, `.json`, `.db`, `.sqlite`, `.sqlite3`, `.ldb`, and `.log` files from supported AI apps.
@@ -216,17 +236,33 @@ Supported AI app families include:
 
 | App | Common artifacts |
 |-----|------------------|
-| **Claude Code / Desktop** | `~/.claude/history.jsonl`, `~/.claude/projects/**/*.jsonl`, Desktop `claude-code-sessions/`, Cowork `local-agent-mode-sessions/**/{.claude/projects,audit*.jsonl}`, plus `deleted_<uuid>` tombstones, `pending-uploads/`, `plan-usage-history.json`, `git-worktrees.json` |
-| **OpenAI Codex** | `$CODEX_HOME` or `~/.codex/`, `sessions/**/rollout-*.jsonl`, `history.jsonl`, versioned `state*.sqlite` metadata with WAL/SHM |
-| **Grok Build** | `$GROK_HOME` or `~/.grok/`, workspace `prompt_history.jsonl`, session `summary.json`, `updates.jsonl`, `chat_history.jsonl`, `hunk_records.jsonl`, plus `sessions/session_search.sqlite`, `logs/unified.jsonl`, and `active_sessions.json` |
-| **ChatGPT Desktop** | Local LevelDB / SQLite stores plus inventory of `conversations-v2-*` and `conversations-v3-*/*.data` bundles |
-| **Gemini CLI** | `~/.gemini/tmp/<project_hash>/chats/**/*.jsonl`, `~/.gemini/shell_history`, plus legacy session/checkpoint/log JSON |
-| **Cursor** | `~/.cursor/projects/**/agent-transcripts/`, composer `store.db`, VS Code-family `state.vscdb`, and Cursor `User/globalStorage/conversation-search.db` |
+| **Claude Code / Desktop** | `~/.claude/history.jsonl`, project JSONL, CLI settings/hooks/permissions/MCP, credential-safe instruction/memory/skill/plugin/task/plan/file-history/backup inventory, relocated `CLAUDE_CONFIG_DIR`, and `~/.claude.json`; Desktop/Cowork sessions, audit rows, deletion tombstones, staged uploads, usage history, worktrees, bridge state, and desktop configuration |
+| **OpenAI Codex** | `$CODEX_HOME` or `~/.codex/`, streamed rollout JSONL including independent media references, `history.jsonl`, `config.toml` project trust/MCP/plugin settings, instructions and hashed skill/plugin inventory; complete `state*`, `thread_history*`, auxiliary SQLite companion inventory; rules, shell snapshots, memories, hooks, remote-control/SSH state, automations, goals/queue, ambient suggestions, and voice history |
+| **Grok Build** | `$GROK_HOME` or `~/.grok/`, prompt/session streams, permission audit and upload counters; independent terminal logs; config/trust/version/agent identity and hashed prompt context; `worktrees.db`; background-task/upload/automation inventory; session search, unified log, and active sessions |
+| **Grok Bot** | macOS-qualified `~/.grokbot/` local exec daemon (settings, current/rotated daemon logs, attachment staging) and `Application Support/Grok Bot/`: bounded `sand-client-persistence` transcript replicas (prompts, replies, typed request/decision states, tool calls/notices, v1/v2 send journal, attachment references), `sentry/scope_v3.json` + `session.json` (account/app/OS/runtime context), `Local State` (Chromium profile creation), and cached link-preview metadata. Daemon lifecycle rows without IDs do not establish which command ran or whether it succeeded; Windows/Linux remain unqualified. |
+| **ChatGPT Desktop** | Local LevelDB / SQLite stores plus inventory of `conversations-v2-*` and `conversations-v3-*/*.data` bundles, `app_pairing_extensions/` (Work-with-Apps pairings with write capability). The merged ChatGPT/Codex app (2026-07-09) writes a Chromium profile at `~/Library/Application Support/Codex` (History, `sentry/` identity + breadcrumb trail, credential-store inventory for `Default/` and the agent's `codex-browser-app/`); conversation bodies still live in `~/.codex` |
+| **Gemini CLI** | `GEMINI_CLI_HOME` or `~/.gemini`: current and immutable rewind/revision JSONL history, shell history, legacy sessions/checkpoints/logs, project/trust/account state, settings and MCP/tool policy, hashed `GEMINI.md`/skill inventory, and settings/project backups |
+| **Cursor** | Agent JSONL/TXT transcripts; all eligible composer `store.db` and `state.vscdb` files (default maximum 2,048), including tool-only call/result evidence; `conversation-search.db`; hooks/MCP/plans/agent/skill/plugin context; raw `ai-tracking` index provenance |
 | **GitHub Copilot** | `$COPILOT_HOME` / `~/.copilot` CLI sessions, commands, plans/checkpoints, safe session-store metadata, plus VS Code-family `workspaceStorage/*/chatSessions/` and `emptyWindowChatSessions/` |
 | **Windsurf** | `Windsurf/User/globalStorage/state.vscdb`, `workspaceStorage/*/state.vscdb` |
 | **Continue** | `~/.continue/sessions/*.json` |
 
 Use this workflow when AI-assisted activity may be relevant evidence: pasted secrets, suspicious prompts, generated commands, workspace-specific development activity, or AI tool output tied to an incident.
+
+The consumer Grok product, Gemini desktop/web/mobile, Claude consumer chat, and Cursor cloud-only history remain explicitly unsupported until a real native store or vendor-export corpus is qualified. Browser origin hints do not establish recoverable conversation content.
+
+AI source discovery is deterministic and bounded. When an explicit file or database limit is
+reached, the import metadata retains the inventory fingerprint, resume cursor, omission count, and
+remaining source paths. Every processed source receives a completion status such as `parsed`,
+`empty`, `partial`, `malformed`, `unsupported`, `excluded`, or `unavailable`; a successful tab does
+not imply that every source was readable.
+
+SQLite databases are parsed from a transactionally consistent snapshot that includes committed WAL
+content. The snapshot is integrity-checked, while the acquired database and companion hashes remain
+separate from the temporary parse-copy hash. Runtime metadata also records wall time, first-result
+latency, rows per second, observed bytes read, eligible source bytes, and peak RSS. Full source files
+remain the evidence; row bodies and display fields can still be bounded with an explicit omission or
+truncation marker.
 
 ## ChatGPT Computer History (Skysight)
 
@@ -255,6 +291,7 @@ IRFlow Timeline determines the file format by extension and content detection:
 .plaso, .timeline            →  Plaso SQLite Reader (auto-detect; .timeline falls back to CSV)
 .mft / $MFT (FILE0 magic)  →  Raw MFT Binary Parser
 $J / $UsnJrnl (by name)    →  Raw USN Journal Parser
+.vhdx                        →  File → Open Triage Collection… (VHDX container + NTFS reader)
 AI app folders / stores      →  AI Query History parser
 Skysight segments / summaries →  Computer History parser (own tab, 54-column schema)
 ```

@@ -358,7 +358,56 @@ const CHAIN_RULES = [
 ["powershell.exe","megacmd.exe",3,"PS \u2192 MEGAcmd \u2014 cloud exfil [T1567.002]"],
 ];
 
-// Build lookup map keyed by "parent:child" (sans .exe), highest severity wins for duplicates
+// Escalations that require the COMMAND LINE, keyed by the child process base name.
+//
+// A parent->child pair alone cannot distinguish `vssadmin list shadows` (a backup
+// script) from `vssadmin delete shadows` (ransomware), or `wmic os get caption`
+// from `wmic shadowcopy delete`. CHAIN_RULES describes both readings of those
+// pairs, and the map used to resolve duplicates by taking the HIGHEST severity —
+// so the destructive interpretation applied unconditionally and every `wmic os
+// get`, `vssadmin list`, `bcdedit /enum` and `wevtutil qe` from a shell was
+// reported as a critical ransomware indicator.
+//
+// Now the bare pair is capped at low and only these patterns raise it.
+export const CHAIN_ARG_ESCALATIONS = new Map(Object.entries({
+  vssadmin: [
+    { rx: /\bdelete\s+shadows?\b|\bresize\s+shadowstorage\b/i, level: 3, reason: "shadow copy deletion", techniques: ["T1490"] },
+    { rx: /\bcreate\s+shadow\b/i, level: 2, reason: "shadow copy creation (NTDS.dit / hive access)", techniques: ["T1003.003"] },
+  ],
+  wmic: [
+    { rx: /\bshadowcopy\b[\s\S]*\bdelete\b/i, level: 3, reason: "shadow copy deletion via WMI", techniques: ["T1490"] },
+    { rx: /\/node\s*:|\bprocess\b[\s\S]*\bcall\b[\s\S]*\bcreate\b/i, level: 2, reason: "remote/spawning WMI execution", techniques: ["T1047"] },
+    { rx: /\b__eventfilter\b|\b__filtertoconsumerbinding\b|\bcommandlineeventconsumer\b/i, level: 3, reason: "WMI event subscription persistence", techniques: ["T1546.003"] },
+  ],
+  bcdedit: [
+    { rx: /\b(safeboot|recoveryenabled|bootstatuspolicy|ignoreallfailures)\b/i, level: 3, reason: "boot/recovery configuration tampering", techniques: ["T1490"] },
+  ],
+  wevtutil: [
+    { rx: /(^|\s)(cl|clear-log)(\s|$)|\bsl\b[\s\S]*\/e\s*:\s*false/i, level: 3, reason: "event log clearing/disabling", techniques: ["T1070.001"] },
+  ],
+  wbadmin: [
+    { rx: /\bdelete\s+(catalog|systemstatebackup|backup)\b/i, level: 3, reason: "backup catalog deletion", techniques: ["T1490"] },
+    { rx: /\bstart\s+recovery\b|\bget\s+versions\b/i, level: 2, reason: "backup-based credential extraction", techniques: ["T1003.003"] },
+  ],
+  cipher: [
+    { rx: /\s\/w\b/i, level: 2, reason: "free-space wipe", techniques: ["T1485"] },
+  ],
+  reg: [
+    { rx: /\bsave\b[\s\S]*\bhklm\\(sam|security|system)\b/i, level: 3, reason: "SAM/SECURITY/SYSTEM hive export", techniques: ["T1003.002"] },
+    { rx: /\badd\b[\s\S]*\\currentversion\\run/i, level: 2, reason: "Run key persistence", techniques: ["T1547.001"] },
+  ],
+  sc: [
+    { rx: /\b(create|config|failure)\b/i, level: 1, reason: "service creation/modification", techniques: ["T1543.003"] },
+  ],
+  psexec: [
+    { rx: /\\\\[^\s\\]+|@[^\s]+\.txt|\/accepteula[\s\S]*\\\\/i, level: 3, reason: "remote execution across hosts", techniques: ["T1570"] },
+  ],
+  netsh: [
+    { rx: /\b(firewall|advfirewall)\b[\s\S]*\b(add|set|delete)\b|\bportproxy\b/i, level: 2, reason: "firewall/portproxy modification", techniques: ["T1562.004"] },
+  ],
+}));
+
+// Build lookup map keyed by "parent:child" (sans .exe).
 // Technique IDs extracted from reason text at build time (first-class, no regex fallback needed)
 export const CHAIN_RULE_MAP = new Map();
 for (const [p, c, sev, desc] of CHAIN_RULES) {
@@ -366,17 +415,83 @@ for (const [p, c, sev, desc] of CHAIN_RULES) {
   const techniques = desc.match(/\bT\d{4}(?:\.\d{3})?\b/g) || [];
   const reason = desc.replace(/\s*\[T\d{4}(?:\.\d{3})?]/g, "").trim();
   const ex = CHAIN_RULE_MAP.get(key);
-  if (!ex || sev > ex.level) CHAIN_RULE_MAP.set(key, { level: sev, reason, techniques });
+  // LOWEST severity wins for duplicates. A duplicate key means the same pair has
+  // several readings; without the arguments we can only assert the mildest one.
+  if (!ex || sev < ex.level) CHAIN_RULE_MAP.set(key, { level: sev, reason, techniques });
+}
+// Cap the bare (argument-free) form of every escalatable pair at low, so the pair
+// itself is a lead and the arguments decide the severity.
+for (const entry of CHAIN_RULE_MAP.entries()) {
+  const [key, val] = entry;
+  const child = key.slice(key.indexOf(":") + 1);
+  if (CHAIN_ARG_ESCALATIONS.has(child) && val.level >= 1) {
+    // Neutralise the wording and drop the ATT&CK tag as well: the retained reason
+    // described the destructive reading, so leaving it (or T1490) on `bcdedit /enum`
+    // would just move the false positive from the severity column to the text and
+    // the technique matrix.
+    const pair = val.reason.split(" \u2014 ")[0];
+    CHAIN_RULE_MAP.set(key, { level: 1, reason: `${pair} \u2014 no notable arguments`, techniques: [] });
+  }
+}
+
+/**
+ * Resolve a parent->child chain rule against the child's command line.
+ * Returns null when the pair is not a known chain.
+ */
+export function resolveChainRule(key, cmd) {
+  const base = CHAIN_RULE_MAP.get(key);
+  if (!base) return null;
+  const child = key.slice(key.indexOf(":") + 1);
+  const escalations = CHAIN_ARG_ESCALATIONS.get(child);
+  if (escalations && cmd) {
+    let best = null;
+    for (const e of escalations) {
+      if (!e.rx.test(cmd)) continue;
+      if (!best || e.level > best.level) best = e;
+    }
+    if (best && best.level > base.level) {
+      return { level: best.level, reason: `${base.reason.split(" \u2014 ")[0]} \u2014 ${best.reason}`, techniques: best.techniques, escalated: true };
+    }
+    if (best && best.level === base.level && best.techniques.length > 0) {
+      return { level: base.level, reason: `${base.reason.split(" \u2014 ")[0]} \u2014 ${best.reason}`, techniques: best.techniques, escalated: true };
+    }
+  }
+  return base;
 }
 
 // Standalone detection patterns — command-line, path, and process-name based (not parent→child)
-export const SUS_PATHS = /(\\temp\\|\\tmp\\|\\appdata\\|\\downloads\\|\\public\\|\\recycle|\\perflogs\\)/i;
+
+// THE canonical "a standard user can write here without elevation" test.
+//
+// Six near-identical variants of this used to live across process-inspector.js,
+// process-inspector-pipeline.js and this file, and they disagreed in ways that
+// changed verdicts: only some included \Users\ (so a payload on the Desktop or in
+// Documents was not a suspicious path), none of the detection-side ones included
+// \ProgramData\ (one of the most common malware staging directories, writable by
+// BUILTIN\Users on a default install), and only some included the recycle bin.
+// Forward slashes are accepted because some exporters normalise paths that way.
+export const USER_WRITABLE_PATH = /[\\/](users|temp|tmp|appdata|downloads|public|perflogs|programdata|\$recycle\.bin|recycler)[\\/]/i;
+
+// Locations that are user-writable BY DESIGN because that is where per-user and
+// per-vendor installs go. Broadening USER_WRITABLE_PATH above would otherwise turn
+// every Teams/Slack/VS Code/Chrome-updater process into a suspicious-path finding.
+export const BENIGN_INSTALL_PATH = /[\\/](appdata[\\/]local[\\/](programs|microsoft[\\/](teams|onedrive|edgeupdate|edgewebview)|google[\\/]update|slack|discord|postman|jetbrains|github ?desktop)|programdata[\\/](microsoft|package cache|chocolatey|docker|anaconda3?|nvidia|intel|dell|hp|lenovo|amazon|checkpoint|sophos|sentinelone|crowdstrike|mcafee|symantec|trendmicro|kaspersky|eset|bitdefender|webroot|carbonblack|cylance|paloaltonetworks|cortex))[\\/]/i;
+
+// Back-compat alias — SUS_PATHS is imported by name in several rule modules.
+export const SUS_PATHS = USER_WRITABLE_PATH;
 // Known-safe Windows processes that legitimately run from \Temp, \AppData, etc.
 export const SAFE_PROCS = /^(mpcmdrun|msmpeng|dismhost|monagentcore|monagenthost|monagentmanager|monagentlauncher|metricsextension\.native|cleanmgr|tiworker|wuauclt|setup|msiexec|drvinst|trustedinstaller|taskhostw|backgroundtaskhost|runtimebroker|searchprotocolhost|searchindexer|searchfilterhost|microsoftedgeupdate|googleupdate|onedrive|onedriveupdater|wermgr|werfault|compattelrunner)(\.exe)?$/i;
 export const ENCODED_PS = /\s+(-e\s|-enc\s|-encodedcommand\s|-en\s|-ec\s)/i;
 export const CRED_DUMP_CMD = /(comsvcs\.dll|sekurlsa|lsadump|procdump.*lsass|mimikatz|pypykatz|nanodump|dcsync|drsuapi)/i;
 export const NTDS_EXTRACT = /(ntdsutil.*ifm|wbadmin.*ntds|secretsdump|ntds\.dit)/i;
-export const LSASS_TOOLS = /^(processhacker|procdump|sqldumper|avdump|handlekatz)(\.exe)?$/i;
+// Tools capable of producing a process memory dump. Name alone is NOT evidence of
+// credential theft — procdump, ProcessHacker and createdump are ordinary developer
+// and support tools — so pi-6 requires an lsass target (command line or an observed
+// EID 10 handle) before it scores. The catalogue is wide precisely because the rule
+// that consumes it is now specific.
+export const LSASS_TOOLS = /^(processhacker|systeminformer|procdump|procdump64|sqldumper|avdump|avdump32|avdump64|handlekatz|nanodump|createdump|rdrleakdiag|dumpert|procexp|procexp64|werfaultsecure|minidumpwritedump|outflanknanodump|lsassy|safetykatz|sharpdump|physmem2profit|dumpminitool)(\.exe)?$/i;
+// Command-line evidence that a dumper is aimed at LSASS specifically.
+export const LSASS_TARGET_CMD = /(\blsass(\.exe)?\b|\blsass_?dump\b|\b-ma\s+lsass|\bprocessid\s*[:=]?\s*\d+\s+.*lsass|\/pn\s*:?\s*lsass)/i;
 export const ACCOUNT_MANIP = /net\s+(user|group|localgroup)\s+.*(\/add|\/domain\s+\/add)/i;
 export const DEFENSE_EVASION = /(vssadmin.*delete|wevtutil\s+cl|bcdedit.*safeboot|bcdedit.*recoveryenabled)/i;
 export const NETWORK_SCANNERS = /^(netscan|netscan64|advanced_ip_scanner|rustscan|masscan|angry_ip_scanner|nbtscan)(\.exe)?$/i;

@@ -174,3 +174,16 @@ test("Credential detectors honor disabledDetectors", () => {
   const result = getLateralMovement(meta, { disabledDetectors: ["kerberoast"] }, ctx);
   assert.equal(result.findings.filter((f) => f.category === "Kerberoasting").length, 0);
 });
+
+test("Kerberoasting does not fire on machine-account SPNs or krbtgt", () => {
+  const rows = [
+    krbRow("2026-03-10T08:00:00Z", "jsmith@CORP.LOCAL", "FS01$", "0x17"),
+    krbRow("2026-03-10T08:01:00Z", "jsmith@CORP.LOCAL", "FS02$", "0x17"),
+    krbRow("2026-03-10T08:02:00Z", "jsmith@CORP.LOCAL", "PRN01$", "0x17"),
+    krbRow("2026-03-10T08:03:00Z", "jsmith@CORP.LOCAL", "krbtgt", "0x17"),
+    krbRow("2026-03-10T08:04:00Z", "WKS01$@CORP.LOCAL", "MSSQLSvc/sql01:1433", "0x17"),
+  ];
+  const { meta, ctx } = makeStub(HEADERS, rows);
+  const result = getLateralMovement(meta, {}, ctx);
+  assert.equal(result.findings.filter((f) => f.category === "Kerberoasting").length, 0);
+});

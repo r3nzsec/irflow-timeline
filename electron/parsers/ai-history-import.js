@@ -18,7 +18,12 @@ const {
   makeSourceAccumulator,
 } = require("./ai-history/db-sink");
 const { buildChatgptExtractionStats } = require("./ai-history/chatgpt");
-const { isClaudeDir, isClaudeCodeArtifactRoot, resolveClaudeDir } = require("./ai-history/claude-code");
+const {
+  isClaudeDir,
+  isClaudeCodeArtifactRoot,
+  resolveClaudeDir,
+  isClaudeJsonStateFile,
+} = require("./ai-history/claude-code");
 const {
   isChatgptAppDir,
   resolveChatgptDir,
@@ -47,6 +52,12 @@ const {
   resolveGrokHome,
   countGrokDataFiles,
 } = require("./ai-history/grok-build");
+const {
+  isGrokBotRoot,
+  isGrokBotArtifactFile,
+  resolveGrokBotRoot,
+  countGrokBotExtractFiles,
+} = require("./ai-history/grok-bot");
 const {
   isCursorDataRoot,
   isCursorTranscriptFile,
@@ -127,6 +138,7 @@ function countAiHistorySourceFiles(tool, target, detect = {}) {
 
   try {
     if (tool === "claude-code") {
+      if (isClaudeJsonStateFile(target)) return countClaudeExtractFiles(target, opts);
       const root = resolveClaudeDir(target) || target;
       if (root && isClaudeCodeArtifactRoot(root)) return countClaudeExtractFiles(root, opts);
     }
@@ -140,6 +152,10 @@ function countAiHistorySourceFiles(tool, target, detect = {}) {
     if (tool === "grok-build") {
       const root = resolveGrokHome(target) || target;
       if (root && isGrokBuildRoot(root)) return countGrokDataFiles(root, opts);
+    }
+    if (tool === "grok-bot") {
+      const root = resolveGrokBotRoot(target) || target;
+      if (root && isGrokBotRoot(root)) return countGrokBotExtractFiles(root);
     }
     if (tool === "chatgpt") {
       const root = resolveChatgptDir(target) || target;
@@ -213,7 +229,8 @@ function findChatgptRootForPath(filePath) {
     const hasProductHint = lower.includes("chatgpt")
       || lower.includes("com.openai.chat")
       || lower.includes("openai.chatgpt")
-      || base === "atlas";
+      || base === "atlas"
+      || base === "codex";
     if (hasProductHint) {
       const resolved = resolveChatgptDir(p);
       if (resolved) return resolved;
@@ -341,6 +358,13 @@ function isGrokArtifactPath(filePath) {
   return st.isDirectory() && !!resolveGrokHome(filePath);
 }
 
+function isGrokBotArtifactPath(filePath) {
+  if (isGrokBotArtifactFile(filePath)) return true;
+  let st;
+  try { st = fs.statSync(filePath); } catch { return false; }
+  return st.isDirectory() && isGrokBotRoot(filePath);
+}
+
 function isGeminiArtifactPath(filePath) {
   if (isGeminiSessionFile(filePath) || isGeminiShellHistoryFile(filePath)) return true;
   if (filePath.includes(`${path.sep}${GEMINI_DIR_NAME}${path.sep}`)) {
@@ -420,6 +444,7 @@ function detectAiHistoryImport(filePath) {
     const grokRoot = resolveGrokHome(filePath);
     if (grokRoot) return { tool: "grok-build", target: grokRoot };
     if (isGrokBuildRoot(filePath)) return { tool: "grok-build", target: path.resolve(filePath) };
+    if (isGrokBotRoot(filePath)) return { tool: "grok-bot", target: path.resolve(filePath) };
 
     const codexRoot = resolveCodexHome(filePath);
     if (codexRoot) return { tool: "codex", target: codexRoot };
@@ -468,6 +493,12 @@ function detectAiHistoryImport(filePath) {
   if (isGrokArtifactPath(filePath)) {
     const root = findGrokRootForPath(filePath);
     return { tool: "grok-build", target: root || filePath };
+  }
+  if (isGrokBotArtifactFile(filePath)) {
+    return { tool: "grok-bot", target: resolveGrokBotRoot(filePath) || filePath };
+  }
+  if (isClaudeJsonStateFile(filePath)) {
+    return { tool: "claude-code", target: filePath };
   }
   if (isClaudeJsonlPath(filePath)) {
     return { tool: "claude-code", target: filePath };
@@ -524,6 +555,8 @@ function planImportPaths(filePaths) {
   const codexFiles = [];
   const grokRoots = new Set();
   const grokFiles = [];
+  const grokBotRoots = new Set();
+  const grokBotFiles = [];
   const geminiRoots = new Set();
   const geminiFiles = [];
   const cursorRoots = new Set();
@@ -546,6 +579,10 @@ function planImportPaths(filePaths) {
       const grokRoot = resolveGrokHome(fp);
       if (grokRoot || isGrokBuildRoot(fp)) {
         grokRoots.add(path.resolve(grokRoot || fp));
+        continue;
+      }
+      if (isGrokBotRoot(fp)) {
+        grokBotRoots.add(path.resolve(fp));
         continue;
       }
       const claude = resolveClaudeDir(fp);
@@ -594,6 +631,10 @@ function planImportPaths(filePaths) {
       continue;
     }
 
+    if (isClaudeJsonStateFile(fp)) {
+      claudeRoots.add(path.resolve(fp));
+      continue;
+    }
     if (isClaudeJsonlPath(fp)) {
       claudeJsonlFiles.push(path.resolve(fp));
       continue;
@@ -604,6 +645,10 @@ function planImportPaths(filePaths) {
     }
     if (isGrokArtifactPath(fp)) {
       grokFiles.push(path.resolve(fp));
+      continue;
+    }
+    if (isGrokBotArtifactFile(fp)) {
+      grokBotFiles.push(path.resolve(fp));
       continue;
     }
     if (isChatgptArtifactPath(fp)) {
@@ -637,6 +682,7 @@ function planImportPaths(filePaths) {
   mergeFileGroup(claudeJsonlFiles, findClaudeRootForPath, claudeRoots, normal, normal);
   mergeFileGroup(codexFiles, findCodexRootForPath, codexRoots, normal, normal);
   mergeFileGroup(grokFiles, findGrokRootForPath, grokRoots, normal, normal);
+  mergeFileGroup(grokBotFiles, resolveGrokBotRoot, grokBotRoots, normal, normal);
   mergeFileGroup(chatgptFiles, findChatgptRootForPath, chatgptRoots, normal, normal);
   mergeFileGroup(geminiFiles, findGeminiRootForPath, geminiRoots, normal, normal);
   mergeFileGroup(cursorFiles, findCursorRootForPath, cursorRoots, normal, normal);
@@ -656,6 +702,7 @@ function planImportPaths(filePaths) {
   for (const root of claudeRoots) pushAiHistoryPlanned(planned, "claude-code", root);
   for (const root of codexRoots) pushAiHistoryPlanned(planned, "codex", root);
   for (const root of grokRoots) pushAiHistoryPlanned(planned, "grok-build", root);
+  for (const root of grokBotRoots) pushAiHistoryPlanned(planned, "grok-bot", root);
   for (const root of chatgptRoots) pushAiHistoryPlanned(planned, "chatgpt", root);
   for (const root of geminiRoots) pushAiHistoryPlanned(planned, "gemini-cli", root);
   for (const root of cursorRoots) pushAiHistoryPlanned(planned, "cursor", root);
@@ -706,6 +753,7 @@ async function parseAiHistoryImport(filePath, tabId, db, onProgress, detect) {
     meta.chatgpt = sidecar._chatgptStats || buildChatgptExtractionStats(prepared, target);
   }
   if (sidecar._claudeDesktopStats) meta.claudeDesktop = sidecar._claudeDesktopStats;
+  if (sidecar._claudeContextStats) meta.claudeContext = sidecar._claudeContextStats;
   if (sidecar._cursorComposerStats) {
     meta.cursor = { ...(meta.cursor || {}), composer: sidecar._cursorComposerStats, syntheticTimestamps: true };
   }
@@ -719,9 +767,16 @@ async function parseAiHistoryImport(filePath, tabId, db, onProgress, detect) {
     meta.cursor = {
       ...(meta.cursor || {}),
       syntheticTimestamps: !!(sidecar._cursorSyntheticTimestamps || sidecar._cursorPartialSyntheticTimestamps),
+      context: sidecar._cursorContextStats,
     };
   }
+  if (sidecar._codexContextStats) meta.codexContext = sidecar._codexContextStats;
+  if (sidecar._grokContextStats) meta.grokContext = sidecar._grokContextStats;
+  if (sidecar._geminiHistoryStats) meta.geminiHistory = sidecar._geminiHistoryStats;
   if (sidecar._parseErrors) meta.parseErrors = sidecar._parseErrors;
+  if (sidecar._sourceCoverage) meta.sourceCoverage = sidecar._sourceCoverage;
+  if (sidecar._performance) meta.performance = sidecar._performance;
+  if (sidecar._grokBotStats) meta.grokBot = sidecar._grokBotStats;
   if (capped) meta.capped = { maxRows: MAX_AI_HISTORY_ROWS, rowCount: prepared.length };
 
   const headers = [...AI_HISTORY_COLUMNS];
@@ -759,6 +814,7 @@ module.exports = {
   isChatgptArtifactPath,
   isCodexArtifactPath,
   isGrokArtifactPath,
+  isGrokBotArtifactPath,
   isGeminiArtifactPath,
   isCursorArtifactPath,
   isCopilotArtifactPath,

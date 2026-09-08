@@ -15,6 +15,8 @@
  * @returns {{fid: number}}
  */
 const { DC_PAT: _DC_PAT, SRV_PAT: _SRV_PAT } = require("../constants");
+const { normalizeTimestamp } = require("../../../utils/forensic-normalize");
+const { tsMs, cmpTs } = require("../time");
 
 function detectAdminShareAndExecution(state) {
   const {
@@ -48,14 +50,14 @@ function detectAdminShareAndExecution(state) {
         const sn = evt.shareName.replace(/^\\\\\*\\/, "").toUpperCase();
         const pipe = _classifyPipe(evt.relativeTargetName);
         if (_ADMIN_SHARE_PAT.test(sn)) {
-          _adminShareHits.push({ source: evt.source, target: evt.target, user: evt.user, ts: evt.ts, shareName: sn, shareType: "admin", pipe, evidenceRefs: _dedupeEvidenceRefs(evt.evidenceRefs || []) });
+          _adminShareHits.push({ source: evt.source, target: evt.target, user: evt.user, ts: evt.ts, shareName: sn, shareType: "admin", pipe, isWrite: !!evt.shareIsWrite, accessMask: evt.shareAccessMask, evidenceRefs: _dedupeEvidenceRefs(evt.evidenceRefs || []) });
         } else if (_IPC_PAT.test(sn)) {
-          _adminShareHits.push({ source: evt.source, target: evt.target, user: evt.user, ts: evt.ts, shareName: sn, shareType: "ipc", pipe, evidenceRefs: _dedupeEvidenceRefs(evt.evidenceRefs || []) });
+          _adminShareHits.push({ source: evt.source, target: evt.target, user: evt.user, ts: evt.ts, shareName: sn, shareType: "ipc", pipe, isWrite: !!evt.shareIsWrite, accessMask: evt.shareAccessMask, evidenceRefs: _dedupeEvidenceRefs(evt.evidenceRefs || []) });
         }
       }
       if (_adminShareHits.length > 0) {
         // Cluster by source->target pair, 10-min window
-        _adminShareHits.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
+        _adminShareHits.sort((a, b) => cmpTs(a.ts, b.ts));
         const _asClusters = [];
         const _asGrouped = new Map(); // "src->tgt" => [hits]
         for (const h of _adminShareHits) {
@@ -65,12 +67,12 @@ function detectAdminShareAndExecution(state) {
         }
         for (const [, hits] of _asGrouped) {
           // Sub-cluster within each pair by 10-min gap
-          hits.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
+          hits.sort((a, b) => cmpTs(a.ts, b.ts));
           let cur = [hits[0]];
           for (let hi = 1; hi < hits.length; hi++) {
-            const prevMs = new Date(cur[cur.length - 1].ts).getTime();
-            const curMs = new Date(hits[hi].ts).getTime();
-            if (!isNaN(prevMs) && !isNaN(curMs) && curMs - prevMs <= 600000) {
+            const prevMs = tsMs(cur[cur.length - 1].ts);
+            const curMs = tsMs(hits[hi].ts);
+            if (prevMs != null && curMs != null && curMs - prevMs <= 600000) {
               cur.push(hits[hi]);
             } else {
               _asClusters.push(cur);
@@ -92,7 +94,7 @@ function detectAdminShareAndExecution(state) {
           const sources = [...new Set(cluster.map(h => h.source).filter(Boolean))];
           const targets = [...new Set(cluster.map(h => h.target).filter(Boolean))];
           const users = [...new Set(cluster.map(h => h.user).filter(Boolean))];
-          const allTs = cluster.map(h => h.ts).filter(Boolean).sort();
+          const allTs = cluster.map(h => h.ts).filter(Boolean).sort(cmpTs);
           const allHosts = [...new Set([...sources, ...targets])];
           // FP: skip if all users are service accounts and source is management host
           const allSvc = users.length > 0 && users.every(u => _asSvcPat.test(u) || u.endsWith("$"));
@@ -127,7 +129,14 @@ function detectAdminShareAndExecution(state) {
             // Require same source->target pair (or source-less finding matching target)
             if (targets.some(t => fTargets.includes(t)) && (sources.some(s => fSources.includes(s)) || !f.source)) { hasToolCorrelation = true; break; }
           }
-          if (hasAdmin && (hasToolCorrelation || hasExecPipe)) severity = "critical";
+          // A WRITE to an admin share is a file being placed on the remote host —
+          // the tool-drop half of PsExec/Impacket/SMBExec. A read is an inventory or
+          // backup agent. The AccessMask that says which is which was never parsed
+          // (audit L18), so both scored identically.
+          const writeHits = cluster.filter(h => h.isWrite);
+          const hasAdminWrite = writeHits.some(h => h.shareType === "admin");
+          const dropTargets = [...new Set(cluster.filter(h => h.isWrite && h.pipe).map(h => h.pipe.name))];
+          if (hasAdmin && (hasToolCorrelation || hasExecPipe || hasAdminWrite)) severity = "critical";
           else if (hasAdmin) severity = "high";
           else if (hasExecPipe) severity = "high"; // IPC$ + control/exec named pipe = remote exec over SMB
           else severity = "medium"; // IPC$ with tool correlation
@@ -150,6 +159,8 @@ function detectAdminShareAndExecution(state) {
           const _asPills = shares.map(s => ({ text: `${s} access`, type: hasAdmin && !/^IPC\$/i.test(s) ? "execution" : "context" }));
           for (const p of clusterPipes) _asPills.push({ text: `\\pipe\\${p.name}`, type: "execution" });
           if (hasToolCorrelation) _asPills.push({ text: "tool correlation", type: "correlation" });
+          if (hasAdminWrite) _asPills.push({ text: `write access (${writeHits.length} file${writeHits.length === 1 ? "" : "s"} placed)`, type: "execution" });
+          if (dropTargets.length > 0) _asPills.push({ text: `dropped: ${dropTargets.slice(0, 2).join(", ")}`, type: "execution" });
           if (sources.some(s => _outlierHosts.has(s))) _asPills.push({ text: "outlier source", type: "context" });
           findings.push({ id: fid++, severity, category: "Admin Share Access", mitre: _pipeMitre || "T1021.002",
             title: `Admin share access: ${shares.join(", ")}${_pipeLabel}${hostLabel.length > 0 ? ` (${hostLabel.join("; ")})` : ""}`,
@@ -171,7 +182,7 @@ function detectAdminShareAndExecution(state) {
       try {
         const _seqWindowMs = 180000;   // max gap between adjacent steps
         const _seqMaxSpanMs = 600000;  // max total auth→exec span
-        const _seqMs = (t) => { const d = new Date(t).getTime(); return isNaN(d) ? null : d; };
+        const _seqMs = (t) => { const n = normalizeTimestamp(t); return Number.isFinite(n) ? n : null; };
         const _seqNormH = (h) => (h || "").toString().trim().toUpperCase();
         const _seqShareOk = (sn) => /^(ADMIN\$|C\$|[A-Z]\$|IPC\$)$/i.test((sn || "").replace(/^\\\\\*\\/, ""));
         const _execShort = { "PsExec Native": "PsExec", "Impacket Execution": "Impacket", "Impacket Summary": "Impacket", "Remote Service Execution": "Service Exec", "WMI Remote Execution": "WMI", "WinRM Remote Execution": "WinRM", "Scheduled Task Remote Execution": "Sched Task" };
@@ -199,10 +210,29 @@ function detectAdminShareAndExecution(state) {
         const _seqExecByHost = new Map();
         for (const f of findings) {
           if (!_seqExecCats.has(f.category)) continue;
-          const tms = _seqMs(f.timeRange && f.timeRange.from); if (tms == null) continue;
-          for (const t of (f.target || "").split(", ").map(_seqNormH).filter(Boolean)) {
-            if (!_seqExecByHost.has(t)) _seqExecByHost.set(t, []);
-            _seqExecByHost.get(t).push({ tms, ts: f.timeRange.from, category: f.category, users: (f.users || []).map(u => (u || "").toUpperCase()), refs: _dedupeEvidenceRefs(f.evidenceRefs || []) });
+          const details = Array.isArray(f.executionDetails) ? f.executionDetails : [];
+          const instants = [];
+          if (details.length) {
+            for (const d of details) {
+              const tms = _seqMs(d.timestamp);
+              const host = _seqNormH(d.target || f.target);
+              if (tms == null || !host) continue;
+              instants.push({
+                tms, ts: d.timestamp, host, category: f.category,
+                users: d.attributedUser ? [String(d.attributedUser).toUpperCase()] : (f.users || []).map(u => (u || "").toUpperCase()),
+                refs: _dedupeEvidenceRefs(f.evidenceRefs || []),
+              });
+            }
+          } else {
+            const tms = _seqMs(f.timeRange && f.timeRange.from);
+            if (tms == null) continue;
+            for (const host of (f.target || "").split(", ").map(_seqNormH).filter(Boolean)) {
+              instants.push({ tms, ts: f.timeRange.from, host, category: f.category, users: (f.users || []).map(u => (u || "").toUpperCase()), refs: _dedupeEvidenceRefs(f.evidenceRefs || []) });
+            }
+          }
+          for (const inst of instants) {
+            if (!_seqExecByHost.has(inst.host)) _seqExecByHost.set(inst.host, []);
+            _seqExecByHost.get(inst.host).push(inst);
           }
         }
 
@@ -227,11 +257,22 @@ function detectAdminShareAndExecution(state) {
             }
             if (!a) continue;
             if ((e.tms - a.tms) > _seqMaxSpanMs) continue;
-            best = { a, s, e };
+            // User continuity on the EXEC step too. The auth->share hop already
+            // required one principal, but the exec step was accepted on timing
+            // alone: any heuristic execution finding on the host inside the window
+            // completed the sequence and the result was published as a CRITICAL
+            // "remote exec sequence by <auth user>" even when the execution belonged
+            // to a different account entirely. When the exec step carries no user at
+            // all (a 7045 service install often does not) the sequence is kept but
+            // reported one level down, with the gap stated.
+            const _seqUserKey = (a.user || s.user || "").toUpperCase();
+            const _execUsers = (e.users || []).filter(Boolean).map((u) => u.toUpperCase());
+            if (_seqUserKey && _execUsers.length > 0 && !_execUsers.includes(_seqUserKey)) continue;
+            best = { a, s, e, execUserKnown: _execUsers.length > 0 };
             break; // earliest complete sequence — one finding per host
           }
           if (!best) continue;
-          const { a, s, e } = best;
+          const { a, s, e, execUserKnown } = best;
           const seqUser = a.user || s.user || e.users[0] || "(unknown)";
           const _seqRefs = _dedupeEvidenceRefs([...(a.refs || []), ...(s.refs || []), ...(e.refs || [])]);
           const _shareLabel = s.pipe ? `${s.share}\\pipe\\${s.pipe.name}` : s.share;
@@ -244,11 +285,12 @@ function detectAdminShareAndExecution(state) {
           if (s.pipe) _seqPills.push({ text: `\\pipe\\${s.pipe.name}`, type: "execution" });
           _seqPills.push({ text: _execLabel, type: "execution" });
           _seqPills.push({ text: `ordered in ${_spanSec}s`, type: "correlation" });
+          if (!execUserKnown) _seqPills.push({ text: "exec step user unknown", type: "context" });
           if (a.source && _outlierHosts.has(a.source)) _seqPills.push({ text: "outlier source", type: "context" });
           findings.push({
-            id: fid++, severity: "critical", category: "Remote Execution Sequence", mitre: (s.pipe && s.pipe.mitre) || "T1569.002",
+            id: fid++, severity: execUserKnown ? "critical" : "high", category: "Remote Execution Sequence", mitre: (s.pipe && s.pipe.mitre) || "T1569.002",
             title: `Remote exec sequence on ${host}: ${seqUser} (auth → ${_shareLabel} → ${_execLabel})`,
-            description: `Ordered lateral-movement sequence on ${host} by ${seqUser} within ${_spanSec}s: authentication (${(a.ts || "").slice(0, 19)}) → ${_shareLabel} share access (${(s.ts || "").slice(0, 19)}) → ${_execLabel} execution (${(e.ts || "").slice(0, 19)}). The auth→share→execute ordering by a single principal in a short window is a high-confidence remote-execution signal (PsExec/Impacket/WMI-style).`,
+            description: `Ordered lateral-movement sequence on ${host} by ${seqUser} within ${_spanSec}s: authentication (${(a.ts || "").slice(0, 19)}) → ${_shareLabel} share access (${(s.ts || "").slice(0, 19)}) → ${_execLabel} execution (${(e.ts || "").slice(0, 19)}). The auth→share→execute ordering by a single principal in a short window is a high-confidence remote-execution signal (PsExec/Impacket/WMI-style).${execUserKnown ? "" : " The execution step carries no account, so the principal is confirmed only for the auth and share steps."}`,
             source: a.source || "", target: host,
             filterHosts: [host, a.source].filter(Boolean),
             timeRange: { from: a.ts, to: e.ts },
@@ -267,16 +309,39 @@ function detectAdminShareAndExecution(state) {
       // "Service Exec" so the graph and chains reflect the actual technique.
       try {
         const _seCats = new Set(["PsExec Native", "Impacket Execution", "Impacket Summary", "Remote Service Execution"]);
+        const _seMs = (t) => { const n = normalizeTimestamp(t); return Number.isFinite(n) ? n : null; };
         const _seExec = [];
         for (const f of findings) {
           if (!_seCats.has(f.category)) continue;
-          const tms = new Date(f.timeRange && f.timeRange.from).getTime();
-          if (isNaN(tms)) continue; // require a valid execution timestamp — never correlate timeless findings
-          for (const t of (f.target || "").split(/,\s*/).map(h => h.trim().toUpperCase()).filter(Boolean)) {
-            _seExec.push({ host: t, tms, label: f.category });
+          const details = Array.isArray(f.executionDetails) ? f.executionDetails : [];
+          if (details.length) {
+            for (const d of details) {
+              const tms = _seMs(d.timestamp);
+              const host = (d.target || "").trim().toUpperCase();
+              if (tms == null || !host) continue;
+              _seExec.push({ host, tms, label: f.category });
+            }
+          } else {
+            const tms = _seMs(f.timeRange && f.timeRange.from);
+            if (tms == null) continue;
+            for (const t of (f.target || "").split(/,\s*/).map(h => h.trim().toUpperCase()).filter(Boolean)) {
+              _seExec.push({ host: t, tms, label: f.category });
+            }
           }
         }
         if (_seExec.length > 0) {
+          const _seLogons = [];
+          for (const evt of timeOrdered) {
+            const isAuth = evt.eventId === "4648" || (evt.eventId === "4624" && evt.logonType === "3");
+            if (!isAuth) continue;
+            const tms = _seMs(evt.ts);
+            if (tms == null) continue;
+            _seLogons.push({
+              source: (evt.source || "").toUpperCase(),
+              target: (evt.target || "").toUpperCase(),
+              tms,
+            });
+          }
           for (const edge of edgeMap.values()) {
             if (edge.technique === "Service Exec") continue;
             const lt = edge.logonTypes;
@@ -284,10 +349,11 @@ function detectAdminShareAndExecution(state) {
             const isType3OrExplicit = (lt && lt.has("3")) || (eb && eb.has("4648"));
             if (!isType3OrExplicit) continue;
             const tgt = (edge.target || "").toUpperCase();
-            const eFrom = new Date(edge.firstSeen).getTime();
-            const eTo = new Date(edge.lastSeen).getTime();
-            if (isNaN(eFrom) || isNaN(eTo)) continue; // require valid edge timestamps for time correlation
-            const match = _seExec.find(x => x.host === tgt && x.tms >= eFrom - 300000 && x.tms <= eTo + 300000);
+            const src = (edge.source || "").toUpperCase();
+            const match = _seExec.find((x) => {
+              if (x.host !== tgt) return false;
+              return _seLogons.some((l) => l.source === src && l.target === tgt && Math.abs(l.tms - x.tms) <= 300000);
+            });
             if (!match) continue;
             // Preserve the prior primary technique as a supporting one, then promote.
             if (edge.technique && edge.technique !== "Unknown" && edge.technique !== "Network Logon" && edge.technique !== "Service Exec") {
@@ -312,7 +378,7 @@ function detectAdminShareAndExecution(state) {
           for (const [, hits] of _lsaByHostCaller) {
             const host = hits[0].host;
             const caller = hits[0].caller;
-            const allTs = hits.map(h => h.ts).filter(Boolean).sort();
+            const allTs = hits.map(h => h.ts).filter(Boolean).sort(cmpTs);
             const _lsaPills = [{ text: "LSASS handle open", type: "credential" }, { text: caller, type: "execution" }];
             if (_DC_PAT.test(host)) _lsaPills.push({ text: "DC target", type: "target" });
             const _lsaUsers = _usersFromCorrelation(hits);
@@ -346,7 +412,7 @@ function detectAdminShareAndExecution(state) {
             }
             for (const [host, hits] of _rsByHost) {
               const targets = [...new Set(hits.map(h => h.target))];
-              const allTs = hits.map(h => h.ts).filter(Boolean).sort();
+              const allTs = hits.map(h => h.ts).filter(Boolean).sort(cmpTs);
               const _rsPills = [{ text: "registry credential dump", type: "credential" }, ...targets.map(t => ({ text: `HKLM\\${t}`, type: "execution" }))];
               const _rsUsers = _usersFromCorrelation(hits);
               const _rsSources = _sourcesFromCorrelation(hits);
@@ -373,7 +439,7 @@ function detectAdminShareAndExecution(state) {
               _ppByHost.get(h.host).push(h);
             }
             for (const [host, hits] of _ppByHost) {
-              const allTs = hits.map(h => h.ts).filter(Boolean).sort();
+              const allTs = hits.map(h => h.ts).filter(Boolean).sort(cmpTs);
               const _ppPills = [{ text: "port forwarding", type: "execution" }];
               if (_DC_PAT.test(host)) _ppPills.push({ text: "DC target", type: "target" });
               const _ppUsers = _usersFromCorrelation(hits);

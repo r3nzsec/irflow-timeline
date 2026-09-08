@@ -7,9 +7,10 @@ const os = require("os");
 
 const { dbg } = require("../../logger");
 const { AI_HISTORY_TOOLS, AI_HISTORY_COLUMNS, AI_HISTORY_DB_OMIT_FULLTEXT } = require("./schema");
-const { extractClaudeDir } = require("./claude-code");
+const { extractClaudeDir, isClaudeJsonStateFile } = require("./claude-code");
 const { extractCodexDir } = require("./codex");
 const { extractGrokBuildDir } = require("./grok-build");
+const { extractGrokBotDir, mergeGrokBotStats } = require("./grok-bot");
 const { extractChatgptDir } = require("./chatgpt");
 const { extractGeminiCliDir } = require("./gemini-cli");
 const { extractCursorDir } = require("./cursor");
@@ -32,6 +33,7 @@ const {
   expandChatgptMsStorePackages,
   isClaudeCodeArtifactRoot,
   isGrokBuildRoot,
+  isGrokBotRoot,
   isChatgptAppDir,
   isGeminiCliRoot,
   isCursorHome,
@@ -45,6 +47,9 @@ const { isWindsurfUserDir } = require("./windsurf");
 const { scanAiArtifacts, extractUsername } = require("../ai-artifacts");
 const { buildEmptyAiScanReport } = require("./scan-report");
 const { AiHistoryExtractAbortedError } = require("./extract-abort");
+const { extractWithSourceCoverage, inventoryAiHistorySources, SourceCoverageTracker } = require("./source-coverage");
+const { mergePerformanceMetrics } = require("./performance-metrics");
+const { inventoryFingerprint } = require("./discovery-inventory");
 const path = require("path");
 
 
@@ -52,6 +57,7 @@ const FOLDER_SCAN_TOOL_MAP = [
   ["claudeCode", "claude-code"],
   ["codex", "codex"],
   ["grokBuild", "grok-build"],
+  ["grokBot", "grok-bot"],
   ["chatgpt", "chatgpt"],
   ["geminiCli", "gemini-cli"],
   ["cursor", "cursor"],
@@ -72,9 +78,10 @@ function validateAiHistoryRoot(tool, rootPath, { quick = false } = {}) {
   if (!rootPath || !fs.existsSync(rootPath)) return false;
   const q = { quick };
   switch (tool) {
-    case "claude-code": return isClaudeCodeArtifactRoot(rootPath);
+    case "claude-code": return isClaudeCodeArtifactRoot(rootPath) || isClaudeJsonStateFile(rootPath);
     case "codex": return isCodexDir(rootPath);
     case "grok-build": return isGrokBuildRoot(rootPath, q);
+    case "grok-bot": return isGrokBotRoot(rootPath);
     case "chatgpt": return isChatgptAppDir(rootPath, q);
     case "gemini-cli": return isGeminiCliRoot(rootPath, q);
     case "cursor": return isCursorHome(rootPath) || isCursorUserDataDir(rootPath);
@@ -275,18 +282,21 @@ async function discoverLocalAiHistoryRoots(options = {}) {
 }
 
 async function extractRoot(tool, rootPath, attribution, options) {
-  switch (tool) {
-    case "claude-code": return extractClaudeDir(rootPath, attribution, options);
-    case "codex": return extractCodexDir(rootPath, attribution, options);
-    case "grok-build": return extractGrokBuildDir(rootPath, attribution, options);
-    case "chatgpt": return extractChatgptDir(rootPath, attribution, options);
-    case "gemini-cli": return extractGeminiCliDir(rootPath, attribution, options);
-    case "cursor": return extractCursorDir(rootPath, attribution, options);
-    case "copilot": return extractCopilotPath(rootPath, attribution, options);
-    case "windsurf": return require("./windsurf").extractWindsurfPath(rootPath, attribution, options);
-    case "continue": return require("./continue").extractContinuePath(rootPath, attribution, options);
-    default: return [];
-  }
+  const extractors = {
+    "claude-code": extractClaudeDir,
+    codex: extractCodexDir,
+    "grok-build": extractGrokBuildDir,
+    "grok-bot": extractGrokBotDir,
+    chatgpt: extractChatgptDir,
+    "gemini-cli": extractGeminiCliDir,
+    cursor: extractCursorDir,
+    copilot: extractCopilotPath,
+    windsurf: require("./windsurf").extractWindsurfPath,
+    continue: require("./continue").extractContinuePath,
+  };
+  const extractor = extractors[tool];
+  if (!extractor) return [];
+  return extractWithSourceCoverage(tool, rootPath, attribution, options, extractor);
 }
 
 /**
@@ -324,8 +334,18 @@ async function extractMergedAiHistoryRoots(roots, attribution = {}, options = {}
   let windsurfStats = null;
   let codexStateSqliteStats = null;
   let codexAuxSqliteStats = null;
+  let codexThreadHistoryStats = null;
   let codexLocalEvidenceStats = null;
+  let claudeContextStats = null;
+  let cursorContextStats = null;
+  let codexContextStats = null;
+  let grokContextStats = null;
+  let geminiHistoryStats = null;
   let windsurfCascadeStats = null;
+  let grokBotStats = null;
+  let sourceCoverage = [];
+  let cursorSyntheticTimestamps = false;
+  let cursorPartialSyntheticTimestamps = false;
   let parseErrorTotal = 0;
   let capped = false;
   const sourceCount = roots.length;
@@ -401,8 +421,18 @@ async function extractMergedAiHistoryRoots(roots, attribution = {}, options = {}
       if (chunk._windsurfStats) windsurfStats = chunk._windsurfStats;
       if (chunk._codexStateSqliteStats) codexStateSqliteStats = chunk._codexStateSqliteStats;
       if (chunk._codexAuxSqliteStats) codexAuxSqliteStats = chunk._codexAuxSqliteStats;
+      if (chunk._codexThreadHistoryStats) codexThreadHistoryStats = chunk._codexThreadHistoryStats;
       if (chunk._codexLocalEvidenceStats) codexLocalEvidenceStats = chunk._codexLocalEvidenceStats;
+      if (chunk._claudeContextStats) claudeContextStats = chunk._claudeContextStats;
+      if (chunk._cursorContextStats) cursorContextStats = chunk._cursorContextStats;
+      if (chunk._codexContextStats) codexContextStats = chunk._codexContextStats;
+      if (chunk._grokContextStats) grokContextStats = chunk._grokContextStats;
+      if (chunk._geminiHistoryStats) geminiHistoryStats = chunk._geminiHistoryStats;
       if (chunk._windsurfCascadeStats) windsurfCascadeStats = chunk._windsurfCascadeStats;
+      if (chunk._grokBotStats) grokBotStats = mergeGrokBotStats(grokBotStats, chunk._grokBotStats);
+      if (chunk._sourceCoverage) sourceCoverage.push(...chunk._sourceCoverage);
+      if (chunk._cursorSyntheticTimestamps) cursorSyntheticTimestamps = true;
+      if (chunk._cursorPartialSyntheticTimestamps) cursorPartialSyntheticTimestamps = true;
       if (chunk._parseErrors) parseErrorTotal += chunk._parseErrors;
       // Push element-by-element, not `merged.push(...chunk)`: spreading an array past ~125k
       // elements throws RangeError (Maximum call stack size). Stop at the cap during accumulation
@@ -437,6 +467,7 @@ async function extractMergedAiHistoryRoots(roots, attribution = {}, options = {}
         break;
       }
     } catch (e) {
+      if (e?.canceled || e?.cancelled) throw e;
       failures.push({ tool, label, path: rootPath, error: e.message });
       dbg("AIHIST", "profile-scan extract failed", { tool, rootPath, err: e.message });
       report({
@@ -457,8 +488,8 @@ async function extractMergedAiHistoryRoots(roots, attribution = {}, options = {}
   report({
     phase: "merging",
     percent: 92,
-    statusDetail: "Deduplicating and sorting messages…",
-    logLine: "Merging: dedupe overlapping prompts + chronological sort…",
+    statusDetail: "Correlating and sorting source occurrences…",
+    logLine: "Merging: correlate matching prompts + chronological sort…",
     rowsSoFar: merged.length,
   });
 
@@ -472,16 +503,19 @@ async function extractMergedAiHistoryRoots(roots, attribution = {}, options = {}
   report({
     phase: "merging",
     percent: 96,
-    statusDetail: `${rows.length.toLocaleString()} unique messages ready`,
+    statusDetail: `${rows.length.toLocaleString()} evidence row(s) ready`,
     logLine: `Merge complete — ${rows.length.toLocaleString()} timeline row(s)`,
     rowsSoFar: rows.length,
   });
   const importMeta = {
     cursor: {
-      syntheticTimestamps: roots.some((r) => r.tool === "cursor"),
+      syntheticTimestamps: cursorSyntheticTimestamps || cursorPartialSyntheticTimestamps,
+      partialSyntheticTimestamps: cursorPartialSyntheticTimestamps,
       composer: cursorComposerStats,
+      context: cursorContextStats,
     },
   };
+  if (sourceCoverage.length) importMeta.sourceCoverage = sourceCoverage;
   if (claudeDesktopStats) importMeta.claudeDesktop = claudeDesktopStats;
   if (chatgptStats) importMeta.chatgpt = chatgptStats;
   if (copilotStats || roots.some((r) => r.tool === "copilot")) {
@@ -490,11 +524,18 @@ async function extractMergedAiHistoryRoots(roots, attribution = {}, options = {}
   if (windsurfStats) importMeta.windsurf = windsurfStats;
   if (codexStateSqliteStats) importMeta.codexStateSqlite = codexStateSqliteStats;
   if (codexAuxSqliteStats) importMeta.codexAuxSqlite = codexAuxSqliteStats;
+  if (codexThreadHistoryStats) importMeta.codexThreadHistory = codexThreadHistoryStats;
   if (codexLocalEvidenceStats) importMeta.codexLocalEvidence = codexLocalEvidenceStats;
+  if (claudeContextStats) importMeta.claudeContext = claudeContextStats;
+  if (codexContextStats) importMeta.codexContext = codexContextStats;
+  if (grokContextStats) importMeta.grokContext = grokContextStats;
+  if (geminiHistoryStats) importMeta.geminiHistory = geminiHistoryStats;
   if (windsurfCascadeStats) importMeta.windsurfCascade = windsurfCascadeStats;
+  if (grokBotStats) importMeta.grokBot = grokBotStats;
   if (parseErrorTotal) importMeta.parseErrors = parseErrorTotal;
   if (capped) importMeta.capped = { maxRows, rowCount: rows.length };
   if (parseErrorTotal) rows._parseErrors = parseErrorTotal;
+  if (sourceCoverage.length) rows._sourceCoverage = sourceCoverage;
   if (capped) rows._capped = importMeta.capped;
 
   return {
@@ -508,6 +549,9 @@ async function extractMergedAiHistoryRoots(roots, attribution = {}, options = {}
 }
 
 function collectChunkSidecarStats(chunk, acc) {
+  if (chunk._sourceCoverage) acc.sourceCoverage.push(...chunk._sourceCoverage);
+  if (chunk._cursorSyntheticTimestamps) acc.cursorSyntheticTimestamps = true;
+  if (chunk._cursorPartialSyntheticTimestamps) acc.cursorPartialSyntheticTimestamps = true;
   if (chunk._copilotStats) acc.copilotStats = chunk._copilotStats;
   if (chunk._claudeDesktopStats) acc.claudeDesktopStats = chunk._claudeDesktopStats;
   if (chunk._chatgptStats) acc.chatgptStats = chunk._chatgptStats;
@@ -515,9 +559,17 @@ function collectChunkSidecarStats(chunk, acc) {
   if (chunk._windsurfStats) acc.windsurfStats = chunk._windsurfStats;
   if (chunk._codexStateSqliteStats) acc.codexStateSqliteStats = chunk._codexStateSqliteStats;
   if (chunk._codexAuxSqliteStats) acc.codexAuxSqliteStats = chunk._codexAuxSqliteStats;
+  if (chunk._codexThreadHistoryStats) acc.codexThreadHistoryStats = chunk._codexThreadHistoryStats;
   if (chunk._codexLocalEvidenceStats) acc.codexLocalEvidenceStats = chunk._codexLocalEvidenceStats;
+  if (chunk._claudeContextStats) acc.claudeContextStats = chunk._claudeContextStats;
+  if (chunk._cursorContextStats) acc.cursorContextStats = chunk._cursorContextStats;
+  if (chunk._codexContextStats) acc.codexContextStats = chunk._codexContextStats;
+  if (chunk._grokContextStats) acc.grokContextStats = chunk._grokContextStats;
+  if (chunk._geminiHistoryStats) acc.geminiHistoryStats = chunk._geminiHistoryStats;
   if (chunk._windsurfCascadeStats) acc.windsurfCascadeStats = chunk._windsurfCascadeStats;
+  if (chunk._grokBotStats) acc.grokBotStats = mergeGrokBotStats(acc.grokBotStats, chunk._grokBotStats);
   if (chunk._parseErrors) acc.parseErrorTotal += chunk._parseErrors;
+  if (chunk._performance) acc.performance.push(chunk._performance);
 }
 
 /**
@@ -556,16 +608,37 @@ async function extractMergedAiHistoryRootsToDb(db, tabId, roots, attribution = {
     windsurfStats: null,
     codexStateSqliteStats: null,
     codexAuxSqliteStats: null,
+    codexThreadHistoryStats: null,
     codexLocalEvidenceStats: null,
+    claudeContextStats: null,
+    cursorContextStats: null,
+    codexContextStats: null,
+    grokContextStats: null,
+    geminiHistoryStats: null,
     windsurfCascadeStats: null,
+    grokBotStats: null,
+    sourceCoverage: [],
+    cursorSyntheticTimestamps: false,
+    cursorPartialSyntheticTimestamps: false,
     parseErrorTotal: 0,
+    performance: [],
   };
   let capped = false;
   let totalWritten = 0;
   let nextRecordId = 1;
   let streamedDuplicatesDropped = 0;
+  const MERGED_FULLTEXT_CHARS = 8 * 1024;
+  const fullTextStats = { fullTextTruncated: 0 };
   const streamedSeenKeys = new Set();
   const sourceCount = roots.length;
+  // Build each root's eligible-source list once. The same list drives parsing, the completion
+  // ledger, and deterministic remaining-source reporting if the global row budget stops early.
+  const sourceInventories = roots.map((root) => inventoryAiHistorySources(root.tool, root.path, {
+    ...options,
+    includeSubagents: !!includeSubagents,
+    skipSubagents: !includeSubagents,
+  }));
+  const attemptedRoots = new Set();
 
   db.createTab(tabId, [...headers]);
 
@@ -597,6 +670,7 @@ async function extractMergedAiHistoryRootsToDb(db, tabId, roots, attribution = {
       skipSubagents: !includeSubagents,
       skipFinalize: true,
       checkAbort,
+      sourceInventory: sourceInventories[i],
       onFileProgress: (fileIndex, fileCount, filePath) => {
         const fileFrac = fileCount > 0 ? fileIndex / fileCount : 0;
         const fileLabel = filePath && (String(filePath).includes(path.sep) || String(filePath).includes("/"))
@@ -634,34 +708,51 @@ async function extractMergedAiHistoryRootsToDb(db, tabId, roots, attribution = {
     });
 
     try {
+      attemptedRoots.add(i);
       const rowsBeforeSource = totalWritten;
-      // Accumulate the whole source (bounded to the remaining row budget) then flush once, so the
-      // history.jsonl↔session dedupe in dedupeAiHistoryRows — which needs both row kinds together —
-      // actually fires. The previous per-flush-batch dedupe left duplicate rows in the merged tab.
+      // Flush in bounded chunks. Holding an entire Codex/Claude source (multi-GB rollouts) in
+      // acc.rows with FullText kept is what OOMs the V8 worker and aborts the whole Electron
+      // process. Cross-flush exact-duplicate dedupe uses streamedSeenKeys.
+      //
+      // Each physical source occurrence remains eligible for output. Cross-flush dedupe removes
+      // only a repeated representation with the same source locator and content hash.
+      const SOURCE_FLUSH_ROWS = 15_000;
       const acc = makeSourceAccumulator(maxRows);
+      const addRows = (batch) => {
+        if (!batch || !batch.length) return;
+        acc.add(batch, totalWritten);
+      };
+      const flushAcc = () => {
+        if (!acc.rows.length) return;
+        let prepared = prepareChunkRowsForDb(acc.rows, nextRecordId, maxRows, totalWritten, {
+          keepFullText: true,
+          maxFullTextChars: MERGED_FULLTEXT_CHARS,
+          stats: fullTextStats,
+        });
+        const filtered = filterAlreadySeenStreamedRows(prepared, streamedSeenKeys);
+        prepared = filtered.rows;
+        streamedDuplicatesDropped += filtered.dropped;
+        for (let j = 0; j < prepared.length; j++) prepared[j].RecordId = String(nextRecordId + j);
+        if (prepared.length) {
+          writeAiHistoryRowsToDb(db, tabId, headers, prepared, checkAbort);
+          totalWritten += prepared.length;
+          nextRecordId += prepared.length;
+        }
+        if (acc.truncated) capped = true;
+        acc.reset();
+      };
       const collectExtractedRows = (rawBatch) => {
         checkAbort();
-        acc.add(rawBatch, totalWritten);
+        addRows(rawBatch);
+        if (acc.rows.length >= SOURCE_FLUSH_ROWS) flushAcc();
       };
       const chunk = await extractRoot(tool, rootPath, rootAttribution, {
         ...rootOptions,
         onExtractedRows: collectExtractedRows,
       });
       collectChunkSidecarStats(chunk, stats);
-      if (chunk.length) acc.add(chunk, totalWritten);
-      // Retain FullText for AI tabs so the AI Secret Scan can see content past the 500-char Summary
-      // preview (the merged/triage path previously slimmed it, leaving secret detection blind).
-      let prepared = prepareChunkRowsForDb(acc.rows, nextRecordId, maxRows, totalWritten, { keepFullText: true });
-      const filtered = filterAlreadySeenStreamedRows(prepared, streamedSeenKeys);
-      prepared = filtered.rows;
-      streamedDuplicatesDropped += filtered.dropped;
-      for (let j = 0; j < prepared.length; j++) prepared[j].RecordId = String(nextRecordId + j);
-      if (prepared.length) {
-        writeAiHistoryRowsToDb(db, tabId, headers, prepared, checkAbort);
-        totalWritten += prepared.length;
-        nextRecordId += prepared.length;
-      }
-      if (acc.truncated) capped = true;
+      if (chunk.length) addRows(chunk);
+      flushAcc();
       const sourceRows = totalWritten - rowsBeforeSource;
       dbg("AIHIST", "profile-scan streamed to db", { tool, rootPath, rows: sourceRows, totalWritten });
       report({
@@ -688,6 +779,7 @@ async function extractMergedAiHistoryRootsToDb(db, tabId, roots, attribution = {
         break;
       }
     } catch (e) {
+      if (e?.canceled || e?.cancelled) throw e;
       failures.push({ tool, label, path: rootPath, error: e.message });
       dbg("AIHIST", "profile-scan extract failed", { tool, rootPath, err: e.message });
       report({
@@ -718,10 +810,42 @@ async function extractMergedAiHistoryRootsToDb(db, tabId, roots, attribution = {
 
   const importMeta = {
     cursor: {
-      syntheticTimestamps: roots.some((r) => r.tool === "cursor"),
+      syntheticTimestamps: stats.cursorSyntheticTimestamps || stats.cursorPartialSyntheticTimestamps,
+      partialSyntheticTimestamps: stats.cursorPartialSyntheticTimestamps,
       composer: stats.cursorComposerStats,
+      context: stats.cursorContextStats,
     },
   };
+  const completeCoverage = new Map(stats.sourceCoverage.map((entry) => [entry.sourceFile, entry]));
+  for (let i = 0; i < roots.length; i++) {
+    const root = roots[i];
+    for (const sourceFile of sourceInventories[i]) {
+      const source = path.resolve(sourceFile);
+      if (completeCoverage.has(source)) continue;
+      const tracker = new SourceCoverageTracker(root.tool, [source]);
+      tracker.mark(
+        source,
+        attemptedRoots.has(i) ? "unavailable" : "excluded",
+        attemptedRoots.has(i)
+          ? "source was eligible but the parser did not complete it"
+          : "source remained after extraction stopped at the global row budget",
+      );
+      completeCoverage.set(source, tracker.report()[0]);
+    }
+  }
+  stats.sourceCoverage = [...completeCoverage.values()].sort((a, b) => a.sourceFile.localeCompare(b.sourceFile));
+  const remainingSources = stats.sourceCoverage
+    .filter((entry) => entry.status === "excluded")
+    .map((entry) => entry.sourceFile);
+  const allInventoryPaths = sourceInventories.flat().map((source) => path.resolve(source));
+  importMeta.discoveryInventory = {
+    version: 1,
+    eligibleSources: allInventoryPaths.length,
+    inventoryFingerprintSha256: inventoryFingerprint([...new Set(allInventoryPaths)].sort()),
+    remainingSources,
+    remainingSourceCount: remainingSources.length,
+  };
+  if (stats.sourceCoverage.length) importMeta.sourceCoverage = stats.sourceCoverage;
   if (stats.claudeDesktopStats) importMeta.claudeDesktop = stats.claudeDesktopStats;
   if (stats.chatgptStats) importMeta.chatgpt = stats.chatgptStats;
   if (stats.copilotStats || roots.some((r) => r.tool === "copilot")) {
@@ -730,10 +854,21 @@ async function extractMergedAiHistoryRootsToDb(db, tabId, roots, attribution = {
   if (stats.windsurfStats) importMeta.windsurf = stats.windsurfStats;
   if (stats.codexStateSqliteStats) importMeta.codexStateSqlite = stats.codexStateSqliteStats;
   if (stats.codexAuxSqliteStats) importMeta.codexAuxSqlite = stats.codexAuxSqliteStats;
+  if (stats.codexThreadHistoryStats) importMeta.codexThreadHistory = stats.codexThreadHistoryStats;
   if (stats.codexLocalEvidenceStats) importMeta.codexLocalEvidence = stats.codexLocalEvidenceStats;
+  if (stats.claudeContextStats) importMeta.claudeContext = stats.claudeContextStats;
+  if (stats.codexContextStats) importMeta.codexContext = stats.codexContextStats;
+  if (stats.grokContextStats) importMeta.grokContext = stats.grokContextStats;
+  if (stats.geminiHistoryStats) importMeta.geminiHistory = stats.geminiHistoryStats;
   if (stats.windsurfCascadeStats) importMeta.windsurfCascade = stats.windsurfCascadeStats;
+  if (stats.grokBotStats) importMeta.grokBot = stats.grokBotStats;
   if (stats.parseErrorTotal) importMeta.parseErrors = stats.parseErrorTotal;
+  const performance = mergePerformanceMetrics(stats.performance);
+  if (performance) importMeta.performance = performance;
   if (capped) importMeta.capped = { maxRows, rowCount: totalWritten };
+  if (fullTextStats.fullTextTruncated > 0) {
+    importMeta.fullTextTruncated = { rows: fullTextStats.fullTextTruncated, maxChars: MERGED_FULLTEXT_CHARS };
+  }
   if (sourceCount > 1) {
     importMeta.streamedMerge = {
       crossToolDedupe: false,

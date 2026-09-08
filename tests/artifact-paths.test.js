@@ -16,12 +16,16 @@ const {
 } = require("../electron/parsers/ai-history/artifact-paths");
 const { discoverLocalAiHistoryRoots } = require("../electron/parsers/ai-history/profile-scan");
 
-test("getLocalAiHistoryCandidates includes all ten tools", () => {
+test("getLocalAiHistoryCandidates includes all tool families", () => {
   const tools = new Set(getLocalAiHistoryCandidates().map((c) => c.tool));
-  assert.deepEqual(tools, new Set([
-    "claude-code", "codex", "grok-build", "gemini-cli", "cursor", "chatgpt", "copilot",
+  for (const tool of [
+    "claude-code", "codex", "grok-build", "grok-bot", "gemini-cli", "cursor", "chatgpt", "copilot",
     "windsurf", "continue", "computer-history",
-  ]));
+  ]) {
+    assert.ok(tools.has(tool), `missing ${tool}`);
+  }
+  assert.ok(getLocalAiHistoryCandidates().some((c) => c.tool === "claude-code" && c.path.endsWith(".claude.json")));
+  assert.ok(listChatgptCandidatePaths().some((p) => /[/\\]Codex$/.test(p)));
 });
 
 test("computer-history candidates cover both the raw stream and the derived summaries", () => {

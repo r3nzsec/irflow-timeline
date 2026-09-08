@@ -159,6 +159,31 @@ test("scanTriageDir reports per-file sizes and never follows symlinks", (t) => {
   assert.ok(!scan.paths.evtx.some((p) => p.includes("escape")), "symlinked tree must not be scanned");
 });
 
+test("scanTriageDir reports progress and honours cancellation", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "lm-triage-cancel-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const logs = path.join(root, "C", "Windows", "System32", "winevt", "logs");
+  fs.mkdirSync(logs, { recursive: true });
+  for (let i = 0; i < 20; i++) fs.writeFileSync(path.join(logs, `Security${i}.evtx`), Buffer.alloc(1000));
+  const ticks = [];
+  const scan = scanTriageDir(root, { progressEvery: 5, onProgress: (p) => ticks.push(p) });
+  assert.ok(scan.counts.evtx >= 20);
+  assert.ok(ticks.length >= 2, `expected mid-walk ticks plus a final tick, got ${ticks.length}`);
+  assert.equal(ticks[ticks.length - 1].scanned, scan.scanned);
+  assert.equal(ticks[ticks.length - 1].classified, scan.total);
+  let seen = 0;
+  assert.throws(
+    () => scanTriageDir(root, {
+      isCancelled: () => {
+        seen += 1;
+        if (seen > 3) throw Object.assign(new Error("stop"), { cancelled: true });
+      },
+    }),
+    (e) => e.cancelled === true,
+  );
+  assert.ok(seen > 3, "cancel is checked while walking files, not only between directories");
+});
+
 test("a parsed KAPE module folder is distinguished from a raw collection", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "lm-mout-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

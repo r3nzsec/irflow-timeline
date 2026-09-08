@@ -157,7 +157,7 @@ function coworkSessionDirForPath(filePath, desktopRoot) {
 
 async function extractClaudeAuditFile(auditPath, attribution = {}, parseStats = null) {
   const rows = [];
-  await readJsonlBounded(auditPath, (obj, lineNumber) => {
+  await readJsonlBounded(auditPath, (obj, lineNumber, sourceLocation) => {
     const normalized = {
       ...obj,
       timestamp: obj.timestamp ?? obj._audit_timestamp,
@@ -167,6 +167,7 @@ async function extractClaudeAuditFile(auditPath, attribution = {}, parseStats = 
     const row = assignLineNumber(
       parseSessionLine(normalized, auditPath, attribution, { recordTypePrefix: "audit-" }),
       lineNumber,
+      sourceLocation,
     );
     if (row) rows.push(row);
   }, { parseStats });
@@ -260,7 +261,7 @@ async function extractClaudeDesktopDir(desktopRoot, attribution = {}, options = 
   const projectsDir = resolveClaudeProjectsDir(desktopRoot, options.claudeProjectsSearchRoots || []);
   const jsonlIndex = buildJsonlIndex(projectsDir);
   const rows = [];
-  const parseStats = { errors: 0 };
+  const parseStats = options.parseStats || { errors: 0 };
   const stats = {
     metadataFiles: metaFiles.length,
     linkedTranscripts: 0,
@@ -415,6 +416,12 @@ async function extractClaudeDesktopDir(desktopRoot, attribution = {}, options = 
       stats.pendingUploads = stateRows.filter((r) => r.RecordType === "pending_upload").length;
       stats.usageWindows = stateRows.filter((r) => r.RecordType === "app_usage_window").length;
       stats.scheduledTasks = stateRows.filter((r) => r.RecordType === "scheduled_task").length;
+      stats.remoteBridges = stateRows.filter((r) => r.RecordType === "remote_control_bridge").length;
+      stats.remoteBridgesEnabled = stateRows.filter((r) => r.RecordType === "remote_control_bridge"
+        && /"enabled": true/.test(r.FullText)).length;
+      stats.trustedFolders = stateRows.filter((r) => r.RecordType === "trusted_folder").length;
+      stats.remoteFolderGrants = stateRows.filter((r) => r.RecordType === "remote_folder_grant").length;
+      stats.mcpServers = stateRows.filter((r) => r.RecordType === "mcp_server_config").length;
       emitBatch(stateRows);
     }
   }
@@ -457,6 +464,15 @@ function buildClaudeDesktopImportNotice(stats) {
   }
   if (stats.scheduledTasks > 0) {
     parts.push(`${stats.scheduledTasks} scheduled agent task(s)`);
+  }
+  if (stats.remoteBridges > 0) {
+    parts.push(`${stats.remoteBridges} Remote Control bridge(s) (${stats.remoteBridgesEnabled || 0} enabled)`);
+  }
+  if (stats.trustedFolders > 0 || stats.remoteFolderGrants > 0) {
+    parts.push(`${stats.trustedFolders || 0} trusted folder(s), ${stats.remoteFolderGrants || 0} remote-session folder grant(s)`);
+  }
+  if (stats.mcpServers > 0) {
+    parts.push(`${stats.mcpServers} MCP server definition(s) (env values redacted)`);
   }
   if (stats.metadataFiles > 0 && stats.linkedTranscripts === 0 && stats.danglingCli === 0 && stats.metadataOnly === stats.metadataFiles) {
     return "Claude Desktop: session metadata found but no CLI transcripts — also import ~/.claude/projects for message bodies.";

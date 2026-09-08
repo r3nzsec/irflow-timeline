@@ -1,0 +1,26 @@
+{
+  "version": 3,
+  "mcpBoxServers": [
+    {
+      "id": "3089780",
+      "name": "neon",
+      "url": "https://mcp.example.test/mcp?token=SECRET"
+    }
+  ],
+  "hasSeenOnboarding": true,
+  "egressTunnelEnabled": true,
+  "webauthnProxyEnabled": false,
+  "botColorInChatEnabled": true,
+  "messagesEnabled": true,
+  "mcpCustomInstructionsByServerId": {
+    "3089780": "only read tables"
+  },
+  "mcpDisabledToolsByServerId": {},
+  "localToolPermission": "ask-every-time",
+  "activeAccountScope": "acct-demo",
+  "conciergeConsent": "granted",
+  "settingsMigrations": [
+    "v3"
+  ],
+  "accountScopes": {}
+}

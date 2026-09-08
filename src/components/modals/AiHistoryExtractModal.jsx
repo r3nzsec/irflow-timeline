@@ -97,7 +97,8 @@ export default function AiHistoryExtractModal() {
         },
       });
       if (r.importNotice) toast.info(`${label} import`, { detail: r.importNotice });
-      toast.success(label, { detail: `Loaded ${plural(rowCount)}.` });
+      if (r.partial) toast.warning(label, { detail: `Loaded ${plural(rowCount)} with incomplete source coverage. Open View AI Extraction Coverage for details.` });
+      else toast.success(label, { detail: `Loaded ${plural(rowCount)}.` });
       setTimeout(() => setModal(null), 400);
       return Promise.resolve();
     };

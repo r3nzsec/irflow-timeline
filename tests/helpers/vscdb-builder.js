@@ -130,4 +130,45 @@ function buildCursorConversationSearchFixture(dbPath) {
   return true;
 }
 
-module.exports = { buildCursorComposerFixture, buildCursorConversationSearchFixture };
+function buildCursorToolOnlyFixture(dbPath) {
+  let Database;
+  try {
+    Database = require("better-sqlite3");
+    const probe = path.join(require("os").tmpdir(), `irflow-cursor-tool-probe-${process.pid}.db`);
+    const d = new Database(probe);
+    d.close();
+    try { fs.unlinkSync(probe); } catch { /* ignore */ }
+  } catch (e) {
+    if (e.code === "ERR_DLOPEN_FAILED") return false;
+    throw e;
+  }
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  const db = new Database(dbPath);
+  db.exec("CREATE TABLE cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)");
+  const composerId = "tool-only-composer";
+  const bubbleId = "tool-only-bubble";
+  db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)").run(
+    `composerData:${composerId}`,
+    JSON.stringify({ composerId, fullConversationHeadersOnly: [{ bubbleId, type: 2 }] }),
+  );
+  db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)").run(
+    `bubbleId:${composerId}:${bubbleId}`,
+    JSON.stringify({
+      bubbleId,
+      type: 2,
+      createdAt: "2026-09-08T01:02:03.456Z",
+      toolFormerData: {
+        name: "run_terminal_command",
+        status: "completed",
+        rawArgs: JSON.stringify({ command: "whoami && id" }),
+        result: JSON.stringify({ stdout: "analyst\nuid=501" }),
+        toolCallId: "call-1",
+        modelCallId: "model-1",
+      },
+    }),
+  );
+  db.close();
+  return true;
+}
+
+module.exports = { buildCursorComposerFixture, buildCursorConversationSearchFixture, buildCursorToolOnlyFixture };

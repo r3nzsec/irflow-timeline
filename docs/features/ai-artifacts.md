@@ -8,6 +8,14 @@ AI Artifacts turns local AI assistant history into timeline evidence. It helps i
 
 The feature creates an **AI Query History** timeline tab from local desktop, CLI, and editor-assistant stores. Each row keeps the evidence context analysts need: timestamp, role, AI app, invoked action, session, workspace, source file, summary, full text, and endpoint attribution when available.
 
+::: tip Expanded in v1.0.13
+**Evidence coverage is now part of the result.** IRFlow records every eligible source as parsed,
+empty, partial, malformed, unsupported, excluded, or unavailable; keeps SQLite companion and
+acquisition identities; and exposes the ledger through **View AI Extraction Coverage**. The release
+also adds Grok Bot, deeper local policy/context/result stores across Claude, Codex/ChatGPT, Grok
+Build, Gemini CLI, and Cursor, and bounded streaming for multi-gigabyte Codex rollouts.
+:::
+
 ::: tip New in v1.0.11
 **Stores that outlive the conversation.** Grok Build and Claude Desktop both keep evidence outside
 the session trees: a search index that mirrors transcript text, an application log that timestamps
@@ -61,6 +69,7 @@ IRFlow scans local artifacts from these AI apps:
 | **Claude Desktop** | `claude-code-sessions` metadata, recursive Cowork `local-agent-mode-sessions` transcripts and audit trails, plus deletion tombstones, staged uploads, usage windows, scheduled tasks, and workspace sightings. |
 | **OpenAI Codex** | `history.jsonl`, current/archived rollout JSONL, session indexes, and versioned `state*.sqlite` thread/subagent/tool metadata. |
 | **Grok Build** | Timestamped prompts, responses, exact tool inputs, shell completions, session metadata, and file-hunk records under `.grok`, plus the session search index, application log, and open-session record. |
+| **Grok Bot** | Account/agent persistence, retained transcript replicas, typed tool calls, approval state, send journals, drafts, automation events, daemon state/logs, link-preview cache, and staged-attachment references. |
 | **ChatGPT Desktop / Atlas** | Local LevelDB and SQLite stores plus v2/v3 conversation-bundle metadata inventory. |
 | **Gemini CLI** | Current JSONL chats, nested subagent sessions, exact shell history/tool commands, and legacy session data under `.gemini`. |
 | **Cursor** | Agent transcripts, composer/workspace SQLite chat stores, and `conversation-search.db` indexed bodies. |
@@ -203,18 +212,20 @@ What the parser adds beyond the raw events:
 
 ## Performance and Safeguards
 
-- Large scans run through the background extraction pipeline so the UI stays responsive.
-- Folder scans are cancellable.
+- Large scans run through a background worker with a bounded heap and stream rows into SQLite instead of retaining a whole source in memory.
+- Folder walking, JSONL parsing, hashing, and SQLite work share a cancellation signal.
 - Merged AI timelines cap at 3,000,000 rows and report truncation.
-- Malformed JSONL lines are skipped and counted in the import notice.
+- Malformed or oversized JSONL records are counted in the source ledger rather than silently disappearing.
 - Subagent or sidechain content can be included for broader hunts, but main-session-only scans are faster for first-pass triage.
 - Tool inputs can contain paths, prompts, or secrets. Treat `ToolCommand` and `ToolInput` as evidence and apply the same access controls used for full message text.
-- **Tools → Export → Export AI History Package…** includes the filtered timeline CSV plus a manifest of source files and hashes for the first 250 sources.
+- **View AI Extraction Coverage** distinguishes a complete qualified inventory from a partial acquisition and lists the status, reason, and row count per source.
+- **Tools → Export → Export AI History Package…** includes the filtered timeline CSV plus a format-v2 source/acquisition manifest, coverage state, hashes where permitted, and a restore recipe.
 
 ## Limitations
 
 - Browser-only AI usage may require browser profile collection; local desktop/CLI history is not the same as cloud account history.
 - Consumer Grok web/mobile history is not decoded as a native app store. Browser history/cache may still show `grok.com` or X/Grok usage and should be collected separately.
+- Grok Bot Windows/Linux profile discovery is covered by offline layout tests, but the native parser is qualified against the reviewed macOS artifact set; unavailable cloud history remains outside the claim.
 - Grok Build credential/configuration files such as `auth.json` and `mcp_credentials.json` are deliberately excluded from timeline parsing; preserve them under appropriate evidence controls when authorization material is in scope.
 - ChatGPT Desktop `conversations-v2-*` and `conversations-v3-*` bundles are inventoried, not decoded.
 - Gemini macOS desktop app history is not parsed; Gemini CLI local sessions are supported.

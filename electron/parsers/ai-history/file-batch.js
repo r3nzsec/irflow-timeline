@@ -37,10 +37,12 @@ async function processFilesConcurrently(items, opts = {}) {
       catch (err) { return { ok: false, err, item }; }
     }));
     for (const r of results) {
+      if (!r.ok && (r.err?.canceled || r.err?.cancelled)) throw r.err;
       if (typeof onProgress === "function") onProgress(r.item);
       if (r.ok) { if (typeof onRows === "function") onRows(r.rows, r.item); }
       else if (typeof onError === "function") onError(r.err, r.item);
     }
+    if (typeof checkAbort === "function") checkAbort();
     await new Promise((res) => setImmediate(res)); // yield between batches (abort + responsiveness)
   }
 }

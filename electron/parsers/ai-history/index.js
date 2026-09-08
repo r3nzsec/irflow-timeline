@@ -10,6 +10,7 @@ const {
   TOOL_GEMINI_CLI,
   TOOL_CODEX,
   TOOL_GROK_BUILD,
+  TOOL_GROK_BOT,
   TOOL_CURSOR,
   TOOL_COPILOT,
   AI_HISTORY_TOOLS,
@@ -22,10 +23,12 @@ const computerHistory = require("./computer-history");
 const geminiCli = require("./gemini-cli");
 const codex = require("./codex");
 const grokBuild = require("./grok-build");
+const grokBot = require("./grok-bot");
 const cursor = require("./cursor");
 const copilot = require("./copilot");
 const windsurf = require("./windsurf");
 const continueCli = require("./continue");
+const { extractWithSourceCoverage } = require("./source-coverage");
 
 const EXTRACTORS = {
   "claude-code": claudeCode.extractClaudeCodePath,
@@ -33,6 +36,7 @@ const EXTRACTORS = {
   "gemini-cli": geminiCli.extractGeminiCliPath,
   codex: codex.extractCodexPath,
   "grok-build": grokBuild.extractGrokBuildPath,
+  "grok-bot": grokBot.extractGrokBotPath,
   cursor: cursor.extractCursorPath,
   copilot: copilot.extractCopilotPath,
   windsurf: windsurf.extractWindsurfPath,
@@ -44,7 +48,7 @@ const EXTRACTORS = {
 async function extractAiHistory(tool, targetPath, attribution = {}, options = {}) {
   const fn = EXTRACTORS[tool];
   if (!fn) throw new Error(`Unknown AI history tool: ${tool}`);
-  return fn(targetPath, attribution, options);
+  return extractWithSourceCoverage(tool, targetPath, attribution, options, fn);
 }
 
 module.exports = {
@@ -56,16 +60,20 @@ module.exports = {
   TOOL_GEMINI_CLI,
   TOOL_CODEX,
   TOOL_GROK_BUILD,
+  TOOL_GROK_BOT,
   TOOL_CURSOR,
   TOOL_COPILOT,
   AI_HISTORY_TOOLS,
   extractAiHistory,
+  ...require("./artifact-registry"),
+  ...require("./source-coverage"),
   ...rowUtils,
   ...claudeCode,
   ...chatgpt,
   ...geminiCli,
   ...codex,
   ...grokBuild,
+  ...grokBot,
   ...cursor,
   ...copilot,
   ...windsurf,

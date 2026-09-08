@@ -1,0 +1,3 @@
+{
+  "gateway": "wss://gw.example.test/?auth=SHOULD-NEVER-APPEAR"
+}

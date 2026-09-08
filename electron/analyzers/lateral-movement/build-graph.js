@@ -23,9 +23,10 @@
  */
 const { cleanWrappedField, compactGet, compactGetInt, parseCompactKeyValues, extractFirstInteger, resolveEventChannel } = require("../evtx-utils");
 const { detectConventions } = require("./convention-detector");
-const { EXCLUDED_IPS, SERVICE_RE, SESSION_ONLY_EVENTS, RDP_CONTEXT_EVENT_IDS, RDP_EVENT_DESC, DC_PAT: _DC_PAT, SRV_PAT: _SRV_PAT } = require("./constants");
-const { buildObservedHostAliases, isExcludedEndpoint } = require("./endpoint-normalize");
-const { normalizeTimestamp } = require("../../utils/forensic-normalize");
+const { EXCLUDED_IPS, SERVICE_RE, SERVICE_DOMAIN_RE, SESSION_ONLY_EVENTS, RDP_CONTEXT_EVENT_IDS, RDP_EVENT_DESC, TERMSVC_AMBIGUOUS_EIDS, TERMSVC_CHANNEL_HINTS, RDP_SHADOW_EIDS, RDP_CORETS_EIDS, DC_PAT: _DC_PAT, SRV_PAT: _SRV_PAT, PRIVILEGED_NAME_RE: PRIV_NAME_RE } = require("./constants");
+const { buildObservedHostAliases, isExcludedEndpoint, hostsAreSameMachine } = require("./endpoint-normalize");
+const { normalizeTimestamp, normalizeLogonId } = require("../../utils/forensic-normalize");
+const { tsMs, cmpTs, sortByTs, earlierTs, laterTs, gapMs } = require("./time");
 
 function buildGraphAndChains(state) {
   const {
@@ -34,6 +35,11 @@ function buildGraphAndChains(state) {
     _bumpHostTelemetry, _bumpUserEvent, _bumpUserEventScoped, _bumpDatasetEvent, _normLmHost,
     excludeLocalLogons, excludeServiceAccounts, privLogonEvents, hostTelemetry,
   } = state;
+  // Loopback-sourced RDP events (see the tunnelled-RDP block below).
+  const tunnelledRdpEvents = [];
+  // RdpCoreTS 140 (NLA auth failure) and RCM/Admin 20503/20504 (session shadowing).
+  const rdpAuthFailures = [];
+  const rdpShadowEvents = [];
 
       // Single global format (derived from the first/only tab's headers). In multi-source
       // merged mode each row carries its own _sourceFormat and overrides these per-row
@@ -58,19 +64,34 @@ function buildGraphAndChains(state) {
         const evidenceRefs = evidenceRef ? [evidenceRef] : [];
         const provenance = evidenceRef ? { evidenceRefs, evidenceRef, tabId: evidenceRef.tabId, rowId: evidenceRef.rowId } : {};
 
-        // Telemetry coverage: count raw events per host BEFORE any filters
-        // (coverage reflects what's in the data, not what survived filtering)
-        if (eventId) {
-          _bumpDatasetEvent(eventId);
-          _bumpHostTelemetry(targetHost, eventId);
-        }
-
         // Detect channel for TerminalServices event parsing
         const channelRaw = row._channel ? String(row._channel).toLowerCase() : "";
         const channelNorm = resolveEventChannel(row);
         const isLocalSessionMgr = channelRaw.includes("localsessionmanager") || channelNorm === "localsessionmanager";
         const isRemoteConnMgr = channelRaw.includes("remoteconnectionmanager") || channelNorm === "remoteconnectionmanager";
         const isTermSvc = isLocalSessionMgr || isRemoteConnMgr;
+
+        // === Channel gate for ambiguous small event IDs ===
+        // On a consolidated export (EvtxECmd CSV, Hayabusa over all channels) a
+        // Sysmon 22/23/24 row carries the same EventID as TerminalServices
+        // 22/23/24. Nothing downstream re-checks the provider, so those rows were
+        // parsed as RDP shell-start / logoff / disconnect records: they fabricated
+        // session lifecycle events, and — because the telemetry bump ran first —
+        // made the coverage panel report RDP logging as present on hosts that have
+        // none. Only accept an ambiguous ID when the channel actually says
+        // TerminalServices, or when the row carries no channel information at all
+        // (a raw single-channel .evtx import, where the ID is unambiguous).
+        if (TERMSVC_AMBIGUOUS_EIDS.has(eventId)) {
+          const _chan = channelRaw || channelNorm;
+          if (_chan && !TERMSVC_CHANNEL_HINTS.some((hint) => _chan.includes(hint))) continue;
+        }
+
+        // Telemetry coverage: count raw events per host BEFORE any filters
+        // (coverage reflects what's in the data, not what survived filtering)
+        if (eventId) {
+          _bumpDatasetEvent(eventId);
+          _bumpHostTelemetry(targetHost, eventId);
+        }
 
         let clientName = "";
         let clientAddress = "";
@@ -88,9 +109,23 @@ function buildGraphAndChains(state) {
         // === TerminalServices event parsing ===
         if (isHayabusa) {
           if (eventId === "4648") {
-            targetHost = _normLmHost(compactGet(compact, "TgtSvr", "TgtHost")) || targetHost;
-          }
-          if (eventId === "4778" || eventId === "4779") {
+            // 4648: Computer is the origin (where explicit creds were used);
+            // TargetServerName / dest IP is the destination. SrcIP on this event is
+            // the destination address, never the source.
+            const origin = _normLmHost(row.target || "");
+            const destName = _normLmHost(compactGet(compact, "TgtSvr", "TgtHost"));
+            const destIp = _normLmHost(compactGet(compact, "TgtIP", "IpAddress"));
+            targetHost = destName || targetHost;
+            if (!targetHost || hostsAreSameMachine(targetHost, origin)) {
+              if (destIp && destIp !== origin && !isExcludedEndpoint(destIp) && !EXCLUDED_IPS.has(destIp)) {
+                targetHost = destIp;
+              }
+            }
+            sourceHost = origin;
+            sourceFieldType = "computer";
+            user = compactGet(compact, "TgtUser", "TargetUserName", "User", "SrcUser");
+            logonType = extractFirstInteger(compactGet(compact, "Type", "LogonType"));
+          } else if (eventId === "4778" || eventId === "4779") {
             clientName = compactGet(compact, "SrcComp", "ClientName");
             clientAddress = compactGet(compact, "SrcIP", "ClientAddress");
             sourceHost = _normLmHost(clientName || clientAddress);
@@ -108,9 +143,6 @@ function buildGraphAndChains(state) {
             else { sourceHost = _normLmHost(compactGet(compact, "SrcIP", "IpAddress", "SourceNetworkAddress")); sourceFieldType = "ip"; }
             user = compactGet(compact, "TgtUser", "TargetUserName", "SubjectUserName", "User", "SrcUser");
             logonType = extractFirstInteger(compactGet(compact, "Type", "LogonType"));
-          }
-          if (!targetHost && eventId === "4648") {
-            targetHost = _normLmHost(compactGet(compact, "TgtSvr", "TgtHost"));
           }
         } else if (isTermSvc || (!channelRaw && ["20","21","22","23","24","25","32","33","34","35","39","40","1149"].includes(eventId) && isEvtxECmd && row._payloadData3)) {
           const pd1 = (row._payloadData1 || row.user || "").trim();
@@ -172,6 +204,25 @@ function buildGraphAndChains(state) {
             if (!sessionId) sessionId = extractFirstInteger(row._rawSessionId) || "";
           }
 
+        // === RdpCoreTS 131/140 and RCM/Admin 20503/20504 ===
+        // These carry the client address in a message/payload field rather than in a
+        // named IpAddress column, so the standard source resolution finds nothing.
+        } else if (RDP_CORETS_EIDS.has(eventId) || RDP_SHADOW_EIDS.has(eventId)) {
+          const _ipFrom = (v) => {
+            const m = String(v == null ? "" : v).match(/\b(\d{1,3}(?:\.\d{1,3}){3})\b|\b([0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7})\b/i);
+            return m ? (m[1] || m[2] || "") : "";
+          };
+          sourceHost = _normLmHost(row.source || row.clientAddress || "");
+          if (!sourceHost) {
+            for (const key of ["_payloadData1", "_payloadData2", "_payloadData3", "_payloadData4", "_payloadData5", "details", "extra", "_properties"]) {
+              const found = _ipFrom(row[key]);
+              if (found) { sourceHost = _normLmHost(found); break; }
+            }
+          }
+          if (sourceHost) sourceFieldType = "ip";
+          user = cleanWrappedField(row.user || row._accountName || "");
+          if (user === "-") user = "";
+
         // === 4778/4779: Session reconnect/disconnect — ClientName/ClientAddress ===
         } else if (eventId === "4778" || eventId === "4779") {
           clientName = (row.clientName || "").trim();
@@ -184,13 +235,24 @@ function buildGraphAndChains(state) {
             const caMatch = row._payloadData2.match(/ClientAddress:\s*(.+?)(?:\s*$|,)/i);
             if (caMatch) clientAddress = caMatch[1].trim();
           }
-          sourceHost = clientName ? clientName.toUpperCase() : clientAddress ? clientAddress.toUpperCase() : "";
+          // Windows writes "-" for ClientName whenever the client did not send one
+          // (mstsc /admin, a non-Windows RDP client, most NLA connections). Treating
+          // that as a hostname produced a source of "-", which the excluded-endpoint
+          // guard then dropped — taking the perfectly good ClientAddress with it, so
+          // the reconnect never joined its logon session. Normalise both fields and
+          // let the address win when the name is a placeholder.
+          if (_normLmHost(clientName) === "") clientName = "";
+          if (_normLmHost(clientAddress) === "") clientAddress = "";
+          sourceHost = clientName ? _normLmHost(clientName) : clientAddress ? _normLmHost(clientAddress) : "";
           sourceFieldType = clientName ? "clientName" : clientAddress ? "ip" : "";
 
           // Parse user from standard Security format. Same EvtxECmd fallback as
           // the standard branch below: when PayloadData1 lacks "Target:", recover
           // from UserName and strip the SID parenthetical.
-          user = row.user || "";
+          // Raw EVTX puts it in AccountName; `row.user` is TargetUserName, which
+          // these two events do not carry.
+          const _rawUserVal = cleanWrappedField(row.user || "");
+          user = (_rawUserVal && _rawUserVal !== "-") ? _rawUserVal : cleanWrappedField(row._accountName || "");
           if (isEvtxECmd && user) {
             const pdMatch = user.match(/^Target:\s*(?:([^\\]+)\\)?(.+)$/i);
             if (pdMatch) {
@@ -226,6 +288,12 @@ function buildGraphAndChains(state) {
             const tgtMatch = row._payloadData1.match(/Target:\s*(?:[^\\]+\\)?(.+?)(?:\s*$|,)/i);
             if (tgtMatch) user = tgtMatch[1].trim();
           }
+          // Raw EVTX / Chainsaw name it TargetUserName, which `columns.user` already
+          // resolves. Without this the 4776 branch left `user` empty for every format
+          // except EvtxECmd, so NTLM correlation and NTLM-only scoring never fired on
+          // raw data — the events were counted but never attributed to an account.
+          if (!user) user = cleanWrappedField(row.user || "");
+          if (!user && isHayabusa && compact) user = compactGet(compact, "TgtUser", "TargetUserName", "User");
 
         // === Standard Security event parsing (4624, 4625, 4634, 4647, 4648, 4672) ===
         } else {
@@ -254,19 +322,24 @@ function buildGraphAndChains(state) {
 
           // 4648 (explicit credentials): the forensically meaningful target is the
           // TargetServerName — the remote host the alternate credentials were submitted to
-          // (e.g. PsExec/cmdkey/runas to a DC) — NOT the logging Computer. Mirror the Hayabusa
-          // TgtSvr handling for the EvtxECmd/raw path; only override when a target name is found
-          // (no regression: falls back to Computer when absent).
-          if (eventId === "4648" && isEvtxECmd) {
-            for (const _pdKey of ["_payloadData1", "_payloadData2", "_payloadData3", "_payloadData4", "_payloadData5"]) {
-              const _pdVal = (row[_pdKey] || "").toString();
-              if (!_pdVal) continue;
-              const _tsvrMatch = _pdVal.match(/Target\s*Server\s*Name[:\s]+([^\s|,]+)/i);
-              if (_tsvrMatch) {
-                const _tsvr = _tsvrMatch[1].trim();
-                if (_tsvr && _tsvr !== "-" && _tsvr.toLowerCase() !== "localhost") targetHost = _normLmHost(_tsvr);
-                break;
+          // (e.g. PsExec/cmdkey/runas to a DC) — NOT the logging Computer. IpAddress on
+          // 4648 is the destination, never the origin.
+          if (eventId === "4648") {
+            if (isEvtxECmd) {
+              for (const _pdKey of ["_payloadData1", "_payloadData2", "_payloadData3", "_payloadData4", "_payloadData5"]) {
+                const _pdVal = (row[_pdKey] || "").toString();
+                if (!_pdVal) continue;
+                const _tsvrMatch = _pdVal.match(/Target\s*Server\s*Name[:\s]+([^\s|,]+)/i);
+                if (_tsvrMatch) {
+                  const _tsvr = _tsvrMatch[1].trim();
+                  if (_tsvr && _tsvr !== "-" && _tsvr.toLowerCase() !== "localhost") targetHost = _normLmHost(_tsvr);
+                  break;
+                }
               }
+            }
+            if (row._targetServerName) {
+              const _tsvr = _normLmHost(row._targetServerName);
+              if (_tsvr && _tsvr !== "-" && _tsvr.toLowerCase() !== "localhost") targetHost = _tsvr;
             }
           }
 
@@ -298,10 +371,47 @@ function buildGraphAndChains(state) {
 
         if (user && user.includes("\\")) user = user.split("\\").pop();
         user = cleanWrappedField(user);
+        if (user && /@/.test(user) && !/\s/.test(user)) user = user.replace(/@[^@]*$/, "");
+        if (!user && row._subjectUser && ["4672", "5140", "5145", "4662", "4697", "4698"].includes(eventId)) {
+          let sub = cleanWrappedField(row._subjectUser);
+          if (sub.includes("\\")) sub = sub.split("\\").pop();
+          if (sub && /@/.test(sub) && !/\s/.test(sub)) sub = sub.replace(/@[^@]*$/, "");
+          user = sub;
+        }
+        if (eventId === "4648") {
+          const origin = _normLmHost(row.target || "");
+          if (!targetHost || hostsAreSameMachine(targetHost, origin)) {
+            const destIp = _normLmHost(row.source || "");
+            if (destIp && destIp !== origin && !isExcludedEndpoint(destIp) && !EXCLUDED_IPS.has(destIp)) {
+              targetHost = destIp;
+            }
+          }
+          sourceHost = origin;
+          sourceFieldType = "computer";
+        }
         if (logonType && !isEvtxECmd) {
           logonType = extractFirstInteger(logonType) || cleanWrappedField(logonType);
         }
         if (!logonType && compact) logonType = extractFirstInteger(compactGet(compact, "Type", "LogonType"));
+
+        // --- Authentication mechanism (4624/4625) ---
+        let logonProcess = cleanWrappedField(row._logonProcess || "");
+        let authPackage = cleanWrappedField(row._authPackage || "");
+        if (!logonProcess && compact) logonProcess = compactGet(compact, "LogonProcessName", "LogonProcess", "LogPro");
+        if (!authPackage && compact) authPackage = compactGet(compact, "AuthenticationPackageName", "AuthenticationPackage", "AuthPkg");
+        if (isEvtxECmd && (!logonProcess || !authPackage)) {
+          for (const pdKey of ["_payloadData1", "_payloadData2", "_payloadData3", "_payloadData4", "_payloadData5"]) {
+            const pdVal = (row[pdKey] || "").toString();
+            if (!logonProcess) { const m = pdVal.match(/Logon\s*Process(?:\s*Name)?[:\s]+([^\s|,]+)/i); if (m) logonProcess = m[1].trim(); }
+            if (!authPackage) { const m = pdVal.match(/Auth(?:entication)?\s*Package(?:\s*Name)?[:\s]+([^\s|,]+)/i); if (m) authPackage = m[1].trim(); }
+          }
+        }
+        // seclogo is the Secondary Logon service — `runas`, and `runas /netonly`,
+        // which is how an operator uses stolen credentials without a new session.
+        const _isSecLogo = /^seclogo$/i.test(logonProcess.trim());
+        const _isNtlmSsp = /^ntlmssp$/i.test(logonProcess.trim()) || /^ntlm$/i.test(authPackage.trim());
+        const _logonId = cleanWrappedField(row._logonId || "") || (compact ? compactGet(compact, "TargetLogonId", "LogonId", "LID") : "");
+        const _subjectLogonId = cleanWrappedField(row._subjectLogonId || "") || (compact ? compactGet(compact, "SubjectLogonId") : "");
 
         // Telemetry coverage: also count this event against the resolved source host (if any)
         if (sourceHost && eventId) _bumpHostTelemetry(sourceHost, eventId);
@@ -316,7 +426,39 @@ function buildGraphAndChains(state) {
         // signal for network (type 3) and other non-RDP privileged logons. Captured
         // for ALL 4672; non-lateral users simply never match a scoped 4624.
         if (privLogonEvents && eventId === "4672" && user && targetHost) {
-          privLogonEvents.push({ userKey: user.toUpperCase(), host: targetHost, ts: row.ts || "" });
+          // LogonId is what actually ties a 4672 to its 4624 — a 4672 carries the
+          // SubjectLogonId of the session whose privileges were assigned. Correlating
+          // by (user, host, ~same second) alone attached the ADMIN flag to whichever
+          // concurrent logon happened to share that second, so an admin's SMB logon
+          // could hand its privilege flag to an unrelated RDP session.
+          const _privLogonId = cleanWrappedField(row._subjectLogonId || row._logonId || "")
+            || (compact ? compactGet(compact, "SubjectLogonId", "LogonId", "LID") : "");
+          privLogonEvents.push({
+            userKey: user.toUpperCase(), host: targetHost, ts: row.ts || "",
+            logonId: normalizeLogonId(_privLogonId) || "",
+          });
+        }
+
+        // --- Tunnelled RDP (audit L14) ---
+        // A loopback source on an RDP event is not noise, it is EVIDENCE: the client
+        // connected to 127.0.0.1, which only happens when the RDP port was forwarded
+        // through an SSH/plink/chisel/ngrok tunnel or an RDP-over-named-pipe relay.
+        // Discarding loopback before any detector made tunnelled RDP — a standard
+        // ransomware access pattern — completely invisible. Keep it for RDP-shaped
+        // events, tagged, so the session reconstructs and the tunnel is reported.
+        const _isLoopbackSrc = !!sourceHost && (sourceHost === "127.0.0.1" || sourceHost === "::1" || /^127\./.test(sourceHost));
+        // "RDP-shaped" means the event can only be RDP. The TerminalServices ids are
+        // that by definition; a Security event is only RDP when its logon type says
+        // so (RDP_CONTEXT_EVENT_IDS also contains 4624/4634/4776, which are mostly
+        // NOT remote desktop — a service logon from loopback is ordinary).
+        const _isRdpShaped = ["1149", "21", "22", "23", "24", "25", "39", "40", "4778", "4779", "131", "140"].includes(eventId)
+          || logonType === "10" || logonType === "12";
+        if (_isLoopbackSrc && _isRdpShaped) {
+          tunnelledRdpEvents.push({ eventId, ts: row.ts || "", user, targetHost, logonType, sessionId, sourceRaw: sourceHost, ...provenance });
+          // Attribute it to the logging host so the session has an origin to hang on,
+          // and mark the field type so scoring can tell it apart from a real peer.
+          sourceHost = targetHost;
+          sourceFieldType = "loopback-tunnel";
         }
 
         if (!sourceHost || EXCLUDED_IPS.has(sourceHost) || isExcludedEndpoint(sourceHost)) {
@@ -334,8 +476,26 @@ function buildGraphAndChains(state) {
           }
           continue;
         }
-        if (excludeLocalLogons && sourceHost === targetHost) continue;
+        // Type 9 (NewCredentials) is ALWAYS logged with the workstation equal to the
+        // computer, because the process runs locally and only its NETWORK identity
+        // changes — that is the whole mechanism of `runas /netonly`, and of
+        // overpass-the-hash after a ticket is injected. The local-logon filter
+        // therefore deleted every one of them, which is why the Overpass/PtH
+        // technique and the pass_the_hash category could never fire. Keep them, with
+        // the logging host as the source, and mark the row so downstream stages know
+        // the source is the origin rather than a remote peer.
+        const _isNewCredentials = logonType === "9";
+        if (excludeLocalLogons && hostsAreSameMachine(sourceHost, targetHost) && !_isNewCredentials) continue;
+        if (_isNewCredentials) sourceFieldType = sourceFieldType || "computer";
         if (excludeServiceAccounts && user && (SERVICE_RE.test(user) || user.endsWith("$"))) continue;
+        // Domain-qualified service identities. An IIS application pool authenticates
+        // as IIS APPPOOL\<PoolName>, and the pool name alone ("DefaultAppPool",
+        // "MySiteAppPool") is indistinguishable from a user account once the domain
+        // has been stripped — so the domain has to be consulted directly.
+        if (excludeServiceAccounts && row.domain) {
+          const _dom = cleanWrappedField(row.domain).trim();
+          if (_dom && SERVICE_DOMAIN_RE.test(_dom)) continue;
+        }
 
         // Scoped per-user counts: this event has a real (non-local) source and a
         // non-service / non-machine user — i.e. it belongs to the lateral-movement
@@ -347,6 +507,8 @@ function buildGraphAndChains(state) {
         if (user && eventId && eventId !== "4672") _bumpUserEventScoped(user, eventId);
 
         const ts = row.ts || "";
+        if (eventId === "140") rdpAuthFailures.push({ ts, source: sourceHost, target: targetHost, user, ...provenance });
+        if (RDP_SHADOW_EIDS.has(eventId)) rdpShadowEvents.push({ eventId, ts, source: sourceHost, target: targetHost, user, ...provenance });
         const isFailure = eventId === "4625" || eventId === "4771"; // 4771 = Kerberos pre-auth failed
 
         // Collect for RDP session correlation
@@ -389,9 +551,43 @@ function buildGraphAndChains(state) {
         // Track share access for 5140/5145 events separately from core logon/session count
         let shareName = "";
         let relativeTargetName = "";
+        let shareAccessMask;
+        let shareIsWrite = false;
         const isShareEvt = eventId === "5140" || eventId === "5145";
         if (isShareEvt) {
           edge.shareAccessCount = (edge.shareAccessCount || 0) + 1;
+          // Access rights are resolved FIRST: the admin-share write counter below
+          // depends on shareIsWrite, and reading the mask afterwards left it false.
+          if (eventId === "5145") {
+          // --- Access rights (audit L18) ---
+          // 5145 reports what was actually requested. WriteData (0x2), AppendData
+          // (0x4), WriteAttributes (0x100) or Delete (0x10000) on an admin share is
+          // a file being PLACED on the remote host — the PsExec/Impacket tool drop.
+          // The mask was never read, so a tool drop to ADMIN$ scored exactly the
+          // same as a backup agent reading a file.
+          let _amRaw = cleanWrappedField(row._accessMask || "");
+          let _alRaw = cleanWrappedField(row._accessList || "");
+          if (!_amRaw && compact) _amRaw = compactGet(compact, "AccessMask", "Access") || "";
+          if (!_alRaw && compact) _alRaw = compactGet(compact, "AccessList", "Accesses") || "";
+          if ((!_amRaw || !_alRaw) && isEvtxECmd) {
+            for (const pdKey of ["_payloadData1", "_payloadData2", "_payloadData3", "_payloadData4", "_payloadData5"]) {
+              const pdVal = (row[pdKey] || "").toString();
+              if (!_amRaw) { const m = pdVal.match(/Access\s*Mask[:\s]+(0x[0-9A-Fa-f]+|\d+)/i); if (m) _amRaw = m[1]; }
+              if (!_alRaw) { const m = pdVal.match(/Access(?:\s*List|es)[:\s]+([^|]+)/i); if (m) _alRaw = m[1].trim(); }
+            }
+          }
+          const _amNum = (() => {
+            const t = String(_amRaw || "").trim();
+            if (!t) return NaN;
+            if (/^0x[0-9a-f]+$/i.test(t)) return parseInt(t, 16);
+            const n = parseInt(t, 10);
+            return Number.isFinite(n) ? n : NaN;
+          })();
+          const WRITE_BITS = 0x2 | 0x4 | 0x100 | 0x10000 | 0x40000; // Write/Append/WriteAttr/Delete/WriteDAC
+          shareAccessMask = _amRaw || undefined;
+          shareIsWrite = (Number.isFinite(_amNum) && (_amNum & WRITE_BITS) !== 0)
+            || /write|append|delete/i.test(_alRaw || "");
+          }
           shareName = (row.shareName || "").trim();
           // EvtxECmd: share name may be in PayloadData fields
           if (!shareName && isEvtxECmd) {
@@ -407,7 +603,10 @@ function buildGraphAndChains(state) {
             if (!edge.shareNames) edge.shareNames = new Set();
             edge.shareNames.add(shareName);
             const sn = shareName.replace(/^\\\\\*\\/, "").toUpperCase();
-            if (/^(ADMIN\$|C\$|[A-Z]\$)$/.test(sn)) edge._adminShareCount = (edge._adminShareCount || 0) + 1;
+            if (/^(ADMIN\$|C\$|[A-Z]\$)$/.test(sn)) {
+              edge._adminShareCount = (edge._adminShareCount || 0) + 1;
+              if (shareIsWrite) edge._adminShareWriteCount = (edge._adminShareWriteCount || 0) + 1;
+            }
           }
           // 5145 RelativeTargetName: the named pipe / file accessed over the share — the single
           // most specific SMB lateral-movement signal (svcctl = remote service control / PsExec,
@@ -430,8 +629,10 @@ function buildGraphAndChains(state) {
         if (user) edge.users.add(user);
         if (logonType) edge.logonTypes.add(logonType);
         if (logonType === "10" || logonType === "12") edge._rdpLogonCount = (edge._rdpLogonCount || 0) + 1;
-        if (ts && ts < edge.firstSeen) edge.firstSeen = ts;
-        if (ts && ts > edge.lastSeen) edge.lastSeen = ts;
+        // Parsed compares, not lexical: on a merged multi-source graph the same edge
+        // receives "2026-01-02 08:00:00" from one tab and "2026-01-02T08:00:00Z" from
+        // another, and a string compare picks the wrong end of the range.
+        if (ts) { edge.firstSeen = earlierTs(edge.firstSeen, ts); edge.lastSeen = laterTs(edge.lastSeen, ts); }
         if (isFailure) edge.hasFailures = true;
         if (clientName) edge.clientNames.add(clientName);
         if (clientAddress && clientAddress !== "LOCAL") edge.clientAddresses.add(clientAddress);
@@ -452,6 +653,28 @@ function buildGraphAndChains(state) {
               const ssMatch = pdVal.match(/Sub\s*Status[:\s]+(0x[0-9A-Fa-f]+)/i);
               if (ssMatch) { subStatus = ssMatch[1].toUpperCase(); break; }
             }
+          }
+          // A 4625 carries BOTH Status and SubStatus, and which one holds the reason
+          // depends on the failure. For a wrong password Windows writes
+          // Status=0xC000006D with the detail in SubStatus, but for a locked, disabled,
+          // expired or restricted account it writes the reason in Status and leaves
+          // SubStatus at 0x0. Reading SubStatus alone meant exactly the failures the
+          // noise dampener exists to catch arrived with no code at all, so a lockout
+          // storm was scored as a high-severity brute force.
+          if (!subStatus || /^0X0+$/i.test(subStatus.replace(/^0x/i, "0X"))) {
+            let statusVal = "";
+            if (row._statusCol) statusVal = row._statusCol.toString().trim();
+            else if (compact) statusVal = compactGet(compact, "Status") || "";
+            else if (isEvtxECmd) {
+              for (const pdKey of ["_payloadData3", "_payloadData4", "_payloadData5"]) {
+                const pdVal = (row[pdKey] || "").toString();
+                // Negative lookbehind on "Sub" so this cannot re-read SubStatus.
+                const stMatch = pdVal.match(/(?:^|[^b])\bStatus[:\s]+(0x[0-9A-Fa-f]+)/i);
+                if (stMatch) { statusVal = stMatch[1]; break; }
+              }
+            }
+            statusVal = statusVal.toUpperCase();
+            if (statusVal && !/^0X0+$/.test(statusVal)) subStatus = statusVal;
           }
         } else if (eventId === "4771") {
           // 4771 carries a Kerberos failure code (short hex like 0x18) instead of an NT SubStatus.
@@ -475,7 +698,27 @@ function buildGraphAndChains(state) {
           if (!subStatus && row._statusCol) subStatus = row._statusCol.toString().trim().toUpperCase();
         }
 
-        timeOrdered.push({ source: sourceHost, target: targetHost, user, ts, logonType, eventId, shareName: shareName || undefined, relativeTargetName: relativeTargetName || undefined, subStatus, sourceFieldType, ...provenance });
+        timeOrdered.push({
+          source: sourceHost, target: targetHost, user, ts, logonType, eventId,
+          shareName: shareName || undefined, relativeTargetName: relativeTargetName || undefined,
+          shareAccessMask, shareIsWrite: shareIsWrite || undefined,
+          subStatus, sourceFieldType,
+          logonProcess: logonProcess || undefined,
+          authPackage: authPackage || undefined,
+          isSecLogo: _isSecLogo || undefined,
+          isNtlmSsp: _isNtlmSsp || undefined,
+          logonId: _logonId || undefined,
+          subjectLogonId: _subjectLogonId || undefined,
+          ...provenance,
+        });
+      }
+
+      // Pairs that produced an RdpCoreTS 140. Declared here — before every finding
+      // stage — because the Security-log brute-force stage below consults it to
+      // relabel an NLA-masked RDP attack that Windows recorded as LogonType 3.
+      const _rdpFailSources = new Set();
+      for (const evt of rdpAuthFailures) {
+        if (evt.source && evt.target) _rdpFailSources.add(`${evt.source}->${evt.target}`);
       }
 
       // === IP-to-Hostname Resolution ===
@@ -638,17 +881,9 @@ function buildGraphAndChains(state) {
       }
 
       // === RDP Session Correlation ===
-      const _tsMs = (value) => {
-        const parsed = normalizeTimestamp(value);
-        return Number.isFinite(parsed) ? parsed : null;
-      };
-      const _cmpTs = (a, b) => {
-        const am = _tsMs(a);
-        const bm = _tsMs(b);
-        if (am != null && bm != null) return am - bm;
-        return String(a || "").localeCompare(String(b || ""));
-      };
-      rdpEvents.sort((a, b) => _cmpTs(a.ts, b.ts));
+      const _tsMs = tsMs;
+      const _cmpTs = cmpTs;
+      sortByTs(rdpEvents);
       const rdpSessions = [];
       const openSessions = new Map(); // unique open key -> session
       const openByBase = new Map(); // source->target|user -> Set<open key>
@@ -944,12 +1179,24 @@ function buildGraphAndChains(state) {
           }
         }
       }
-      // Mark remaining open sessions
+      // Proven RDP = a session actually started (LSM 21/22/25 or Security Type 10/12).
+      // 1149 is TCP connected / NLA offered; 24 is a disconnect. A scanner hitting an
+      // internet-exposed host emits those without a logon. Do not treat a second
+      // unproven event as "active (no logoff)" either — 1149+24 is still incomplete.
+      const _rdpSessionProven = (session) => (session.events || []).some((e) => {
+        const eid = String(e.eventId || "");
+        const lt = String(e.logonType || "");
+        return eid === "21" || eid === "22" || eid === "25" || lt === "10" || lt === "12";
+      });
       for (const session of [...new Set(openSessions.values())]) {
         if (session.status === "connecting" || session.status === "active") {
-          session.status = session.events.length > 1 ? "active (no logoff)" : "incomplete";
+          session.status = _rdpSessionProven(session) ? "active (no logoff)" : "incomplete";
         }
         _closeOpenSession(session);
+      }
+      for (const session of rdpSessions) {
+        if (session.status === "failed") continue;
+        if (!_rdpSessionProven(session)) session.status = "incomplete";
       }
 
       // === Failed Session Clustering ===
@@ -1145,7 +1392,10 @@ function buildGraphAndChains(state) {
       // Step 1: Build time-windowed hop instances from timeOrdered events
       const _CHAIN_EXCLUDE = /^(127\.\d|::1|0\.0\.0\.0|LOCAL$|-:-$|-$|::1:\d)/i;
       const _hopTech = (evt) => {
-        if (["10", "12"].includes(evt.logonType) || ["1149", "21", "22", "24", "25"].includes(evt.eventId)) return "RDP";
+        // 1149 is "TCP connected / NLA offered", not proven authentication. A scanner
+        // hitting an internet-exposed host emits one 1149 per SYN. Only a Type 10/12
+        // logon or LSM 21/22 (session actually started) is an RDP movement hop.
+        if (["10", "12"].includes(evt.logonType) || ["21", "22"].includes(evt.eventId)) return "RDP";
         if (evt.logonType === "3" && ["7045", "4697"].includes(evt.eventId)) return "Service Exec";
         if ((evt.eventId === "5140" || evt.eventId === "5145") && evt.shareName) {
           const sn = evt.shareName.replace(/^\\\\\*\\/, "").toUpperCase();
@@ -1173,7 +1423,7 @@ function buildGraphAndChains(state) {
         _hopEvents.push({ source: evt.source, target: evt.target, user: evt.user || "(unknown)", ts: evt.ts, technique: tech, eventId: evt.eventId, logonType: evt.logonType, shareName: evt.shareName, evidenceRefs: _dedupeEvidenceRefs(evt.evidenceRefs || []) });
       }
       // Deduplicate within 2-min windows per pair+user (collapse duplicate events, keep distinct instances)
-      _hopEvents.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
+      sortByTs(_hopEvents);
       const HOP_DEDUP_MS = 120000; // 2 min
       const _hops = [];
       const _lastHopTs = new Map(); // "src->tgt|USER" -> lastTs
@@ -1181,8 +1431,8 @@ function buildGraphAndChains(state) {
         const hk = `${evt.source}->${evt.target}|${evt.user.toUpperCase()}`;
         const lastTs = _lastHopTs.get(hk);
         if (lastTs) {
-          const gap = new Date(evt.ts) - new Date(lastTs);
-          if (!isNaN(gap) && gap < HOP_DEDUP_MS) continue; // skip near-duplicate
+          const gap = gapMs(lastTs, evt.ts);
+          if (gap != null && gap < HOP_DEDUP_MS) continue; // skip near-duplicate
         }
         _lastHopTs.set(hk, evt.ts);
         _hops.push(evt);
@@ -1225,16 +1475,16 @@ function buildGraphAndChains(state) {
           for (const nh of nextHops) {
             if (visitedHosts.has(nh.target)) continue;
             if (!nh.ts || !currentHop.ts) continue;
-            const gapMs = new Date(nh.ts) - new Date(currentHop.ts);
-            if (gapMs < 0) continue;
+            const hopGap = gapMs(currentHop.ts, nh.ts);
+            if (hopGap == null || hopGap < 0) continue;
             const sameUser = nh.user.toUpperCase() === currentHop.user.toUpperCase();
             const maxGap = sameUser ? HOP_GAP_SAME_USER_MS : HOP_GAP_DIFF_USER_MS;
-            if (gapMs > maxGap) continue;
+            if (hopGap > maxGap) continue;
             // Prefer: (1) same user, (2) shortest gap
             const isBetter = !bestNext
               || (sameUser && bestNext.user.toUpperCase() !== currentHop.user.toUpperCase())
-              || (sameUser === (bestNext.user.toUpperCase() === currentHop.user.toUpperCase()) && gapMs < bestGap);
-            if (isBetter) { bestNext = nh; bestGap = gapMs; }
+              || (sameUser === (bestNext.user.toUpperCase() === currentHop.user.toUpperCase()) && hopGap < bestGap);
+            if (isBetter) { bestNext = nh; bestGap = hopGap; }
           }
           if (!bestNext) break;
           chain.push(bestNext);
@@ -1296,19 +1546,29 @@ function buildGraphAndChains(state) {
       let globalMinTs = null, globalMaxTs = null;
       for (const edge of edgeMap.values()) {
         if (edge.firstSeen) {
-          if (!globalMinTs || edge.firstSeen < globalMinTs) globalMinTs = edge.firstSeen;
-          if (!globalMaxTs || edge.lastSeen > globalMaxTs) globalMaxTs = edge.lastSeen;
+          globalMinTs = earlierTs(globalMinTs, edge.firstSeen);
+          globalMaxTs = laterTs(globalMaxTs, edge.lastSeen);
         }
       }
-      const totalRangeMs = globalMinTs && globalMaxTs ? (new Date(globalMaxTs) - new Date(globalMinTs)) : 0;
-      const firstSeenThresholdTs = totalRangeMs > 0 ? new Date(new Date(globalMinTs).getTime() + totalRangeMs * 0.01).toISOString() : null;
+      // The threshold is compared against raw column values, so it must be a NUMBER,
+      // not a string. It used to be built with toISOString() and compared lexically to
+      // a naive "YYYY-MM-DD HH:MM:SS" column: a space sorts before "T", so every edge
+      // from the same day as the threshold satisfied `<=` and was flagged "first seen"
+      // — and the flag moved with the analyst's timezone. It feeds edge risk scoring,
+      // chain confidence and the First Seen finding.
+      const _globalMinMs = tsMs(globalMinTs);
+      const _globalMaxMs = tsMs(globalMaxTs);
+      const totalRangeMs = _globalMinMs != null && _globalMaxMs != null ? (_globalMaxMs - _globalMinMs) : 0;
+      const firstSeenThresholdMs = totalRangeMs > 0 ? _globalMinMs + totalRangeMs * 0.01 : null;
       const firstConnPerSource = new Map();
       for (const edge of edgeMap.values()) {
         const ex = firstConnPerSource.get(edge.source);
-        if (!ex || edge.firstSeen < ex) firstConnPerSource.set(edge.source, edge.firstSeen);
+        if (!ex || cmpTs(edge.firstSeen, ex) < 0) firstConnPerSource.set(edge.source, edge.firstSeen);
       }
       for (const edge of edgeMap.values()) {
-        edge.isFirstSeen = (firstSeenThresholdTs && edge.firstSeen <= firstSeenThresholdTs) || firstConnPerSource.get(edge.source) === edge.firstSeen;
+        const _edgeMs = tsMs(edge.firstSeen);
+        edge.isFirstSeen = (firstSeenThresholdMs != null && _edgeMs != null && _edgeMs <= firstSeenThresholdMs)
+          || firstConnPerSource.get(edge.source) === edge.firstSeen;
       }
 
       // === Edge Technique Inference + Source Label ===
@@ -1447,7 +1707,12 @@ function buildGraphAndChains(state) {
         "0XC0000413": "auth firewall", "0XC000015B": "logon type denied",
         // Kerberos 4771 failure codes (short hex) — distinct from NT SubStatus codes above
         "0X18": "bad password (Kerberos)", "0X6": "unknown user (Kerberos)", "0X12": "account revoked/disabled/expired",
-        "0X17": "password expired (Kerberos)", "0X25": "clock skew (Kerberos)", "0X20": "ticket expired", "0X24": "pre-auth required",
+        "0X17": "password expired (Kerberos)", "0X25": "clock skew (Kerberos)", "0X20": "ticket expired",
+        // 0x19 is KDC_ERR_PREAUTH_REQUIRED; 0x24 is KRB_AP_ERR_BADMATCH (ticket does not
+        // match the authenticator). 0x24 was previously labelled "pre-auth required",
+        // which put the wrong reason on the finding and in the exported report.
+        "0X19": "pre-auth required", "0X24": "ticket/authenticator mismatch",
+        "0X7": "server principal unknown", "0X1F": "integrity check failed",
       };
       // Collect failures keyed by pair + logon type family. 4771 (Kerberos pre-auth failure)
       // is the Kerberos equivalent of 4625 and the primary signal for Kerberos brute force /
@@ -1468,11 +1733,13 @@ function buildGraphAndChains(state) {
       // SubStatus codes that indicate non-attack failures (dampen severity)
       const _BF_NOISE_SUBSTATUS = new Set(["0XC0000234","0XC0000072","0XC000006E","0XC000006F","0XC0000070","0XC0000071","0XC0000193","0XC0000133","0XC0000224","0XC000015B",
         // Kerberos 4771 benign failure codes: revoked/disabled/expired, password expired, clock skew, ticket expired
-        "0X12","0X17","0X25","0X20"]);
+        // 0x19 (pre-auth required) and 0x24 (ticket/authenticator mismatch) are protocol
+        // states, not password guessing.
+        "0X12","0X17","0X25","0X20","0X19","0X24"]);
       for (const [k, data] of _bfByPairType) {
         const { tss, users, logonTypes, subStatuses } = data;
         if (tss.length < 5) continue;
-        tss.sort();
+        tss.sort(cmpTs);
         const [pairPart, family] = k.split("|");
         const [src, tgt] = pairPart.split("->");
         // Dampener: Type 2 (interactive) where source === target is password mistype, not attack
@@ -1482,16 +1749,48 @@ function buildGraphAndChains(state) {
         const ssNoiseCount = [...subStatuses.entries()].filter(([code]) => _BF_NOISE_SUBSTATUS.has(code)).reduce((a, [, c]) => a + c, 0);
         const ssMostlyNoise = ssTotal > 0 && (ssNoiseCount / ssTotal) > 0.8;
         const ssLabels = [...subStatuses.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([code, cnt]) => `${_SUBSTATUS_REASONS[code] || code} (${cnt})`);
+        // Stale-credential shape: ONE account, network logons, failing on a regular
+        // cadence. That is a service, scheduled task or mapped drive still presenting
+        // a password that was changed — the single largest source of "brute force"
+        // findings in real estates. Password guessing is bursty and irregular; a
+        // retry loop is metronomic, so interval regularity is the discriminator.
+        let _bfStaleCredential = false;
+        // A retry loop runs for hours or days; a guessing burst is over in minutes.
+        // Requiring a long total span keeps a genuine short burst out of this branch
+        // even when its failures happen to be evenly spaced.
+        const _bfTotalSpanMs = tss.length > 1 ? (gapMs(tss[0], tss[tss.length - 1]) ?? 0) : 0;
+        if (family === "network" && users.size === 1 && tss.length >= 8 && _bfTotalSpanMs >= 1800000) {
+          const _iv = [];
+          for (let x = 1; x < tss.length; x++) {
+            const d = gapMs(tss[x - 1], tss[x]);
+            if (d != null && d > 0) _iv.push(d);
+          }
+          if (_iv.length >= 4) {
+            const _mean = _iv.reduce((acc, v) => acc + v, 0) / _iv.length;
+            const _sd = Math.sqrt(_iv.reduce((acc, v) => acc + ((v - _mean) ** 2), 0) / _iv.length);
+            // Low relative spread AND a cadence slower than a guessing loop.
+            if (_mean > 20000 && _sd / _mean < 0.25) _bfStaleCredential = true;
+          }
+        }
+        // NLA makes an RDP failure look like a network failure. If the same pair also
+        // produced RdpCoreTS 140 events, the protocol is known — say RDP, not Network.
+        const _bfIsReallyRdp = family === "network" && _rdpFailSources.has(`${src}->${tgt}`);
         const typeLabel = family === "kerberos"
           ? "Kerberos (4771)"
-          : ([...logonTypes].map(lt => _BF_TYPE_LABELS[lt] || `Type ${lt}`).join("/") || "Network");
+          : _bfIsReallyRdp
+            ? "RDP (NLA \u2014 logged as Type 3)"
+            : ([...logonTypes].map(lt => _BF_TYPE_LABELS[lt] || `Type ${lt}`).join("/") || "Network");
         let _bfBurstCount = 0;
         for (let i = 0; i <= tss.length - 5;) {
-          const ws = new Date(tss[i]), we = new Date(tss[i + 4]);
-          if (isNaN(ws) || isNaN(we)) { i++; continue; }
+          const ws = tsMs(tss[i]), we = tsMs(tss[i + 4]);
+          if (ws == null || we == null) { i++; continue; }
           if ((we - ws) <= 300000) {
             let end = i + 4;
-            while (end + 1 < tss.length && (new Date(tss[end + 1]) - ws) <= 300000) end++;
+            while (end + 1 < tss.length) {
+              const nextMs = tsMs(tss[end + 1]);
+              if (nextMs == null || (nextMs - ws) > 300000) break;
+              end++;
+            }
             _bfBurstCount++;
             // Severity: RDP/cleartext = high, network = high, interactive = medium
             let severity = "high";
@@ -1499,6 +1798,9 @@ function buildGraphAndChains(state) {
             // Kerberos (4771) without a parsed failure code is lower-confidence — we cannot tell a
             // password-guessing burst from a benign account-lockout/rotation burst, so cap at medium.
             if (family === "kerberos" && ssTotal === 0) severity = "medium";
+            if (_bfStaleCredential) {
+              severity = severity === "high" ? "low" : "low";
+            }
             // Dampener: >80% of failures are non-attack SubStatus (locked, disabled, expired, etc.)
             if (ssMostlyNoise) {
               if (severity === "high") severity = "medium";
@@ -1513,6 +1815,7 @@ function buildGraphAndChains(state) {
             // Add top SubStatus reason as pill for analyst context
             if (ssLabels.length > 0) _bfPills.push({ text: ssLabels[0], type: ssMostlyNoise ? "context" : "credential" });
             if (ssMostlyNoise) _bfPills.push({ text: "non-attack failures (dampened)", type: "context" });
+            if (_bfStaleCredential) _bfPills.push({ text: "regular retry interval \u2014 likely stale credential", type: "context" });
             if (tgt && _DC_PAT.test(tgt)) _bfPills.push({ text: "DC target", type: "target" });
             else if (tgt && _SRV_PAT.test(tgt)) _bfPills.push({ text: "server target", type: "target" });
             if (src && _outlierHosts.has(src)) _bfPills.push({ text: "outlier source", type: "context" });
@@ -1545,9 +1848,10 @@ function buildGraphAndChains(state) {
         if (!_spSuccBySrc.has(evt.source)) _spSuccBySrc.set(evt.source, []);
         _spSuccBySrc.get(evt.source).push(evt.ts);
       }
+      const _SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
       for (const [src, evts] of failedBySrc) {
         if (evts.length < 3) continue;
-        evts.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
+        sortByTs(evts);
         const isMgmt = src && _spMgmt.test(src);
         const isOutlier = src && _spIsOutlier(src);
         // Sliding window: find all distinct spray windows (not just first)
@@ -1555,34 +1859,56 @@ function buildGraphAndChains(state) {
         const usedEvts = new Set(); // track consumed event indices to avoid overlapping windows
         for (let i = 0; i < evts.length; i++) {
           if (usedEvts.has(i)) continue;
-          const ws = new Date(evts[i].ts);
-          if (isNaN(ws)) continue;
-          const we = new Date(ws.getTime() + 1800000); // 30-min window
+          const ws = tsMs(evts[i].ts);
+          if (ws == null) continue;
+          const we = ws + 1800000; // 30-min window
           const tgts = new Set();
           const users = new Set();
           let j = i;
           while (j < evts.length) {
-            const t = new Date(evts[j].ts);
-            if (isNaN(t) || t > we) break;
+            const t = tsMs(evts[j].ts);
+            if (t == null || t > we) break;
             tgts.add(evts[j].target);
             if (evts[j].user) users.add(evts[j].user);
             j++;
           }
           const tgtCount = tgts.size;
           const userCount = users.size;
+          const failCount = j - i;
           // Minimum threshold: 5 targets for standard, 3 for outlier sources
           const minTgt = isOutlier ? 3 : 5;
-          if (tgtCount < minTgt) continue;
-          // Skip if many distinct users (likely not a spray — more like distributed auth failure)
-          if (userCount > 3 && userCount > tgtCount * 0.5) continue;
+          const minUsr = isOutlier ? 3 : 5;
+          // TWO shapes of spray, and only the first was implemented:
+          //
+          //  host spray  — one source, one/few accounts, MANY TARGET HOSTS. This is
+          //                the "same credential tried everywhere" shape.
+          //  account spray (T1110.003 proper) — one source, MANY ACCOUNTS, typically
+          //                ONE target (the DC), one or two passwords per account to
+          //                stay under the lockout threshold.
+          //
+          // The rule required many targets AND then explicitly discarded the
+          // many-users case, so a textbook spray against a domain controller was
+          // either dropped outright or, if it happened to touch several DCs,
+          // relabelled as brute force. The account-spray branch below restores it.
+          const attemptsPerUser = failCount / Math.max(1, userCount);
+          const isHostSpray = tgtCount >= minTgt;
+          const isAccountSpray = userCount >= minUsr && attemptsPerUser <= 3;
+          if (!isHostSpray && !isAccountSpray) continue;
+          // The "too many distinct users" guard only ever made sense for the host
+          // shape; for the account shape many users IS the signal.
+          if (isHostSpray && !isAccountSpray && userCount > 3 && userCount > tgtCount * 0.5) continue;
           // Check for success in window (weakens spray signal)
           const succList = _spSuccBySrc.get(src) || [];
-          const hasSuccInWindow = succList.some(st => { const sd = new Date(st); return !isNaN(sd) && sd >= ws && sd <= we; });
-          // Base severity from target count
+          const hasSuccInWindow = succList.some(st => { const sd = tsMs(st); return sd != null && sd >= ws && sd <= we; });
+          // Base severity from whichever shape is stronger
           let severity;
-          if (tgtCount >= 8) severity = "critical";
-          else if (tgtCount >= 5) severity = "high";
-          else severity = "medium"; // 3-4 targets (only reachable for outlier sources)
+          const _hostSev = tgtCount >= 8 ? "critical" : tgtCount >= 5 ? "high" : "medium";
+          const _acctSev = userCount >= 15 ? "critical" : userCount >= 8 ? "high" : "medium";
+          if (isHostSpray && isAccountSpray) severity = _SEV_RANK[_hostSev] <= _SEV_RANK[_acctSev] ? _hostSev : _acctSev;
+          else if (isAccountSpray) severity = _acctSev;
+          else severity = _hostSev;
+          // A spray against a domain controller is the high-value case.
+          if (isAccountSpray && [...tgts].some(t => t && _DC_PAT.test(t)) && severity === "medium") severity = "high";
           // Dampeners
           if (isMgmt) severity = severity === "critical" ? "high" : severity === "high" ? "medium" : "low";
           const allSvc = users.size > 0 && [...users].every(u => _spSvc.test(u) || u.endsWith("$"));
@@ -1592,28 +1918,240 @@ function buildGraphAndChains(state) {
           if (severity === "low" && !isOutlier) continue;
           // Build description
           const desc = [];
-          desc.push(`${tgtCount} distinct targets, ${j - i} failures in ${Math.round((new Date(evts[j - 1].ts) - ws) / 60000)} min`);
+          desc.push(`${tgtCount} distinct target${tgtCount === 1 ? "" : "s"}, ${failCount} failures in ${Math.round(((tsMs(evts[j - 1].ts) ?? ws) - ws) / 60000)} min`);
           if (userCount <= 2) desc.push(`user${userCount > 1 ? "s" : ""}: ${[...users].join(", ")}`);
-          else desc.push(`${userCount} distinct users`);
+          else desc.push(`${userCount} distinct users (${attemptsPerUser.toFixed(1)} attempts each)`);
           const ctx = [];
+          if (isAccountSpray) ctx.push("account spray shape (many accounts, few attempts each)");
           if (isOutlier) ctx.push("outlier source");
           if (isMgmt) ctx.push("management source (dampened)");
           if (allSvc) ctx.push("service accounts (dampened)");
           if (hasSuccInWindow) ctx.push("success in window");
           sprayFindings.push({
-            severity, tgtCount, from: evts[i].ts, to: evts[j - 1].ts, eventCount: j - i,
+            severity, tgtCount, userCount, isAccountSpray, from: evts[i].ts, to: evts[j - 1].ts, eventCount: failCount,
             targets: [...tgts], users: [...users], description: desc.join("; ") + (ctx.length > 0 ? `. ${ctx.join(", ")}` : ""),
           });
           // Mark events as consumed
           for (let x = i; x < j; x++) usedEvts.add(x);
         }
         for (const sp of sprayFindings) {
-          const _spPills = [{ text: `${sp.tgtCount} targets`, type: "context" }];
+          const _spPills = sp.isAccountSpray
+            ? [{ text: `${sp.userCount} accounts`, type: "credential" }, { text: `${sp.tgtCount} target${sp.tgtCount === 1 ? "" : "s"}`, type: "target" }]
+            : [{ text: `${sp.tgtCount} targets`, type: "context" }];
           if (isOutlier) _spPills.push({ text: "outlier source", type: "context" });
           if (isMgmt) _spPills.push({ text: "management source", type: "context" });
           if (sp.description.includes("service accounts")) _spPills.push({ text: "service accounts", type: "context" });
           if (sp.description.includes("success in window")) _spPills.push({ text: "success in window", type: "credential" });
-          findings.push({ id: fid++, severity: sp.severity, category: "Password Spray", mitre: "T1110.003", title: `Password spray from ${src} (${sp.tgtCount} targets)`, description: sp.description, source: src, target: sp.targets.join(", "), timeRange: { from: sp.from, to: sp.to }, eventCount: sp.eventCount, evidencePills: _spPills, users: sp.users });
+          findings.push({ id: fid++, severity: sp.severity, category: "Password Spray", mitre: "T1110.003", title: `Password spray from ${src} (${sp.isAccountSpray ? `${sp.userCount} accounts` : `${sp.tgtCount} targets`})`, description: sp.description, source: src, target: sp.targets.join(", "), timeRange: { from: sp.from, to: sp.to }, eventCount: sp.eventCount, evidencePills: _spPills, users: sp.users });
+        }
+      }
+
+      // === RDP brute force behind NLA (T1110.001 / T1021.001) ===
+      // RdpCoreTS 140 is the only event that identifies an RDP authentication
+      // failure once NLA is on, because NLA makes Windows record the failure as a
+      // Security 4625 with LogonType 3. Without this the same attack was reported as
+      // generic "network" brute force, pointing the analyst at SMB instead of RDP.
+      if (rdpAuthFailures.length > 0) {
+        const _rdpFailByPair = new Map();
+        for (const evt of rdpAuthFailures) {
+          if (!evt.source || !evt.target) continue;
+          const k = `${evt.source}->${evt.target}`;
+          if (!_rdpFailByPair.has(k)) _rdpFailByPair.set(k, []);
+          _rdpFailByPair.get(k).push(evt);
+        }
+        for (const [k, evts] of _rdpFailByPair) {
+          if (evts.length < 5) continue;
+          sortByTs(evts);
+          const [src, tgt] = k.split("->");
+          // Same 5-in-5-minutes shape the Security-log brute force uses.
+          let burst = null;
+          for (let i = 0; i + 4 < evts.length; i++) {
+            const a = tsMs(evts[i].ts);
+            const b = tsMs(evts[i + 4].ts);
+            if (a == null || b == null) continue;
+            if (b - a <= 300000) {
+              let end = i + 4;
+              while (end + 1 < evts.length) {
+                const nx = tsMs(evts[end + 1].ts);
+                if (nx == null || nx - a > 300000) break;
+                end++;
+              }
+              burst = { from: evts[i].ts, to: evts[end].ts, count: end - i + 1 };
+              break;
+            }
+          }
+          if (!burst) continue;
+          const users = [...new Set(evts.map((e) => e.user).filter(Boolean))];
+          const _rbRefs = _refsFromEvents(evts);
+          findings.push({
+            id: fid++, severity: tgt && _DC_PAT.test(tgt) ? "critical" : "high",
+            category: "RDP Brute Force", mitre: "T1110.001",
+            title: `RDP brute force: ${src} \u2192 ${tgt}`,
+            description: `${burst.count} failed RDP authentications within 5 minutes (RdpCoreTS event 140) from ${src} against ${tgt}`
+              + `${users.length > 0 ? ` for ${users.slice(0, 3).join(", ")}` : ""}. `
+              + `With Network Level Authentication enabled these do NOT appear as LogonType 10 in the Security log \u2014 Windows records them as LogonType 3 \u2014 so this is the event that identifies the protocol.`,
+            source: src, target: tgt,
+            filterHosts: [src, tgt].filter(Boolean),
+            timeRange: { from: burst.from, to: burst.to },
+            eventCount: burst.count, filterEids: ["140", "131", "4625"],
+            evidencePills: [
+              { text: `${burst.count} failures in 5 min`, type: "credential" },
+              { text: "RdpCoreTS 140 (NLA)", type: "context" },
+              ...(tgt && _DC_PAT.test(tgt) ? [{ text: "DC target", type: "target" }] : []),
+            ],
+            users,
+            evidenceRefs: _rbRefs, itemRowids: _rowidsFromRefs(_rbRefs),
+          });
+        }
+      }
+
+      // === RDP session shadowing (T1021.001) ===
+      if (rdpShadowEvents.length > 0) {
+        const _shByHost = new Map();
+        for (const evt of rdpShadowEvents) {
+          const h = evt.target || "(unknown)";
+          if (!_shByHost.has(h)) _shByHost.set(h, []);
+          _shByHost.get(h).push(evt);
+        }
+        for (const [host, evts] of _shByHost) {
+          sortByTs(evts);
+          const users = [...new Set(evts.map((e) => e.user).filter(Boolean))];
+          const sources = [...new Set(evts.map((e) => e.source).filter(Boolean))];
+          const _shRefs = _refsFromEvents(evts);
+          findings.push({
+            id: fid++, severity: "high",
+            category: "RDP Session Shadowing", mitre: "T1021.001",
+            title: `RDP session shadowing on ${host}${users.length > 0 ? `: ${users.slice(0, 2).join(", ")}` : ""}`,
+            description: `${evts.length} session-shadowing event${evts.length === 1 ? "" : "s"} on ${host} (RemoteConnectionManager/Admin 20503/20504). `
+              + `Shadowing attaches a second operator to an EXISTING interactive session \u2014 it produces no new logon, so it leaves no 4624 and is invisible to logon-based analysis. `
+              + `Legitimate for helpdesk assistance; abused to ride an administrator's live session.`,
+            source: sources[0] || host, target: host,
+            filterHosts: [host, ...sources],
+            timeRange: { from: evts[0].ts, to: evts[evts.length - 1].ts },
+            eventCount: evts.length, filterEids: ["20503", "20504"],
+            evidencePills: [
+              { text: `${evts.length} shadow event${evts.length === 1 ? "" : "s"}`, type: "execution" },
+              { text: "no new logon session", type: "context" },
+            ],
+            users,
+            evidenceRefs: _shRefs, itemRowids: _rowidsFromRefs(_shRefs),
+          });
+        }
+      }
+
+      // === Tunnelled RDP (T1572 / T1021.001) ===
+      // Emitted from the loopback-source events captured during parsing.
+      if (tunnelledRdpEvents.length > 0) {
+        const _tunByHost = new Map();
+        for (const evt of tunnelledRdpEvents) {
+          const h = evt.targetHost || "(unknown)";
+          if (!_tunByHost.has(h)) _tunByHost.set(h, []);
+          _tunByHost.get(h).push(evt);
+        }
+        for (const [host, evts] of _tunByHost) {
+          sortByTs(evts);
+          const users = [...new Set(evts.map((e) => e.user).filter(Boolean))];
+          const _tunRefs = _refsFromEvents(evts);
+          const proven = evts.some((e) => e.logonType === "10" || e.logonType === "12" || ["21", "22", "25"].includes(e.eventId));
+          findings.push({
+            id: fid++, severity: proven ? "high" : "medium",
+            category: "Tunnelled RDP", mitre: "T1572",
+            title: `RDP from loopback on ${host}${users.length > 0 ? `: ${users.slice(0, 2).join(", ")}` : ""}`,
+            description: `${evts.length} RDP event${evts.length === 1 ? "" : "s"} on ${host} whose client address is the loopback interface. `
+              + `A remote desktop session cannot originate from 127.0.0.1 unless the RDP port was forwarded to the host — an SSH/plink -L, chisel, ngrok or similar tunnel, or an RDP relay. `
+              + `The true source is the far end of that tunnel and is not recorded in this event; look for the listening process and its outbound connection on ${host}.`
+              + `${proven ? " At least one of these is a completed session, not just a connection attempt." : ""}`,
+            source: host, target: host,
+            filterHosts: [host],
+            timeRange: { from: evts[0].ts, to: evts[evts.length - 1].ts },
+            eventCount: evts.length,
+            filterEids: [...new Set(evts.map((e) => e.eventId).filter(Boolean))],
+            evidencePills: [
+              { text: "loopback client address", type: "context" },
+              { text: `${evts.length} RDP event${evts.length === 1 ? "" : "s"}`, type: "context" },
+              ...(proven ? [{ text: "session established", type: "execution" }] : []),
+            ],
+            users,
+            evidenceRefs: _tunRefs, itemRowids: _rowidsFromRefs(_tunRefs),
+          });
+        }
+      }
+
+      // === Alternate credentials / Overpass-the-Hash (T1550.002, T1078) ===
+      // 4624 Type 9 (NewCredentials) means a LOCAL process was given a DIFFERENT
+      // network identity: `runas /netonly`, or a Kerberos ticket / NTLM hash injected
+      // into a new logon session. It is the pivot step of overpass-the-hash and the
+      // step that makes the following network logons look legitimate.
+      //
+      // These events were being dropped entirely by the local-logon filter (the
+      // workstation always equals the computer on a Type 9), so this whole technique
+      // was invisible. LogonProcessName tells the two benign-ish and hostile variants
+      // apart: seclogo is the Secondary Logon service (an operator typing runas),
+      // while an injected ticket typically shows a different logon process.
+      {
+        const _ncByKey = new Map();
+        for (const evt of timeOrdered) {
+          if (evt.eventId !== "4624" || evt.logonType !== "9") continue;
+          const u = (evt.user || "").trim();
+          if (!u) continue;
+          const k = `${evt.target}|${u.toUpperCase()}`;
+          if (!_ncByKey.has(k)) _ncByKey.set(k, []);
+          _ncByKey.get(k).push(evt);
+        }
+        // Which users later authenticated OUTWARD from this host? That is the
+        // difference between "an admin ran runas" and "the alternate credentials
+        // were then used to move".
+        const _outboundByHost = new Map();
+        for (const evt of timeOrdered) {
+          if (evt.eventId !== "4624" && evt.eventId !== "4648") continue;
+          if (!evt.source || !evt.target || hostsAreSameMachine(evt.source, evt.target)) continue;
+          if (!_outboundByHost.has(evt.source)) _outboundByHost.set(evt.source, []);
+          _outboundByHost.get(evt.source).push(evt);
+        }
+        for (const [k, evts] of _ncByKey) {
+          sortByTs(evts);
+          const [host, userKey] = k.split("|");
+          const user = evts[0].user;
+          const first = evts[0];
+          const last = evts[evts.length - 1];
+          const secLogo = evts.some((e) => e.isSecLogo);
+          const ntlm = evts.some((e) => e.isNtlmSsp);
+          const mechanisms = [...new Set(evts.map((e) => e.logonProcess).filter(Boolean))];
+          const packages = [...new Set(evts.map((e) => e.authPackage).filter(Boolean))];
+          // Did this identity then reach another host from here, within an hour?
+          const firstMs = tsMs(first.ts);
+          const followOn = (_outboundByHost.get(host) || []).filter((e) => {
+            if ((e.user || "").trim().toUpperCase() !== userKey) return false;
+            const em = tsMs(e.ts);
+            return em != null && firstMs != null && em >= firstMs && (em - firstMs) <= 3600000;
+          });
+          const pivotTargets = [...new Set(followOn.map((e) => e.target).filter(Boolean))];
+          let severity = "low";
+          if (pivotTargets.length > 0) severity = "high";
+          else if (!secLogo) severity = "medium"; // no secondary-logon service = not a plain runas
+          if (pivotTargets.length > 0 && (pivotTargets.some((t) => _DC_PAT.test(t)) || PRIV_NAME_RE.test(user))) severity = "critical";
+          const _ncPills = [{ text: `${evts.length} Type 9 logon${evts.length === 1 ? "" : "s"}`, type: "credential" }];
+          if (secLogo) _ncPills.push({ text: "seclogo (runas)", type: "context" });
+          if (ntlm) _ncPills.push({ text: "NTLM package", type: "credential" });
+          if (mechanisms.length > 0) _ncPills.push({ text: `logon process: ${mechanisms.slice(0, 2).join(", ")}`, type: "context" });
+          if (pivotTargets.length > 0) _ncPills.push({ text: `then reached ${pivotTargets.slice(0, 3).join(", ")}`, type: "correlation" });
+          const _ncRefs = _refsFromEvents(evts);
+          findings.push({
+            id: fid++, severity,
+            category: "Alternate Credentials",
+            mitre: pivotTargets.length > 0 ? "T1550.002" : "T1078",
+            title: `Alternate credentials on ${host}: ${user}${pivotTargets.length > 0 ? ` \u2192 ${pivotTargets.slice(0, 2).join(", ")}` : ""}`,
+            description: `${evts.length} NewCredentials (Type 9) logon${evts.length === 1 ? "" : "s"} for ${user} on ${host}`
+              + `${mechanisms.length > 0 ? ` via ${mechanisms.join(", ")}` : ""}${packages.length > 0 ? ` (${packages.join(", ")})` : ""}. `
+              + `A Type 9 logon replaces only the NETWORK identity of a local process — the mechanism behind runas /netonly and overpass-the-hash.`
+              + `${pivotTargets.length > 0 ? ` The same account then authenticated outward from ${host} to ${pivotTargets.join(", ")} within the hour.` : " No outbound authentication by this account followed, so this may be ordinary administrative runas."}`,
+            source: host, target: pivotTargets.length > 0 ? pivotTargets.join(", ") : host,
+            filterHosts: [host, ...pivotTargets],
+            timeRange: { from: first.ts, to: last.ts },
+            eventCount: evts.length, filterEids: ["4624", "4648"],
+            evidencePills: _ncPills, users: [user],
+            evidenceRefs: _ncRefs, itemRowids: _rowidsFromRefs(_ncRefs),
+          });
         }
       }
 
@@ -1638,7 +2176,7 @@ function buildGraphAndChains(state) {
         _ccEvtsByKey.get(k).push({ eventId: evt.eventId, ts: evt.ts, user: evt.user, logonType: evt.logonType, source: evt.source, target: evt.target });
       }
       for (const [k, evts] of _ccEvtsByKey) {
-        evts.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
+        sortByTs(evts);
         // Determine dominant logon type for this key (used for Type 3 dampening)
         const _ccLogonTypes = new Map();
         for (const e of evts) { if (e.logonType) _ccLogonTypes.set(e.logonType, (_ccLogonTypes.get(e.logonType) || 0) + 1); }
@@ -1652,13 +2190,13 @@ function buildGraphAndChains(state) {
         const usedSucc = new Set(); // avoid double-counting a success event
         for (let i = 0; i < evts.length; i++) {
           if (evts[i].eventId !== "4625") continue;
-          const ft = new Date(evts[i].ts);
-          if (isNaN(ft)) continue;
+          const ft = tsMs(evts[i].ts);
+          if (ft == null) continue;
           for (let j = i + 1; j < evts.length; j++) {
             if (evts[j].eventId !== "4624") continue;
             if (usedSucc.has(j)) continue;
-            const st = new Date(evts[j].ts);
-            if (isNaN(st)) continue;
+            const st = tsMs(evts[j].ts);
+            if (st == null) continue;
             const diff = st - ft;
             if (diff > _ccWindowMs) break; // beyond window
             if (diff >= 0) {
@@ -1679,8 +2217,8 @@ function buildGraphAndChains(state) {
           const [_t3Tgt] = _t3Rest.split("|");
           const _t3Has4648 = evts.some(e => {
             if (e.eventId !== "4648") return false;
-            const et = new Date(e.ts), ft = new Date(sequences[0].failTs), st = new Date(sequences[0].succTs);
-            return !isNaN(et) && !isNaN(ft) && !isNaN(st) && et >= new Date(ft.getTime() - 300000) && et <= new Date(st.getTime() + 300000);
+            const et = tsMs(e.ts), ft = tsMs(sequences[0].failTs), st = tsMs(sequences[0].succTs);
+            return et != null && ft != null && st != null && et >= (ft - 300000) && et <= (st + 300000);
           });
           const _t3IsDC = _t3Tgt && _DC_PAT.test(_t3Tgt);
           const _t3IsSrv = _t3Tgt && _SRV_PAT.test(_t3Tgt);
@@ -1694,9 +2232,9 @@ function buildGraphAndChains(state) {
         const clusters = [];
         let cur = [sequences[0]];
         for (let s = 1; s < sequences.length; s++) {
-          const prevEnd = new Date(cur[cur.length - 1].succTs);
-          const nextStart = new Date(sequences[s].failTs);
-          if (!isNaN(prevEnd) && !isNaN(nextStart) && (nextStart - prevEnd) <= 600000) {
+          const prevEnd = tsMs(cur[cur.length - 1].succTs);
+          const nextStart = tsMs(sequences[s].failTs);
+          if (prevEnd != null && nextStart != null && (nextStart - prevEnd) <= 600000) {
             cur.push(sequences[s]);
           } else {
             clusters.push(cur);
@@ -1710,12 +2248,12 @@ function buildGraphAndChains(state) {
           const firstFail = cluster[0].failTs;
           const lastSucc = cluster[cluster.length - 1].succTs;
           // Check for explicit creds (4648) within this cluster's time range + 5 min buffer
-          const clusterStart = new Date(firstFail);
-          const clusterEnd = new Date(lastSucc);
-          const has4648 = !isNaN(clusterStart) && !isNaN(clusterEnd) && evts.some(e => {
+          const clusterStart = tsMs(firstFail);
+          const clusterEnd = tsMs(lastSucc);
+          const has4648 = clusterStart != null && clusterEnd != null && evts.some(e => {
             if (e.eventId !== "4648") return false;
-            const et = new Date(e.ts);
-            return !isNaN(et) && et >= new Date(clusterStart.getTime() - 300000) && et <= new Date(clusterEnd.getTime() + 300000);
+            const et = tsMs(e.ts);
+            return et != null && et >= (clusterStart - 300000) && et <= (clusterEnd + 300000);
           });
           // Severity logic:
           //   critical: <=5 min + 4648 explicit creds
@@ -1723,8 +2261,15 @@ function buildGraphAndChains(state) {
           //   medium:   Type 3 single-failure (passed corroboration gate above but weaker signal)
           let severity = "high";
           if (fastestDiff <= 300000 && has4648) severity = "critical";
-          if (isType3 && failCount === 1 && severity !== "critical") {
-            severity = (tgt && _DC_PAT.test(tgt)) ? "high" : "medium";
+          if (failCount === 1 && severity !== "critical") {
+            // ONE failure followed by a success is a mistyped password. That is true
+            // for an RDP (Type 10) and console (Type 2) logon just as much as for a
+            // network logon — the rule previously demoted only Type 3, so every user
+            // who fat-fingered their password before an RDP session was reported as a
+            // high-severity credential compromise. Raise it only when something else
+            // makes the pair interesting: a DC target or a known-outlier source.
+            const _ccOutlierSrc = src && _outlierHosts.has(src);
+            severity = (tgt && _DC_PAT.test(tgt)) || _ccOutlierSrc ? "high" : "medium";
           }
           // Note: post-success tool correlation will be checked after all findings are built
           // (we store the pair key for later cross-referencing in edge scoring)
@@ -1739,6 +2284,7 @@ function buildGraphAndChains(state) {
           if (has4648) _ccPills.push({ text: "4648 explicit creds", type: "credential" });
           if (failCount > 3) _ccPills.push({ text: `${failCount} repeated sequences`, type: "context" });
           if (isType3) _ccPills.push({ text: "Type 3 network", type: "context" });
+          if (failCount === 1) _ccPills.push({ text: "single failure (possible mistyped password)", type: "context" });
           if (tgt && _DC_PAT.test(tgt)) _ccPills.push({ text: "DC target", type: "target" });
           else if (tgt && _SRV_PAT.test(tgt)) _ccPills.push({ text: "server target", type: "target" });
           findings.push({ id: fid++, severity, category: "Credential Compromise", mitre: "T1078", title: `Credential compromise: ${user} @ ${src} \u2192 ${tgt}`, description: desc + (ctx.length > 0 ? `. Context: ${ctx.join(", ")}` : ""), source: src, target: tgt, timeRange: { from: firstFail, to: lastSucc }, eventCount: failCount * 2, _ccUser: user, _ccPair: `${src}->${tgt}`, evidencePills: _ccPills, users: [user] });

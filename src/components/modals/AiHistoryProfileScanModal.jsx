@@ -576,7 +576,7 @@ export default function AiHistoryProfileScanModal() {
             Paths searched inside your folder (all platforms)
           </div>
           <div style={{ fontSize: 10, color: th.textDim, fontFamily: "SF Mono, Menlo, monospace", lineHeight: 1.5, maxHeight: 100, overflow: "auto", border: `1px solid ${th.border}44`, borderRadius: 6, padding: "8px 10px" }}>
-            <div style={{ marginBottom: 6 }}><span style={{ color: th.textMuted }}>Windows: </span>Users\&lt;user&gt;\.claude, .codex, .grok, .cursor, .copilot, .gemini, AppData\Roaming\Cursor\User, OpenAI\ChatGPT, Code\User\workspaceStorage…</div>
+            <div style={{ marginBottom: 6 }}><span style={{ color: th.textMuted }}>Windows: </span>Users\&lt;user&gt;\.claude, .codex, .grok, .grokbot, .cursor, .copilot, .gemini, AppData\Roaming\Cursor\User, AppData\Roaming\Grok Bot, OpenAI\ChatGPT, Code\User\workspaceStorage…</div>
             <div style={{ marginBottom: 6 }}><span style={{ color: th.textMuted }}>Linux: </span>home/&lt;user&gt;/.claude, .codex, .copilot, .config/Cursor/User, .config/com.openai.chat, .config/Code/User/workspaceStorage…</div>
             <div><span style={{ color: th.textMuted }}>macOS: </span>Users/&lt;user&gt;/.claude, .copilot, Library/Application Support/Cursor/User, com.openai.chat, Code/User/workspaceStorage…</div>
           </div>

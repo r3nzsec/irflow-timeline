@@ -17,6 +17,44 @@
  *   _sourcesFromCorrelation, _lsassAccessHits, _credTheftCmdHits}}
  */
 const { DC_PAT: _DC_PAT, SRV_PAT: _SRV_PAT } = require("../constants");
+const { normalizeTimestamp } = require("../../../utils/forensic-normalize");
+const { tsMs, cmpTs, gapMs: _gapMs } = require("../time");
+
+function _hitMs(h) {
+  const n = normalizeTimestamp(h && h.ts);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function _hitTargetKey(h) {
+  if (h && h.side === "dest") return h.host || "";
+  return (h && (h.remoteTarget || h.host)) || "";
+}
+
+/** Split hits into per-host groups, then 10-minute clusters (same idea as Impacket). */
+function clusterHitsByHostTime(hits, hostOf = _hitTargetKey, gapMs = 600000) {
+  const byHost = new Map();
+  for (const h of hits || []) {
+    const key = String(hostOf(h) || "").toUpperCase() || "(unknown)";
+    if (!byHost.has(key)) byHost.set(key, []);
+    byHost.get(key).push(h);
+  }
+  const clusters = [];
+  for (const group of byHost.values()) {
+    group.sort((a, b) => _hitMs(a) - _hitMs(b) || cmpTs(a.ts, b.ts));
+    let cur = [group[0]];
+    for (let i = 1; i < group.length; i++) {
+      const prev = _hitMs(cur[cur.length - 1]);
+      const next = _hitMs(group[i]);
+      if (prev && next && next - prev > gapMs) {
+        clusters.push(cur);
+        cur = [];
+      }
+      cur.push(group[i]);
+    }
+    if (cur.length) clusters.push(cur);
+  }
+  return clusters;
+}
 
 function runProcessServiceScan(state) {
   const {
@@ -34,7 +72,7 @@ function runProcessServiceScan(state) {
       const _scanChanCol = columns._channel ? meta.colMap[columns._channel] : null;
       const _scanDetect = (pats) => { for (const p of pats) { const f = meta.headers.find(h => p.test(h)); if (f) return meta.colMap[f]; } return null; };
       // Structured (real) process columns, before any Hayabusa blob fallback.
-      const _structColImage = _scanDetect([/^Image$/i, /^NewProcessName$/i, /^process_name$/i, /^FileName$/i, /^ImagePath$/i]);
+      const _structColImage = _scanDetect([/^Image$/i, /^NewProcessName$/i, /^process_name$/i, /^FileName$/i, /^ImagePath$/i, /^SourceImage$/i]);
       const _structColParent = _scanDetect([/^ParentImage$/i, /^ParentProcessName$/i, /^ParentCommandLine$/i]);
       const _structColCmd = _scanDetect([/^CommandLine$/i, /^command_line$/i, /^ProcessCommandLine$/i, /^cmdline$/i]);
       const _structColSvc = _scanDetect([/^ServiceName$/i, /^Service_Name$/i, /^TargetServiceName$/i]);
@@ -198,12 +236,12 @@ function runProcessServiceScan(state) {
         if (!host || !hitTs) return null;
         const logons = _execLogonByHost.get(host.toUpperCase());
         if (!logons) return null;
-        const tMs = new Date(hitTs.replace("T", " ").replace("Z", "")).getTime();
-        if (isNaN(tMs)) return null;
+        const tMs = tsMs(hitTs);
+        if (tMs == null) return null;
         for (const l of logons) {
           if (l.logonType !== "3" && l.eventId !== "4648") continue;
-          const lMs = new Date((l.ts || "").replace("T", " ").replace("Z", "")).getTime();
-          if (!isNaN(lMs) && Math.abs(lMs - tMs) <= windowMs) return l;
+          const lMs = tsMs(l.ts);
+          if (lMs != null && Math.abs(lMs - tMs) <= windowMs) return l;
         }
         return null;
       };
@@ -971,8 +1009,10 @@ function runProcessServiceScan(state) {
                 // 0x1fffff (PROCESS_ALL_ACCESS) are the suspicious ones
                 const accessMatch = text.match(/(?:granted\s*access|accessmask)[:\s]+(0x[0-9a-f]+)/i);
                 const access = accessMatch ? parseInt(accessMatch[1], 16) : 0;
-                // 0x1010 = query + VM read (Mimikatz default), 0x1fffff = all access, 0x1038 = common dump
-                const isSuspAccess = access === 0 || access >= 0x1000; // 0 = couldn't parse (still flag), >=0x1000 = VM read or higher
+                // Credential-dump signal is VM_READ (0x10) or PROCESS_ALL_ACCESS.
+                // 0x1000 is PROCESS_QUERY_LIMITED_INFORMATION — Task Manager / inventory, not a dump.
+                // Unparseable masks still flag (Mimikatz-style dumps often omit the field).
+                const isSuspAccess = access === 0 || access === 0x1fffff || (access & 0x0010) !== 0;
                 if (isSuspAccess) {
                   const caller = (_image || "").split("\\").pop() || "(unknown)";
                   _lsassAccessHits.push({ ts, eid, rid, host, side: "dest", d: `${caller} opened lsass.exe (access: ${accessMatch ? accessMatch[1] : "unknown"})`, caller });
@@ -1025,17 +1065,17 @@ function runProcessServiceScan(state) {
                 _discByHost.get(h.host).push(h);
               }
               for (const [host, hits] of _discByHost) {
-                hits.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
+                hits.sort((a, b) => cmpTs(a.ts, b.ts));
                 // Sliding window: 5+ hits in 2 min
                 for (let i = 0; i <= hits.length - 5; i++) {
-                  const t0 = new Date(hits[i].ts).getTime();
-                  const t4 = new Date(hits[i + 4].ts).getTime();
-                  if (!isNaN(t0) && !isNaN(t4) && (t4 - t0) <= 120000) {
+                  const t0 = tsMs(hits[i].ts);
+                  const t4 = tsMs(hits[i + 4].ts);
+                  if (t0 != null && t4 != null && (t4 - t0) <= 120000) {
                     // Find full burst extent
                     let burstEnd = i + 4;
                     for (let j = burstEnd + 1; j < hits.length; j++) {
-                      const tj = new Date(hits[j].ts).getTime();
-                      if (!isNaN(tj) && (tj - t0) <= 120000) burstEnd = j;
+                      const tj = tsMs(hits[j].ts);
+                      if (tj != null && (tj - t0) <= 120000) burstEnd = j;
                       else break;
                     }
                     const burstHits = hits.slice(i, burstEnd + 1);
@@ -1070,7 +1110,7 @@ function runProcessServiceScan(state) {
                 ts: evt.ts, eid: "4624", host: (evt.target || "").toUpperCase(),
                 category: "pass_the_hash",
                 detail: `Type 9 (NewCredentials) logon: ${evt.user || "(unknown)"} from ${(evt.source || "local").toUpperCase()}`,
-                confidence: "high",
+                confidence: "medium",
               });
             }
           } catch (_pthErr) { warnings.push(`Pass the Hash detection failed: ${_pthErr.message}`); }
@@ -1154,28 +1194,30 @@ function runProcessServiceScan(state) {
             }
           } } catch (_csErr) { warnings.push(`Cobalt Strike detector failed: ${_csErr.message}`); }
 
-          // --- Emit Native PsExec findings ---
+          // --- Emit Native PsExec findings (one per host / 10-min cluster) ---
           try { if (_psexecNative.length > 0) {
-            const destHosts = [...new Set(_psexecNative.filter(h => h.side === "dest" && h.host).map(h => h.host))];
-            const srcHosts = [...new Set(_psexecNative.filter(h => h.side === "source" && h.host).map(h => h.host))];
-            const allHosts = [...new Set([...destHosts, ...srcHosts])];
-            const allTs = _psexecNative.map(h => h.ts).filter(Boolean).sort();
-            const details = [...new Set(_psexecNative.map(h => h.d))];
-            const eids = [...new Set(_psexecNative.map(h => h.eid))];
-            const hostLabel = [];
-            if (destHosts.length > 0) hostLabel.push(`target ${destHosts.slice(0, 3).join(", ")}${destHosts.length > 3 ? ` +${destHosts.length - 3} more` : ""}`);
-            if (srcHosts.length > 0) hostLabel.push(`observed on ${srcHosts.slice(0, 3).join(", ")}${srcHosts.length > 3 ? ` +${srcHosts.length - 3} more` : ""}`);
-            const _psPills = [{ text: "PSEXESVC service", type: "execution" }];
-            if (destHosts.length > 0) _psPills.push({ text: `target ${destHosts.slice(0, 2).join(", ")}`, type: "target" });
-            if (srcHosts.length > 0) _psPills.push({ text: `from ${srcHosts.slice(0, 2).join(", ")}`, type: "context" });
-            const _psUsers = _usersFromCorrelation(_psexecNative);
-            findings.push({ id: fid++, severity: "critical", category: "PsExec Native", mitre: "T1569.002",
-              title: `Sysinternals PsExec detected${hostLabel.length > 0 ? ` (${hostLabel.join("; ")})` : ""}`,
-              description: `${_psexecNative.length} event(s): ${details.join("; ")}`,
-              source: srcHosts.join(", "), target: destHosts.join(", "),
-              filterHosts: allHosts,
-              timeRange: { from: allTs[0] || "", to: allTs[allTs.length - 1] || "" },
-              eventCount: _psexecNative.length, filterEids: eids, evidencePills: _psPills, users: _psUsers, itemRowids: _psexecNative.map(h => h.rid).filter(r => r != null) });
+            for (const cluster of clusterHitsByHostTime(_psexecNative)) {
+              const destHosts = [...new Set(cluster.filter(h => h.side === "dest" && h.host).map(h => h.host))];
+              const srcHosts = [...new Set(cluster.filter(h => h.side === "source" && h.host).map(h => h.host))];
+              const allHosts = [...new Set([...destHosts, ...srcHosts])];
+              const allTs = cluster.map(h => h.ts).filter(Boolean).sort();
+              const details = [...new Set(cluster.map(h => h.d))];
+              const eids = [...new Set(cluster.map(h => h.eid))];
+              const hostLabel = [];
+              if (destHosts.length > 0) hostLabel.push(`target ${destHosts.slice(0, 3).join(", ")}${destHosts.length > 3 ? ` +${destHosts.length - 3} more` : ""}`);
+              if (srcHosts.length > 0) hostLabel.push(`observed on ${srcHosts.slice(0, 3).join(", ")}${srcHosts.length > 3 ? ` +${srcHosts.length - 3} more` : ""}`);
+              const _psPills = [{ text: "PSEXESVC service", type: "execution" }];
+              if (destHosts.length > 0) _psPills.push({ text: `target ${destHosts.slice(0, 2).join(", ")}`, type: "target" });
+              if (srcHosts.length > 0) _psPills.push({ text: `from ${srcHosts.slice(0, 2).join(", ")}`, type: "context" });
+              const _psUsers = _usersFromCorrelation(cluster);
+              findings.push({ id: fid++, severity: "critical", category: "PsExec Native", mitre: "T1569.002",
+                title: `Sysinternals PsExec detected${hostLabel.length > 0 ? ` (${hostLabel.join("; ")})` : ""}`,
+                description: `${cluster.length} event(s): ${details.join("; ")}`,
+                source: srcHosts.join(", "), target: destHosts.join(", "),
+                filterHosts: allHosts,
+                timeRange: { from: allTs[0] || "", to: allTs[allTs.length - 1] || "" },
+                eventCount: cluster.length, filterEids: eids, evidencePills: _psPills, users: _psUsers, itemRowids: cluster.map(h => h.rid).filter(r => r != null) });
+            }
           } } catch (_e) { warnings.push(`PsExec detector failed: ${_e.message}`); console.error("PsExec detector error:", _e); }
 
           // --- Emit Impacket findings: per-variant with confidence-scored severity ---
@@ -1186,7 +1228,7 @@ function runProcessServiceScan(state) {
 
             // Cluster by (variant, targetHost, timeWindow) for per-hop findings
             // Assign target key: dest-side host IS the target; source-side uses remoteTarget if known
-            const _parseTs = (s) => { const d = new Date((s || "").replace("T", " ").replace("Z", "")); return isNaN(d) ? 0 : d.getTime(); };
+            const _parseTs = (s) => tsMs(s) ?? 0;
             for (const h of _psexecImpacket) {
               if (h.side === "dest") h._tgtKey = (h.host || "").toUpperCase();
               else h._tgtKey = (h.remoteTarget || "").toUpperCase(); // "" if unknown
@@ -1201,7 +1243,7 @@ function runProcessServiceScan(state) {
             // Within each group, sort by time and split into sub-clusters (>10 min gap)
             const _impClusters = [];
             for (const hits of _byVarTgt.values()) {
-              hits.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
+              hits.sort((a, b) => cmpTs(a.ts, b.ts));
               let cur = [hits[0]];
               for (let i = 1; i < hits.length; i++) {
                 const prevMs = _parseTs(cur[cur.length - 1].ts);
@@ -1297,86 +1339,85 @@ function runProcessServiceScan(state) {
               evidencePills: [{ text: "credential dumping", type: "execution" }, ...hosts.slice(0, 2).map(h => ({ text: h, type: "target" }))], users: _impCredUsers, itemRowids: _impCredAccess.map(h => h.rid).filter(r => r != null) });
           } } catch (_e) { warnings.push(`Impacket detector failed: ${_e.message}`); console.error("Impacket detector error:", _e); }
 
-          // --- Emit Remote Service Execution findings (all destination-side service installs) ---
+          // --- Emit Remote Service Execution findings (one per host / 10-min cluster) ---
           try { if (_remoteSvcExec.length > 0) {
-            const hosts = [...new Set(_remoteSvcExec.map(h => h.host).filter(Boolean))];
-            const allTs = _remoteSvcExec.map(h => h.ts).filter(Boolean).sort();
-            const eids = [...new Set(_remoteSvcExec.map(h => h.eid))];
-            const _rsPills = [{ text: "suspicious service", type: "execution" }];
-            if (hosts.length > 0) _rsPills.push({ text: `target ${hosts.slice(0, 2).join(", ")}`, type: "target" });
-            // Group reasons by category for a compact description
-            const _rsReasonGroups = new Map(); // category -> [specifics]
-            for (const h of _remoteSvcExec) {
-              const m = h.d.match(/^Random \d+-char service name: (.+)$/);
-              if (m) {
-                if (!_rsReasonGroups.has("random_name")) _rsReasonGroups.set("random_name", []);
-                _rsReasonGroups.get("random_name").push(m[1]);
-              } else {
-                if (!_rsReasonGroups.has("other")) _rsReasonGroups.set("other", []);
-                _rsReasonGroups.get("other").push(h.d);
-              }
-            }
-            const _rsDescParts = [];
-            const _rsRandomNames = _rsReasonGroups.get("random_name");
-            if (_rsRandomNames && _rsRandomNames.length > 0) {
-              const uniqueNames = [...new Set(_rsRandomNames)];
-              _rsDescParts.push(`${uniqueNames.length} random service name${uniqueNames.length > 1 ? "s" : ""}: ${uniqueNames.join(", ")}`);
-            }
-            const _rsOther = _rsReasonGroups.get("other");
-            if (_rsOther && _rsOther.length > 0) {
-              _rsDescParts.push(...[...new Set(_rsOther)]);
-            }
-            // Service installs (4697/7045) often lack the *remote* user inline; correlate
-            // to a ±5 min Type 3 logon on the same target host to surface who initiated it.
-            const _rsUsers = _usersFromCorrelation(_remoteSvcExec);
-            const _rsSources = _sourcesFromCorrelation(_remoteSvcExec);
             const _uniqueText = (values) => [...new Set(values.map(v => String(v || "").trim()).filter(Boolean))];
-            const executionDetails = _remoteSvcExec.map((h) => {
-              const correlated = _correlatedExecLogon(h.host, h.ts);
-              const attributedUser = correlated?.user ? String(correlated.user).toUpperCase() : "";
-              const sourceHost = correlated?.source
-                ? String(correlated.source).toUpperCase().replace(/\s*\(.*\)$/, "").trim()
-                : "";
-              return {
-                eventId: h.eid,
-                timestamp: h.ts,
-                target: h.host,
-                serviceName: h.serviceName || "",
-                imagePath: h.imagePath || "",
-                commandLine: h.commandLine || "",
-                eventActor: h.eventActor || "",
-                serviceAccount: h.serviceAccount || "",
-                attributedUser,
-                sourceHost,
-                reason: h.d || "",
-                rowId: h.rid,
-              };
-            });
-            const serviceNames = _uniqueText(executionDetails.map(d => d.serviceName));
-            const imagePaths = _uniqueText(executionDetails.map(d => d.imagePath));
-            const commandLines = _uniqueText(executionDetails.map(d => d.commandLine));
-            const eventActors = _uniqueText(executionDetails.map(d => d.eventActor));
-            const serviceAccounts = _uniqueText(executionDetails.map(d => d.serviceAccount));
-            const executors = _uniqueText([...eventActors, ..._rsUsers]);
-            for (const serviceName of serviceNames.slice(0, 2)) {
-              _rsPills.push({ text: `service ${serviceName}`, type: "execution" });
+            for (const cluster of clusterHitsByHostTime(_remoteSvcExec, (h) => h.host)) {
+              const hosts = [...new Set(cluster.map(h => h.host).filter(Boolean))];
+              const allTs = cluster.map(h => h.ts).filter(Boolean).sort();
+              const eids = [...new Set(cluster.map(h => h.eid))];
+              const _rsPills = [{ text: "suspicious service", type: "execution" }];
+              if (hosts.length > 0) _rsPills.push({ text: `target ${hosts.slice(0, 2).join(", ")}`, type: "target" });
+              const _rsReasonGroups = new Map();
+              for (const h of cluster) {
+                const m = h.d.match(/^Random \d+-char service name: (.+)$/);
+                if (m) {
+                  if (!_rsReasonGroups.has("random_name")) _rsReasonGroups.set("random_name", []);
+                  _rsReasonGroups.get("random_name").push(m[1]);
+                } else {
+                  if (!_rsReasonGroups.has("other")) _rsReasonGroups.set("other", []);
+                  _rsReasonGroups.get("other").push(h.d);
+                }
+              }
+              const _rsDescParts = [];
+              const _rsRandomNames = _rsReasonGroups.get("random_name");
+              if (_rsRandomNames && _rsRandomNames.length > 0) {
+                const uniqueNames = [...new Set(_rsRandomNames)];
+                _rsDescParts.push(`${uniqueNames.length} random service name${uniqueNames.length > 1 ? "s" : ""}: ${uniqueNames.join(", ")}`);
+              }
+              const _rsOther = _rsReasonGroups.get("other");
+              if (_rsOther && _rsOther.length > 0) {
+                _rsDescParts.push(...[...new Set(_rsOther)]);
+              }
+              const _rsUsers = _usersFromCorrelation(cluster);
+              const _rsSources = _sourcesFromCorrelation(cluster);
+              const executionDetails = cluster.map((h) => {
+                const correlated = _correlatedExecLogon(h.host, h.ts);
+                const attributedUser = correlated?.user ? String(correlated.user).toUpperCase() : "";
+                const sourceHost = correlated?.source
+                  ? String(correlated.source).toUpperCase().replace(/\s*\(.*\)$/, "").trim()
+                  : "";
+                return {
+                  eventId: h.eid,
+                  timestamp: h.ts,
+                  target: h.host,
+                  serviceName: h.serviceName || "",
+                  imagePath: h.imagePath || "",
+                  commandLine: h.commandLine || "",
+                  eventActor: h.eventActor || "",
+                  serviceAccount: h.serviceAccount || "",
+                  attributedUser,
+                  sourceHost,
+                  reason: h.d || "",
+                  rowId: h.rid,
+                };
+              });
+              const serviceNames = _uniqueText(executionDetails.map(d => d.serviceName));
+              const imagePaths = _uniqueText(executionDetails.map(d => d.imagePath));
+              const commandLines = _uniqueText(executionDetails.map(d => d.commandLine));
+              const eventActors = _uniqueText(executionDetails.map(d => d.eventActor));
+              const serviceAccounts = _uniqueText(executionDetails.map(d => d.serviceAccount));
+              const executors = _uniqueText([...eventActors, ..._rsUsers]);
+              for (const serviceName of serviceNames.slice(0, 2)) {
+                _rsPills.push({ text: `service ${serviceName}`, type: "execution" });
+              }
+              if (imagePaths.length > 0) _rsDescParts.push(`Image path${imagePaths.length > 1 ? "s" : ""}: ${imagePaths.slice(0, 3).join(", ")}`);
+              if (executors.length > 0) _rsDescParts.push(`Account attribution: ${executors.slice(0, 4).join(", ")}`);
+              const serviceTitle = serviceNames.length === 1
+                ? `: ${serviceNames[0]}`
+                : serviceNames.length > 1
+                  ? `: ${serviceNames.slice(0, 2).join(", ")}${serviceNames.length > 2 ? ` +${serviceNames.length - 2} more` : ""}`
+                  : "";
+              findings.push({ id: fid++, severity: "high", category: "Remote Service Execution", mitre: "T1569.002",
+                title: `Suspicious service-based execution${serviceTitle}${hosts.length > 0 ? ` (target ${hosts.slice(0, 3).join(", ")}${hosts.length > 3 ? ` +${hosts.length - 3} more` : ""})` : ""}`,
+                description: `${cluster.length} suspicious service event(s). ${_rsDescParts.join("; ")}. Could indicate remote execution tools.`,
+                source: _rsSources.join(", "), target: hosts.join(", "),
+                filterHosts: hosts,
+                timeRange: { from: allTs[0] || "", to: allTs[allTs.length - 1] || "" },
+                eventCount: cluster.length, filterEids: eids, evidencePills: _rsPills, users: _rsUsers,
+                serviceNames, imagePaths, commandLines, eventActors, serviceAccounts, executors, executionDetails,
+                itemRowids: cluster.map(h => h.rid).filter(r => r != null) });
             }
-            if (imagePaths.length > 0) _rsDescParts.push(`Image path${imagePaths.length > 1 ? "s" : ""}: ${imagePaths.slice(0, 3).join(", ")}`);
-            if (executors.length > 0) _rsDescParts.push(`Account attribution: ${executors.slice(0, 4).join(", ")}`);
-            const serviceTitle = serviceNames.length === 1
-              ? `: ${serviceNames[0]}`
-              : serviceNames.length > 1
-                ? `: ${serviceNames.slice(0, 2).join(", ")}${serviceNames.length > 2 ? ` +${serviceNames.length - 2} more` : ""}`
-                : "";
-            findings.push({ id: fid++, severity: "high", category: "Remote Service Execution", mitre: "T1569.002",
-              title: `Suspicious service-based execution${serviceTitle}${hosts.length > 0 ? ` (target ${hosts.slice(0, 3).join(", ")}${hosts.length > 3 ? ` +${hosts.length - 3} more` : ""})` : ""}`,
-              description: `${_remoteSvcExec.length} suspicious service event(s). ${_rsDescParts.join("; ")}. Could indicate remote execution tools.`,
-              source: _rsSources.join(", "), target: hosts.join(", "),
-              filterHosts: hosts,
-              timeRange: { from: allTs[0] || "", to: allTs[allTs.length - 1] || "" },
-              eventCount: _remoteSvcExec.length, filterEids: eids, evidencePills: _rsPills, users: _rsUsers,
-              serviceNames, imagePaths, commandLines, eventActors, serviceAccounts, executors, executionDetails,
-              itemRowids: _remoteSvcExec.map(h => h.rid).filter(r => r != null) });
           } } catch (_e) { warnings.push(`Remote Service detector failed: ${_e.message}`); console.error("Remote Service detector error:", _e); }
 
           // --- Emit WMI Event Subscription Persistence findings (Sysmon 19/20/21) ---
@@ -1414,15 +1455,11 @@ function runProcessServiceScan(state) {
           // User attribution: WMI/WinRM hits don't carry user inline (they're built from
           // process create events, not logon events), so we correlate each hit's host+ts
           // to the shared logon index and aggregate the resulting users.
-          const _emitRemoteFinding = (hits, category, mitre, titlePrefix, severity, extraPills) => {
-            if (hits.length === 0) return;
+          const _emitRemoteFindingCluster = (hits, category, mitre, titlePrefix, severity, extraPills) => {
             const destHosts = [...new Set(hits.filter(h => h.side === "dest" && h.host).map(h => h.host))];
             const srcHosts = [...new Set(hits.filter(h => h.side === "source" && h.host).map(h => h.host))];
             const remoteTargets = [...new Set(hits.map(h => h.remoteTarget).filter(Boolean))];
             const targetHosts = [...new Set([...destHosts, ...remoteTargets])];
-            // Enrich source hosts from correlated logons — dest-only hits (WMI child
-            // process on target, WinRM wsmprovhost spawn) have no source-side hit, but
-            // the operator's logon to that host tells us where they connected from.
             const corrSources = _sourcesFromCorrelation(hits);
             const allSrcHosts = [...new Set([...srcHosts, ...corrSources])];
             const allHosts = [...new Set([...targetHosts, ...allSrcHosts])];
@@ -1445,6 +1482,12 @@ function runProcessServiceScan(state) {
               filterHosts: allHosts,
               timeRange: { from: allTs[0] || "", to: allTs[allTs.length - 1] || "" },
               eventCount: hits.length, filterEids: eids, evidencePills: _rfPills, users: _rfUsers, itemRowids: hits.map(h => h.rid).filter(r => r != null) });
+          };
+          const _emitRemoteFinding = (hits, category, mitre, titlePrefix, severity, extraPills) => {
+            if (!hits.length) return;
+            for (const cluster of clusterHitsByHostTime(hits)) {
+              _emitRemoteFindingCluster(cluster, category, mitre, titlePrefix, severity, extraPills);
+            }
           };
 
           // --- Emit WMI/WinRM findings ---
@@ -1515,7 +1558,7 @@ function runProcessServiceScan(state) {
               let win = [hits[0]];
               for (let i = 1; i < hits.length; i++) {
                 const prev = win[win.length - 1];
-                const gap = prev.ts && hits[i].ts ? (new Date(hits[i].ts) - new Date(prev.ts)) / 60000 : 0;
+                const gap = (_gapMs(prev.ts, hits[i].ts) ?? 0) / 60000;
                 if (gap > 30) { windows.push(win); win = [hits[i]]; }
                 else win.push(hits[i]);
               }
@@ -1665,25 +1708,25 @@ function runProcessServiceScan(state) {
               if (!host || !hitTs) return null;
               const logons = _logonByHostST.get(host.toUpperCase());
               if (!logons) return null;
-              const tMs = new Date(hitTs).getTime();
-              if (isNaN(tMs)) return null;
+              const tMs = tsMs(hitTs);
+              if (tMs == null) return null;
               for (const l of logons) {
                 if (l.logonType !== "3" && l.eventId !== "4648") continue;
-                const lMs = new Date(l.ts).getTime();
-                if (!isNaN(lMs) && Math.abs(lMs - tMs) <= 600000) {
+                const lMs = tsMs(l.ts);
+                if (lMs != null && Math.abs(lMs - tMs) <= 600000) {
                   return { source: l.source, user: l.user, eventId: l.eventId, logonType: l.logonType };
                 }
               }
               return null;
             };
-            _schedTaskHits.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
+            _schedTaskHits.sort((a, b) => cmpTs(a.ts, b.ts));
             const _stClusters = [];
             let _stCur = [_schedTaskHits[0]];
             for (let si = 1; si < _schedTaskHits.length; si++) {
-              const prevMs = new Date(_stCur[_stCur.length - 1].ts).getTime();
-              const curMs = new Date(_schedTaskHits[si].ts).getTime();
+              const prevMs = tsMs(_stCur[_stCur.length - 1].ts);
+              const curMs = tsMs(_schedTaskHits[si].ts);
               const sameTarget = (_schedTaskHits[si].host || "").toUpperCase() === (_stCur[0].host || "").toUpperCase();
-              if (sameTarget && !isNaN(prevMs) && !isNaN(curMs) && curMs - prevMs <= 600000) {
+              if (sameTarget && prevMs != null && curMs != null && curMs - prevMs <= 600000) {
                 _stCur.push(_schedTaskHits[si]);
               } else {
                 _stClusters.push(_stCur);

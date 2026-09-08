@@ -1,0 +1,6 @@
+[sand-local-exec-daemon] started (pid 36911); serving local exec over the gateway
+[user-computer-provider] watch stream failed: ConnectError
+[user-computer-provider] watch stream failed: ConnectError
+[shell-exec] Close event did not fire within 5000ms after exit. Killing detached process group.
+{"error":"cli_unknown_command"}
+[sand-local-exec-daemon] started (pid 41869); serving local exec over the gateway

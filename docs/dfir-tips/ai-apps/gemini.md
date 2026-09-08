@@ -12,20 +12,26 @@ Back to [AI Query History](/dfir-tips/ai-query-history).
 
 | Platform | Path |
 |----------|------|
-| macOS / Linux | `~/.gemini/tmp/<project_hash>/chats/**/*.jsonl`, `~/.gemini/shell_history` |
-| Windows | `C:\Users\<user>\.gemini\tmp\<hash>\chats\**\*.jsonl`, `C:\Users\<user>\.gemini\shell_history` |
+| macOS / Linux | `~/.gemini/tmp/<project_hash-or-slug>/chats/**/*.jsonl`, `~/.gemini/shell_history` |
+| Windows | `C:\Users\<user>\.gemini\tmp\<hash-or-slug>\chats\**\*.jsonl`, `C:\Users\<user>\.gemini\shell_history` |
 
-Also parsed when present: legacy `session-*.json`, `logs.json`, and checkpoints under `~/.gemini`.
+Also parsed when present: legacy `session-*.json`, `logs.json`, checkpoints, and 0.58+ control-plane files (`projects.json`, `settings.json` and backups, `trustedFolders.json`, `google_accounts.json`, policy files, skills, `GEMINI.md`, and `history/<slug>/.project_root`). `GEMINI_CLI_HOME` relocations are supported.
 
 ## What IRFlow extracts
 
 | Artifact | Status | Why it matters |
 |----------|--------|----------------|
-| `~/.gemini/tmp/<hash>/chats/**/*.jsonl` | Parsed | Current append-only sessions, including nested subagent chats. |
+| `~/.gemini/tmp/<hash>/chats/**/*.jsonl` | Parsed | Reconstructed current state plus immutable source-event history. Rewound, superseded, and `$set`-replaced messages remain recoverable with status and physical source locations. |
 | `~/.gemini/shell_history` | Parsed | Exact shell-history entries, including continued multiline commands. |
 | Legacy `session-*.json`, checkpoints, `logs.json` | Parsed | Older Gemini CLI layouts. |
+| `projects.json`, `tmp/<slug>/.project_root`, `history/<slug>/.project_root` | Parsed | 0.58+ workspace registry. Slug directories replace hash-named tmp folders. |
+| `settings.json`, backups, `policies/*` | Parsed/inventoried | Auth type, retention, Auto Memory, lifecycle hooks, MCP server definitions, tool policy, and replacement/backup provenance. Secret values are excluded. |
+| `GEMINI.md`, `skills/**/{SKILL.md,json,yaml}` | Hashed inventory | Instruction, memory, and skill context with source path, size, mtime, and SHA-256. |
+| `trustedFolders.json` | Parsed | Folders the CLI may act in without a further prompt. |
+| `google_accounts.json`, `installation_id`, `user_id` | Parsed | Account / install identifiers. |
+| `oauth_creds.json` (and MCP/A2A token files) | Inventory-only | Name and size; contents are never read. |
 
-Current sessions are append-only JSONL. IRFlow replays message records, `$set` checkpoints, and `$rewindTo` operations to reconstruct the retained session state. It emits separate tool-call and tool-result rows, preserves the exact `run_shell_command` command in **ToolCommand**, and marks nested chat directories as subagent evidence.
+Current sessions are append-only JSONL. IRFlow emits the reconstructed current state and a separate `history_*` lane for every source revision, plus `history_rewind` and `history_set_messages` operation rows. Tool calls/results keep their exact source line and byte offset in both views.
 
 ## How to import
 
@@ -38,7 +44,7 @@ Current sessions are append-only JSONL. IRFlow replays message records, `$set` c
 
 - **ToolCommand** holds the exact `run_shell_command` string — treat it as evidence, the same as a shell history hit.
 - Nested chat directories are subagent evidence. Start with main sessions on a large project tree.
-- `$rewindTo` / `$set` mean the retained session is not a simple append-only log. IRFlow replays those markers so the grid reflects what the CLI still had, not every line that was ever written.
+- Filter `RecordType = history_*` to inspect revisions and rewound content; use the ordinary message/tool types for the current reconstructed conversation.
 
 ## Limitations
 

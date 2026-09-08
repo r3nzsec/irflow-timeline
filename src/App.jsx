@@ -92,6 +92,7 @@ const SigmaRuleModal = lazy(() => import("./components/modals/SigmaRuleModal.jsx
 const RdpBitmapCacheModal = lazy(() => import("./components/modals/RdpBitmapCacheModal.jsx"));
 const AiHistoryProfileScanModal = lazy(() => import("./components/modals/AiHistoryProfileScanModal.jsx"));
 const AiHistoryExtractModal = lazy(() => import("./components/modals/AiHistoryExtractModal.jsx"));
+const AiHistoryCoverageModal = lazy(() => import("./components/modals/AiHistoryCoverageModal.jsx"));
 const AiWorkspaceCorrelateModal = lazy(() => import("./components/modals/AiWorkspaceCorrelateModal.jsx"));
 const AiHistoryScopeModal = lazy(() => import("./components/modals/AiHistoryScopeModal.jsx"));
 const AiSecretsModal = lazy(() => import("./components/modals/AiSecretsModal.jsx"));
@@ -1223,7 +1224,7 @@ export default function App() {
         },
       }));
     });
-    listen(tle.onImportComplete, ({ tabId, fileName, headers, rowCount, tsColumns, numericColumns, initialRows, totalFiltered, emptyColumns, sourceFormat, evtxMessageMode, messagesDeferred, resolveStats, bookmarkedRowIds, rowTags, tagColors, importWarning, importNotice, isLargeFile, initialRowsDeferred, diffMeta }) => {
+    listen(tle.onImportComplete, ({ tabId, fileName, headers, rowCount, tsColumns, numericColumns, initialRows, totalFiltered, emptyColumns, sourceFormat, evtxMessageMode, messagesDeferred, resolveStats, bookmarkedRowIds, rowTags, tagColors, importWarning, importNotice, aiHistoryImportMeta, aiHistoryFailures, aiHistoryRestore, aiHistoryPartial, sessionRestore, isLargeFile, initialRowsDeferred, diffMeta }) => {
       delete importPathsRef.current[tabId];
       if (importWarning) {
         const warnTitle = isAiHistorySourceFormat(sourceFormat) ? "AI history import"
@@ -1240,7 +1241,7 @@ export default function App() {
         });
       }
       const cw = largeTab ? fastColumnWidths(headers) : measureColumnWidths(headers, initialRows);
-      const saved = pendingRestoresRef.current[tabId];
+      const saved = sessionRestore || pendingRestoresRef.current[tabId];
       const applyTabImport = (columnWidths) => setTabs((prev) => prev.map((t) => {
         if (t.id !== tabId) return t;
         const base = { ...t, name: fileName, headers, rows: initialRows, rowOffset: 0, totalRows: rowCount, totalFiltered,
@@ -1250,6 +1251,11 @@ export default function App() {
           rowTags: rowTags || {},
           tagColors: tagColors ? { ...TAG_PRESETS, ...tagColors } : { ...TAG_PRESETS },
           sourceFormat: sourceFormat || null,
+          importNotice: saved?.importNotice || importNotice || null,
+          aiHistoryImportMeta: saved?.aiHistoryImportMeta || aiHistoryImportMeta || null,
+          aiHistoryFailures: saved?.aiHistoryFailures || aiHistoryFailures || [],
+          aiHistoryRestore: saved?.aiHistoryRestore || aiHistoryRestore || null,
+          aiHistoryPartial: saved?.aiHistoryPartial ?? !!aiHistoryPartial,
           evtxMessageMode: evtxMessageMode || null,
           messagesDeferred: !!messagesDeferred,
           aiSecretTriage: saved?.aiSecretTriage || {},
@@ -2004,6 +2010,11 @@ export default function App() {
         aiSecretTriage: tab.aiSecretTriage || {},
         aiSecretSalt: tab.aiSecretSalt || "",
         sourceFormat: tab.sourceFormat || null,
+        importNotice: tab.importNotice || null,
+        aiHistoryImportMeta: tab.aiHistoryImportMeta || null,
+        aiHistoryFailures: tab.aiHistoryFailures || [],
+        aiHistoryRestore: tab.aiHistoryRestore || null,
+        aiHistoryPartial: !!tab.aiHistoryPartial,
         diffMeta: tab.diffMeta || null,
       });
     }
@@ -2020,12 +2031,50 @@ export default function App() {
     for (const tab of tabs) await tle.closeTab(tab.id);
     setTabs([]); setActiveTab(null);
     const restoreMap = {};
+    const restoredTabIds = [];
     for (const savedTab of session.tabs) {
+      const restore = savedTab.aiHistoryRestore;
+      if (restore?.kind === "single" && restore.path && restore.tool) {
+        const result = await tle.decodeAiHistory(restore.path, restore.tool, {
+          includeSubagents: !!restore.includeSubagents,
+          sessionRestore: savedTab,
+        });
+        if (result?.error || !result?.tabId) {
+          toast.warning(`Skipping "${savedTab.name}"`, { detail: String(result?.error || "AI history source could not be restored") });
+          restoredTabIds.push(null);
+          continue;
+        }
+        restoredTabIds.push(result.tabId);
+        continue;
+      }
+      if (restore?.kind === "profile" && Array.isArray(restore.roots) && restore.roots.length) {
+        const result = await tle.extractAiHistoryProfile({
+          roots: restore.roots,
+          includeSubagents: !!restore.includeSubagents,
+          scanRoot: restore.scanRoot || undefined,
+          scanMode: restore.scanMode || "local",
+          sessionRestore: savedTab,
+        });
+        if (result?.error || !result?.tabId) {
+          toast.warning(`Skipping "${savedTab.name}"`, { detail: String(result?.error || "AI history collection could not be restored") });
+          restoredTabIds.push(null);
+          continue;
+        }
+        restoredTabIds.push(result.tabId);
+        continue;
+      }
       const result = await tle.importFileForRestore(savedTab.filePath, savedTab.sheetName);
-      if (result.error) { toast.warning(`Skipping "${savedTab.name}"`, { detail: String(result.error) }); continue; }
+      if (result.error) {
+        toast.warning(`Skipping "${savedTab.name}"`, { detail: String(result.error) });
+        restoredTabIds.push(null);
+        continue;
+      }
       restoreMap[result.tabId] = savedTab;
+      restoredTabIds.push(result.tabId);
     }
     setPendingRestores(restoreMap);
+    const requestedActive = restoredTabIds[session.activeTabIndex];
+    if (requestedActive) setActiveTab(requestedActive);
     return true;
   }, [tle, tabs]);
 
@@ -3589,6 +3638,7 @@ export default function App() {
           {modal?.type === "rdpBitmapCache" && <RdpBitmapCacheModal />}
           {modal?.type === "aiHistoryProfileScan" && <AiHistoryProfileScanModal />}
           {modal?.type === "aiHistoryExtract" && <AiHistoryExtractModal />}
+          {modal?.type === "aiHistoryCoverage" && <AiHistoryCoverageModal />}
           {modal?.type === "aiWorkspaceCorrelate" && <AiWorkspaceCorrelateModal th={th} />}
           {modal?.type === "aiHistoryScope" && <AiHistoryScopeModal />}
           {modal?.type === "aiSecrets" && <AiSecretsModal th={th} />}
@@ -4688,6 +4738,7 @@ export default function App() {
         {modal?.type === "rdpBitmapCache" && <RdpBitmapCacheModal />}
         {modal?.type === "aiHistoryProfileScan" && <AiHistoryProfileScanModal />}
         {modal?.type === "aiHistoryExtract" && <AiHistoryExtractModal />}
+        {modal?.type === "aiHistoryCoverage" && <AiHistoryCoverageModal />}
         {modal?.type === "aiWorkspaceCorrelate" && <AiWorkspaceCorrelateModal th={th} />}
         {modal?.type === "aiHistoryScope" && <AiHistoryScopeModal />}
         {modal?.type === "aiSecrets" && <AiSecretsModal th={th} />}

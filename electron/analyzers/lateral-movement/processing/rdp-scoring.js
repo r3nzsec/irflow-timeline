@@ -16,7 +16,25 @@ const { buildFindingPairs } = require("./triage-and-clustering");
 const { normalizeTimestamp } = require("../../../utils/forensic-normalize");
 
 function scoreRdpSessions(state) {
-  const { timeOrdered, edgeMap, rdpSessions, _outlierHosts, findings } = state;
+  const { timeOrdered, edgeMap, rdpSessions, _outlierHosts, findings, options } = state;
+  // Off-hours is a LOCAL-time question about the organisation being investigated, but
+  // the timestamps are UTC. A fixed UTC window means an Asian or Australian estate has
+  // its entire working day scored as off-hours (09:00 in UTC+8 is 01:00 UTC), while a
+  // US estate has its evenings scored as normal. `orgTimezoneOffsetMinutes` shifts the
+  // window to the estate's local time; 0 (UTC) keeps the previous behaviour, so nothing
+  // changes for anyone who does not set it.
+  const _orgOffsetMin = (() => {
+    const raw = options?.orgTimezoneOffsetMinutes;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(-840, Math.min(840, Math.round(n)));
+  })();
+  const _orgLabel = _orgOffsetMin === 0
+    ? "UTC"
+    : `UTC${_orgOffsetMin > 0 ? "+" : "-"}${String(Math.floor(Math.abs(_orgOffsetMin) / 60)).padStart(2, "0")}:${String(Math.abs(_orgOffsetMin) % 60).padStart(2, "0")}`;
+  // Business hours, expressed in the organisation's local time.
+  const _bizStartHour = Number.isFinite(Number(options?.orgBusinessStartHour)) ? Math.max(0, Math.min(23, Math.round(Number(options.orgBusinessStartHour)))) : 6;
+  const _bizEndHour = Number.isFinite(Number(options?.orgBusinessEndHour)) ? Math.max(1, Math.min(24, Math.round(Number(options.orgBusinessEndHour)))) : 22;
   // This stage now runs BEFORE triage scoring (so the Concurrent RDP findings it emits
   // get a triageScore like everything else), which means the caller no longer has a
   // pair index to hand over. Build one from the findings that exist at this point.
@@ -33,7 +51,7 @@ function scoreRdpSessions(state) {
         if (!_evtsByEdge.has(ek)) _evtsByEdge.set(ek, []);
         _evtsByEdge.get(ek).push(evt);
       }
-      const _FAIL_EIDS = new Set(["4625", "4771", "4776"]);
+      const _FAIL_EIDS = new Set(["4625", "4771"]);
       const _RECON_EIDS = new Set(["25", "4778", "39", "40"]);
       const _RDP_LTS = new Set(["10", "12"]);
       const _epPhase = (evt) => {
@@ -130,15 +148,17 @@ function scoreRdpSessions(state) {
         if (s.startTime) {
           const ms = normalizeTimestamp(s.startTime);
           if (Number.isFinite(ms)) {
-            const d = new Date(ms);
+            // Shift into organisation-local time, then read the wall clock with the
+            // UTC getters (the shift is already applied to the value).
+            const d = new Date(ms + (_orgOffsetMin * 60000));
             const hour = d.getUTCHours();
             const dow = d.getUTCDay(); // 0=Sun, 6=Sat
             const isWeekend = dow === 0 || dow === 6;
-            const isOffHours = hour < 6 || hour >= 22; // before 6 AM or after 10 PM
+            const isOffHours = hour < _bizStartHour || hour >= _bizEndHour;
             const dayName = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dow];
-            if (isWeekend && isOffHours) { score += 15; flags.push(`Weekend off-hours (${dayName} ${hour}:00 UTC)`); }
-            else if (isWeekend) { score += 8; flags.push(`Weekend (${dayName} UTC)`); }
-            else if (isOffHours) { score += 10; flags.push(`Off-hours (${hour}:00 UTC)`); }
+            if (isWeekend && isOffHours) { score += 15; flags.push(`Weekend off-hours (${dayName} ${hour}:00 ${_orgLabel})`); }
+            else if (isWeekend) { score += 8; flags.push(`Weekend (${dayName} ${_orgLabel})`); }
+            else if (isOffHours) { score += 10; flags.push(`Off-hours (${hour}:00 ${_orgLabel})`); }
           }
         }
         // Missing telemetry and low reconstruction confidence are evidence-quality
@@ -291,6 +311,13 @@ function scoreRdpSessions(state) {
           // FP dampeners (applied as severity reduction, not exclusion)
           let isSvcAccount = _concSvcPat.test(user);
           let isMgmtSource = sources.length > 0 && sources.every(s => _MGMT_SRC_PAT.test(s));
+          // Source diversity is what makes concurrency suspicious. One admin sitting
+          // at ONE jump host with three RDP windows open is a normal working day; the
+          // same account driving sessions from several different machines at once is
+          // credential sharing or a stolen credential in use. Severity used to be
+          // decided by target count alone, so every multi-window admin was critical.
+          const distinctSources = sources.length;
+          const singleSource = distinctSources <= 1;
           // Severity tiers
           let severity;
           if (targets.length >= 3 || (adminTargets.length > 0 && hasAdminPriv)) {
@@ -300,6 +327,12 @@ function scoreRdpSessions(state) {
           } else {
             severity = "medium";
           }
+          // One source (or none recorded) — cap at high; the concurrency is explained
+          // by a single operator at a single console.
+          if (singleSource && severity === "critical") severity = "high";
+          // Multiple distinct sources for the same account at the same instant is the
+          // real signal and lifts the floor.
+          if (distinctSources >= 2 && severity === "medium") severity = "high";
           // Dampeners: reduce severity, never exclude
           if (isSvcAccount) {
             if (severity === "critical") severity = "high";
@@ -320,6 +353,8 @@ function scoreRdpSessions(state) {
           const adminLabel = adminTargets.length > 0 ? ` (includes ${adminTargets.slice(0, 2).join(", ")})` : "";
           const overlapLabel = overlapStart && overlapEnd ? ` Overlap: ${overlapStart.slice(0, 19)} \u2013 ${overlapEnd.slice(0, 19)}.` : "";
           const _rdpPills = [{ text: `${targets.length} concurrent targets`, type: "context" }];
+          if (distinctSources >= 2) _rdpPills.push({ text: `${distinctSources} distinct sources`, type: "correlation" });
+          else if (singleSource) _rdpPills.push({ text: "single source host", type: "context" });
           if (targets.some(t => _DC_PAT.test(t))) _rdpPills.push({ text: "DC target", type: "target" });
           else if (targets.some(t => _SRV_PAT.test(t))) _rdpPills.push({ text: "server target", type: "target" });
           if (hasAdminPriv) _rdpPills.push({ text: "admin privileges", type: "credential" });

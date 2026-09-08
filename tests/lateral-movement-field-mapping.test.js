@@ -165,7 +165,10 @@ test("channel-less TerminalServices 20/21 rows are not reported as WMI subscript
   // EIDs 20/21 here mean "session reconnect" / "session logon", not Sysmon WMI.
   const rows = [
     { TimeCreated: "2026-03-10T08:00:00Z", EventId: "21", Computer: "WKS01", IpAddress: "10.0.0.5", TargetUserName: "CORP\\alice", LogonType: "10", MapDescription: "Remote Desktop Services: Session logon succeeded" },
-    { TimeCreated: "2026-03-10T08:05:00Z", EventId: "20", Computer: "WKS01", IpAddress: "10.0.0.5", TargetUserName: "CORP\\alice", LogonType: "10", MapDescription: "Remote Desktop Services: Shell start notification received" },
+    // EID 20 is here precisely because it COLLIDES with Sysmon 20 (WmiEventConsumer);
+    // that collision is what the test is about. It is not the LSM shell-start event
+    // (that is 22) — the fixture used to mislabel it as such.
+    { TimeCreated: "2026-03-10T08:05:00Z", EventId: "20", Computer: "WKS01", IpAddress: "10.0.0.5", TargetUserName: "CORP\\alice", LogonType: "10", MapDescription: "Remote Desktop Services: session event" },
   ];
   const { meta, ctx } = makeStub(NOCHAN_HEADERS, rows);
   const res = getLateralMovement(meta, {}, ctx);

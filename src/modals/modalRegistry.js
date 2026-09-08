@@ -137,6 +137,16 @@ export function openAiHistoryProfileScanModal(extra = {}) {
   };
 }
 
+export function openAiHistoryCoverageModal({ tabName, importNotice, importMeta, failures } = {}) {
+  return {
+    type: "aiHistoryCoverage",
+    tabName: tabName || "AI Query History",
+    importNotice: importNotice || "",
+    importMeta: importMeta || null,
+    failures: failures || [],
+  };
+}
+
 export function openStackingModal(colName, extra = {}) {
   return { type: "stacking", colName, data: null, loading: true, filterText: "", sortBy: "count", ...extra };
 }
@@ -195,8 +205,10 @@ export function openProcessTreeModal(columns = {}, extra = {}) {
 export function openTriageCollectionModal(extra = {}) {
   return {
     type: "triageCollection",
-    phase: "picking",        // picking -> scanning -> manifest -> importing
+    phase: "picking",        // picking -> (extracting) -> scanning -> manifest -> importing
     dir: "",
+    vhdx: null,              // { path, name, ... } when the collection came out of a VHDX image
+    extract: null,           // live progress from triage-vhdx-progress while phase === "extracting"
     manifest: null,
     error: null,
     selected: null,          // Set<path>; null until the manifest seeds the defaults

@@ -74,6 +74,18 @@ test("redactRow masks string values and preserves everything else", () => {
   assert.equal(row.CommandLine, "psexec -p Hunter2 \\\\DC01", "the input row must not be mutated");
 });
 
+test("redactRow walks nested commandLines and executionDetails", () => {
+  const item = {
+    category: "Remote Service Execution",
+    commandLines: ["sc \\\\host create x binPath= cmd.exe -p Pa$$w0rd"],
+    executionDetails: [{ commandLine: "psexec -p Hunter2 \\\\DC01" }],
+  };
+  const out = redactRow(item);
+  assert.ok(!out.commandLines[0].includes("Pa$$w0rd"), out.commandLines[0]);
+  assert.ok(!out.executionDetails[0].commandLine.includes("Hunter2"), out.executionDetails[0].commandLine);
+  assert.equal(item.commandLines[0].includes("Pa$$w0rd"), true, "input must not be mutated");
+});
+
 // ── CSV encoding ────────────────────────────────────────────────────────────────
 
 test("csvCell neutralises formula injection", () => {

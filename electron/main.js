@@ -205,16 +205,15 @@ function enqueueImport(filePath, opts) {
  * without this a mis-click has to be waited out. Returns how many were removed.
  */
 function removeQueuedImports(predicate) {
-  if (typeof predicate !== "function") return 0;
-  const before = _importQueue.length;
+  if (typeof predicate !== "function") return [];
+  const dropped = [];
   for (let i = _importQueue.length - 1; i >= 0; i--) {
     let hit = false;
     try { hit = !!predicate(_importQueue[i]); } catch { hit = false; }
-    if (hit) _importQueue.splice(i, 1);
+    if (hit) dropped.push(_importQueue.splice(i, 1)[0]);
   }
-  const removed = before - _importQueue.length;
-  if (removed > 0) _broadcastQueue();
-  return removed;
+  if (dropped.length > 0) _broadcastQueue();
+  return dropped;
 }
 
 function _broadcastQueue() {

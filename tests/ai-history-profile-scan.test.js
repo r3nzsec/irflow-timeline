@@ -18,10 +18,10 @@ const FIXTURE_COPILOT_STORAGE = path.join(
   "fixtures/ai-history/copilot/Code/User/workspaceStorage",
 );
 
-test("getLocalAiHistoryCandidates includes all nine tool families", () => {
+test("getLocalAiHistoryCandidates includes all ten tool families", () => {
   const tools = new Set(getLocalAiHistoryCandidates().map((c) => c.tool));
   for (const tool of [
-    "claude-code", "codex", "grok-build", "chatgpt", "gemini-cli", "cursor", "copilot",
+    "claude-code", "codex", "grok-build", "grok-bot", "chatgpt", "gemini-cli", "cursor", "copilot",
     "windsurf", "continue",
   ]) {
     assert.ok(tools.has(tool), `missing ${tool}`);

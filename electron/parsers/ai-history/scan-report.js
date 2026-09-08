@@ -108,7 +108,7 @@ function buildEmptyAiScanReport(ctx = {}) {
     if (probe.hasUsersDir) {
       lines.push(`A Users\\ folder is present (${probe.userSample.join(", ") || "profiles detected"}) — standard AI paths may not have been collected by KAPE.`);
     } else if (probe.hasHomeLinux) {
-      lines.push(`A home/ tree is present (${probe.homeSample.join(", ")}) — look for .claude, .cursor, .codex, .grok, .gemini under each user.`);
+      lines.push(`A home/ tree is present (${probe.homeSample.join(", ")}) — look for .claude, .cursor, .codex, .grok, .grokbot, .gemini under each user.`);
     } else {
       lines.push("No Users\\ or home/ layout detected at this path — try the KAPE output root or a per-user profile folder.");
     }
@@ -127,7 +127,7 @@ function buildEmptyAiScanReport(ctx = {}) {
     }
   } else {
     lines.push("No readable AI history was found at standard locations on this machine.");
-    lines.push("Install paths are probed for Claude Code, Codex, Grok Build, ChatGPT, Gemini CLI, Cursor, GitHub Copilot, Windsurf, and Continue.");
+    lines.push("Install paths are probed for Claude Code, Codex, Grok Build, Grok Bot, ChatGPT, Gemini CLI, Cursor, GitHub Copilot, Windsurf, and Continue.");
     lines.push("");
     lines.push("If tools were used in-browser only, local desktop/CLI stores may be empty.");
   }

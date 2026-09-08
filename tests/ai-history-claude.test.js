@@ -166,7 +166,7 @@ test("parseSessionLine includes file-history-snapshot rows", () => {
   assert.match(row.Summary, /File history snapshot/);
 });
 
-test("dedupeAiHistoryRows prefers session over history.jsonl", () => {
+test("dedupeAiHistoryRows preserves matching prompt occurrences from history and session sources", () => {
   const sessionRow = parseSessionLine({
     type: "user",
     timestamp: "2024-01-01T12:00:00.000Z",
@@ -181,11 +181,14 @@ test("dedupeAiHistoryRows prefers session over history.jsonl", () => {
     project: "/tmp",
   }, "/home/u/.claude/history.jsonl");
   const out = dedupeAiHistoryRows([historyRow, sessionRow]);
-  assert.equal(out.length, 1);
-  assert.equal(out[0].MessageId, "u1");
+  assert.equal(out.length, 2);
+  assert.deepEqual(new Set(out.map((row) => row.SourceFile)), new Set([
+    "/home/u/.claude/history.jsonl",
+    "/projects/p/sess.jsonl",
+  ]));
 });
 
-test("dedupeAiHistoryRows crossTool drops duplicate prompts across tools", () => {
+test("dedupeAiHistoryRows does not correlate cross-tool prompts whose full bodies differ", () => {
   const claude = {
     Role: "user",
     Summary: "How do I dump LSASS memory for analysis?",
@@ -203,10 +206,8 @@ test("dedupeAiHistoryRows crossTool drops duplicate prompts across tools", () =>
     Tool: "Cursor",
   };
   const out = dedupeAiHistoryRows([claude, cursor], { crossTool: true });
-  assert.equal(out.length, 1);
-  assert.equal(out[0].Tool, "Claude Code");
-  // Forensic provenance is preserved, not erased (B5).
-  assert.equal(out[0].AlsoInTools, "Claude Code, Cursor");
+  assert.equal(out.length, 2);
+  assert.ok(out.every((row) => !row.AlsoInTools));
 });
 
 test("dedupeAiHistoryRows crossTool leaves AlsoInTools empty for single-tool prompts", () => {
