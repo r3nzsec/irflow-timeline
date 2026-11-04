@@ -6,6 +6,8 @@
 // could not happen at the head or tail of the result set.
 const test = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
 
 // grid-layout.js is renderer ESM; the suite runs as CJS, so load it once per file.
 const gridLayout = import("../src/utils/grid-layout.js");
@@ -133,4 +135,31 @@ test("planWindowFetch: the window it plans covers the viewport it planned for", 
       `planned window ${nextOffset}..${nextOffset + loaded} misses viewport at row ${scrollRow}`,
     );
   }
+});
+
+test("canReuseTabWindow: only a plain tab switch reuses the rows the tab holds", async () => {
+  const { canReuseTabWindow } = await gridLayout;
+  const reuse = (overrides) => canReuseTabWindow({
+    tabId: "b", previousTabId: "a", querySignature: "q", committedSignature: "q", grouped: false, ...overrides,
+  });
+  assert.equal(reuse({}), true, "switching to a tab whose query is unchanged");
+  assert.equal(reuse({ previousTabId: "b", committedSignature: "unfiltered" }), false, "search or filter change in the active tab");
+  assert.equal(reuse({ committedSignature: "unfiltered" }), false, "jump that switches tabs and changes the target tab's query");
+  assert.equal(reuse({ committedSignature: undefined }), false, "tab that was never active in a commit");
+  assert.equal(reuse({ grouped: true }), false, "grouped tab");
+});
+
+test("App records the active tab and its query signature after the refetch effect, on every commit", () => {
+  // The refetch effect returns early while a tab is importing and does not run at all when only
+  // the active tab changes. When it kept this record itself, the first filter on a newly opened
+  // tab compared against the previous tab, looked like a tab switch and was ignored.
+  const app = fs.readFileSync(path.join(__dirname, "..", "src", "App.jsx"), "utf8");
+  const refetch = app.indexOf("if (canReuseTabWindow({ tabId: ct.id, previousTabId: lastFilterTabId.current");
+  const record = app.indexOf(`  useEffect(() => {
+    lastFilterTabId.current = ct?.id ?? null;
+    if (ct) committedQuerySig.current[ct.id] = \`\${debouncedDeps}#\${immediateDeps}\`;
+  }, [ct?.id, debouncedDeps, immediateDeps]);`);
+  assert.ok(refetch > 0, "refetch effect consults canReuseTabWindow");
+  assert.ok(record > refetch, "the record effect is declared after the refetch effect");
+  assert.equal(app.match(/lastFilterTabId\.current = /g).length, 1, "only the record effect writes lastFilterTabId");
 });

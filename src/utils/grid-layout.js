@@ -76,6 +76,16 @@ export function rowWindowCovers(rowOffset, rowCount, firstVisibleRow, visibleRow
 }
 
 /**
+ * Can a query-signature change reuse the rows the tab already holds instead of refetching?
+ * Only on a plain tab switch: the tab's search, filters and sort are still the ones its loaded
+ * window was fetched for. An in-tab change, a switch that also changes the target tab's query,
+ * and grouped tabs (whose rows are groups) all refetch.
+ */
+export function canReuseTabWindow({ tabId, previousTabId, querySignature, committedSignature, grouped = false }) {
+  return tabId !== previousTabId && !grouped && committedSignature === querySignature;
+}
+
+/**
  * Map the logical row range [si, ei) onto the loaded window [rowOffset, rowOffset+rowCount).
  *
  * `visibleStart` is the absolute index the returned slice actually begins at. It differs
