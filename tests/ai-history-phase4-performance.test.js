@@ -35,19 +35,19 @@ test("bounded JSONL reports observed bytes and acknowledges cancellation below t
     fs.closeSync(fd);
   }
 
-  let canceled = false;
+  // Cancel as soon as the first line arrives, so the reader has observed bytes whatever the
+  // runner's speed, and measure from the cancel request to the rejection.
+  let canceledAt = null;
   const parseStats = { errors: 0 };
-  const started = performance.now();
-  const timer = setTimeout(() => { canceled = true; }, 10);
   await assert.rejects(
-    readJsonlBounded(filePath, () => {}, {
+    readJsonlBounded(filePath, () => { canceledAt ??= performance.now(); }, {
       parseStats,
-      checkAbort() { if (canceled) throw new AiHistoryExtractAbortedError(); },
+      checkAbort() { if (canceledAt != null) throw new AiHistoryExtractAbortedError(); },
     }),
     (error) => error?.canceled === true,
   );
-  clearTimeout(timer);
-  const latencyMs = performance.now() - started;
+  assert.ok(canceledAt != null, "the reader delivered at least one line");
+  const latencyMs = performance.now() - canceledAt;
   assert.ok(latencyMs < 2000, `cancellation took ${latencyMs.toFixed(1)} ms`);
   assert.ok(parseStats.bytesRead > 0);
   assert.ok(parseStats.bytesRead < fs.statSync(filePath).size, "reader stopped before consuming the corpus");
