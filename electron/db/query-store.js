@@ -46,6 +46,28 @@ function normalizedColumnExpr(meta, colName) {
 }
 
 /**
+ * Split a search into values: whitespace separates them, and "double quotes" keep a phrase
+ * together without becoming part of the value.
+ */
+function splitSearchValues(searchTerm) {
+  const values = [];
+  const re = /"([^"]*)"|(\S+)/g;
+  let m;
+  while ((m = re.exec(searchTerm)) !== null) {
+    const value = m[1] != null ? m[1] : m[2];
+    if (value) values.push(value);
+  }
+  return values;
+}
+
+/** The whole search as one value, without a pair of double quotes around all of it. */
+function wholeSearchValue(searchTerm) {
+  const t = searchTerm.trim();
+  const inner = t.slice(1, -1);
+  return t.length >= 2 && t.startsWith('"') && t.endsWith('"') && !inner.includes('"') ? inner : t;
+}
+
+/**
  * Characters SQLite should treat as blank padding. Bare TRIM() strips spaces only, so a
  * tab- or newline-only cell would survive as its own value — rendering blank in the grid
  * and as a second blank-looking row in the filter list. This set mirrors what JS .trim()
@@ -394,35 +416,38 @@ class QueryStoreMethods {
   _applySearch(searchTerm, searchMode, meta, whereConditions, params, searchCondition = "contains") {
     if (!searchTerm.trim()) return;
 
-    // Fuzzy search — uses custom fuzzy_match() SQLite function
-    if (searchCondition === "fuzzy" && searchMode !== "regex") {
-      const terms = searchMode === "exact" ? [searchTerm.trim()] : searchTerm.trim().split(/\s+/).filter(Boolean);
-      const joinOp = searchMode === "or" ? " OR " : " AND ";
-      const termConditions = terms.map((term) => {
-        const colConds = meta.safeCols.map((c) => {
-          params.push(term);
-          return `fuzzy_match(${c.safe}, ?)`;
-        });
-        return `(${colConds.join(" OR ")})`;
-      });
-      whereConditions.push(`(${termConditions.join(joinOp)})`);
-      return;
-    }
-
-    // Non-default conditions bypass FTS — use direct SQL LIKE/=
+    // Fuzzy, Starts with, Like and Equals. Starts with, Like and Equals compare whole cell
+    // values, so in Mixed and Exact mode the entire input is ONE value, as in Edit Filter.
+    // Splitting it into words made Equals `Local Settings` require one cell equal to "Local"
+    // and another equal to "Settings". OR and AND mode, and Fuzzy (which matches word by
+    // word), take several values. Double quotes group a phrase and are not part of the value.
+    // In Mixed mode, `Col:value` or `Col:"value"` compares only that column.
     if (searchCondition !== "contains" && searchMode !== "regex") {
-      const terms = searchMode === "exact" ? [searchTerm.trim()] : searchTerm.trim().split(/\s+/).filter(Boolean);
-      const joinOp = searchMode === "or" ? " OR " : " AND ";
-      const termConditions = terms.map((term) => {
-        const colConds = meta.safeCols.map((c) => {
-          if (searchCondition === "startswith") { params.push(`${term}%`); return `${c.safe} LIKE ?`; }
-          if (searchCondition === "like") { params.push(term); return `${c.safe} LIKE ?`; }
-          if (searchCondition === "equals") { params.push(term); return `${c.safe} = ?`; }
-          params.push(`%${term}%`); return `${c.safe} LIKE ?`;
+      const fuzzy = searchCondition === "fuzzy";
+      const values = searchMode === "exact" || (searchMode === "mixed" && !fuzzy)
+        ? [wholeSearchValue(searchTerm)]
+        : splitSearchValues(searchTerm);
+      let targets = meta.safeCols.map((c) => c.safe);
+      if (searchMode === "mixed" && !fuzzy) {
+        const qualified = /^([^\s":]+):(.+)$/.exec(values[0]);
+        const matchCol = qualified && meta.headers.find((h) => h.toLowerCase() === qualified[1].toLowerCase());
+        if (matchCol && meta.colMap[matchCol]) {
+          targets = [normalizedColumnExpr(meta, matchCol)];
+          values[0] = wholeSearchValue(qualified[2]);
+        }
+      }
+      const termConditions = values.filter(Boolean).map((value) => {
+        const colConds = targets.map((expr) => {
+          if (fuzzy) { params.push(value); return `fuzzy_match(${expr}, ?)`; }
+          if (searchCondition === "startswith") { params.push(`${value}%`); return `${expr} LIKE ?`; }
+          if (searchCondition === "like") { params.push(value); return `${expr} LIKE ?`; }
+          if (searchCondition === "equals") { params.push(value); return `${expr} = ?`; }
+          params.push(`%${value}%`); return `${expr} LIKE ?`;
         });
         return `(${colConds.join(" OR ")})`;
       });
-      whereConditions.push(`(${termConditions.join(joinOp)})`);
+      if (termConditions.length === 0) return;
+      whereConditions.push(`(${termConditions.join(searchMode === "or" ? " OR " : " AND ")})`);
       return;
     }
 
@@ -449,12 +474,16 @@ class QueryStoreMethods {
     // large datasets, but DFIR analysts need correct substring semantics —
     // partial IOC matches must work. Mixed-mode operators (+, -, "phrase",
     // Col:value) are translated to LIKE conditions per token below.
-    const concat = meta.safeCols.map((c) => `COALESCE(${c.safe},'')`).join(" || ' ' || ");
+    //
+    // Columns are joined with char(31), the ASCII unit separator, which no search can contain:
+    // with a space, the phrase "Local Settings" matched a row whose ValueName is "Local" and
+    // whose ValueData is "Settings" whenever the trigram index was not ready to filter it out.
+    const concat = meta.safeCols.map((c) => `COALESCE(${c.safe},'')`).join(" || char(31) || ");
 
     // FTS5 trigram prefilter: when the trigram index is ready, narrow candidate rows by the
     // required >=3-char substrings via an indexed MATCH, then let the LIKE conditions above
     // re-confirm exact semantics. For a >=3-char substring, trigram MATCH "x" is equivalent
-    // to a per-column LIKE %x% (the concat's ' ' separators prevent cross-column substrings),
+    // to a per-column LIKE %x% (the concat's char(31) separators prevent cross-column substrings),
     // so the prefilter is a safe SUPERSET and the LIKE re-check guarantees correctness. Terms
     // <3 chars can't be trigram-indexed, so they fall through to LIKE alone. This restores
     // the index speed lost when the default search moved to substring-LIKE (issue #8).
@@ -468,14 +497,16 @@ class QueryStoreMethods {
     };
 
     if (searchMode === "exact") {
+      const value = wholeSearchValue(searchTerm);
+      if (!value) return;
       whereConditions.push(`(${concat}) LIKE ?`);
-      params.push(`%${searchTerm.trim()}%`);
-      _addFtsPrefilter([searchTerm.trim()]);
+      params.push(`%${value}%`);
+      _addFtsPrefilter([value]);
       return;
     }
 
     if (searchMode === "or" || searchMode === "and") {
-      const terms = searchTerm.trim().split(/\s+/).filter(Boolean);
+      const terms = splitSearchValues(searchTerm);
       if (terms.length === 0) return;
       const joinOp = searchMode === "or" ? " OR " : " AND ";
       const conds = terms.map(() => `(${concat}) LIKE ?`);
@@ -492,11 +523,14 @@ class QueryStoreMethods {
     // Mixed mode — parse tokens (+include, -exclude, "phrase", Col:value, bare)
     // and translate each to a LIKE condition. Preserves all the operator
     // semantics that the FTS path used to handle.
+    // A quoted phrase may carry a sign or a column: "a b", -"a b", +"a b", Col:"a b".
     const tokens = [];
-    const tokenRegex = /"([^"]+)"|(\S+)/g;
+    const tokenRegex = /([+-]?)(?:([^\s":]+):)?"([^"]*)"|(\S+)/g;
     let mt;
     while ((mt = tokenRegex.exec(searchTerm)) !== null) {
-      tokens.push(mt[1] != null ? { kind: "phrase", value: mt[1] } : { kind: "raw", value: mt[2] });
+      tokens.push(mt[3] != null
+        ? { kind: "phrase", value: mt[3], negate: mt[1] === "-", column: mt[2] || null }
+        : { kind: "raw", value: mt[4] });
     }
 
     const sqlParts = [];
@@ -505,9 +539,18 @@ class QueryStoreMethods {
     const requiredTerms = [];
     for (const tok of tokens) {
       if (tok.kind === "phrase") {
-        sqlParts.push(`(${concat}) LIKE ?`);
-        params.push(`%${tok.value}%`);
-        requiredTerms.push(tok.value);
+        if (!tok.value) continue;
+        let expr = `(${concat})`;
+        let value = tok.value;
+        if (tok.column) {
+          // Col:"a b" searches that column; an unknown Col: stays part of the text, as for Col:value.
+          const matchCol = meta.headers.find((h) => h.toLowerCase() === tok.column.toLowerCase());
+          if (matchCol && meta.colMap[matchCol]) expr = `COALESCE(${normalizedColumnExpr(meta, matchCol)},'')`;
+          else value = `${tok.column}:${tok.value}`;
+        }
+        sqlParts.push(tok.negate ? `NOT (${expr} LIKE ?)` : `${expr} LIKE ?`);
+        params.push(`%${value}%`);
+        if (!tok.negate) requiredTerms.push(value);
         continue;
       }
       const v = tok.value;
