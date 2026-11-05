@@ -192,6 +192,17 @@ Drag column headers to rearrange them directly in the grid. Column order is pers
 
 `Cmd+Click` a column header and select **Best Fit** to auto-size the column width to its content with 10% padding.
 
+### Full-width and narrow-width cells
+
+Two **View** menu commands size every column at once, from the rows the grid shows (the current search and filters):
+
+| Command | Shortcut | Width of each column |
+|---------|----------|----------------------|
+| **Full-width cells** | `Cmd+Option+F` | As wide as its widest entry, so no value is cut off |
+| **Narrow-width cells** | `Cmd+Option+N` | As wide as its widest entry, but at most 30 characters |
+
+Widths follow the text as displayed: timestamps are measured in the chosen date format, at the current font size. The column name counts as an entry, so a column is never narrower than its name (in narrow mode, up to the same 30 characters). **Reset Column Widths** (`Cmd+R`) goes back to the default widths.
+
 ### Column Quick Stats
 
 `Cmd+Click` a column header and select **Column Stats** to see value distribution, fill rate, and type-specific statistics for that column.

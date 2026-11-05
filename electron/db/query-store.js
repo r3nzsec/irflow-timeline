@@ -1111,6 +1111,47 @@ class QueryStoreMethods {
   }
 
   /**
+   * Longest value of every column over the rows the grid shows (the standard filters in
+   * `options`), for View → Full-width cells / Narrow-width cells. Returns
+   * { [header]: { maxLen, longest } }: maxLen in characters (0 when the column is empty), and
+   * the longest value itself when it is at most LONGEST_VALUE_LIMIT characters, so the renderer
+   * can measure it as displayed (timestamps are reformatted); longer values come back as null.
+   */
+  getColumnLongestValues(tabId, options = {}) {
+    const meta = this.databases.get(tabId);
+    if (!meta) return {};
+    const cols = meta.safeCols;
+    if (!cols.length) return {};
+    const params = [];
+    const whereConditions = [];
+    this._applyStandardFilters(options, meta, whereConditions, params);
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
+    const LONGEST_VALUE_LIMIT = 4000;
+    // Two scans: the longest length of every column, then one value of that length for each
+    // column whose longest value is short enough to send (MAX over the values of exactly that
+    // length picks one of them). SQLite's bare-column-with-MAX shortcut covers one column per
+    // query only.
+    const lengths = meta.db.prepare(
+      `SELECT ${cols.map((c, i) => `MAX(LENGTH(${c.safe})) AS l${i}`).join(", ")} FROM data ${whereClause}`
+    ).get(...params) || {};
+    const maxLens = cols.map((_c, i) => Number(lengths[`l${i}`]) || 0);
+    const wanted = cols
+      .map((c, i) => ({ c, i, len: maxLens[i] }))
+      .filter(({ len }) => len > 0 && len <= LONGEST_VALUE_LIMIT);
+    let values = {};
+    if (wanted.length) {
+      values = meta.db.prepare(
+        `SELECT ${wanted.map(({ c, i, len }) => `MAX(CASE WHEN LENGTH(${c.safe}) = ${len} THEN ${c.safe} END) AS v${i}`).join(", ")} FROM data ${whereClause}`
+      ).get(...params) || {};
+    }
+    const out = {};
+    cols.forEach((c, i) => {
+      out[c.original] = { maxLen: maxLens[i], longest: values[`v${i}`] ?? null };
+    });
+    return out;
+  }
+
+  /**
    * Get columns that are entirely empty (NULL or '')
    */
   getEmptyColumns(tabId, options = {}) {

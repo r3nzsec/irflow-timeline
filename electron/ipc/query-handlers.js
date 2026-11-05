@@ -122,6 +122,10 @@ module.exports = function registerQueryHandlers(safeHandle, safeSend, { db, runA
     return runQueryJob("getEmptyColumns", { tabId }, () => db.getEmptyColumns(tabId));
   });
 
+  safeHandle("get-column-longest-values", (event, { tabId, options }) => {
+    return runQueryJob("getColumnLongestValues", { tabId, options }, () => db.getColumnLongestValues(tabId, options));
+  });
+
   safeHandle("get-group-values", (event, { tabId, groupCol, options }) => {
     return runQueryJob("getGroupValues", { tabId, groupCol, options }, () => db.getGroupValues(tabId, groupCol, options), { cancelPrevious: true });
   });

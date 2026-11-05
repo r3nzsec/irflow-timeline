@@ -27,6 +27,7 @@ import { IOC_CATEGORY_PATTERNS } from "./utils/ioc-parsing.js";
 import { getColumnGeometry, getColumnWindow, getGridBodyViewportHeight, getGridContentWidth, getRowScrollTarget, getVisibleRowRange, getWindowSlice, planWindowFetch, rowWindowCovers } from "./utils/grid-layout.js";
 import { getSelectedRowCount, isRowSelected, selectRowIds, toggleRowSelection } from "./utils/row-selection.js";
 import { effectiveSearchTerm, isSearchTooShort } from "./utils/search.js";
+import { computeCellWidths, textMeasurer } from "./utils/cell-widths.js";
 
 // ── Extracted components ─────────────────────────────────────────
 import { BkmkIcon, CheckboxIcon } from "./components/icons.jsx";
@@ -414,6 +415,8 @@ export default function App() {
   const queryTimer = useRef(null);
   const fetchId = useRef(0); // Monotonic counter to discard stale query results
   const ctRef = useRef(null);
+  const fitCellWidthsRef = useRef(null);
+  const lastCellWidthsRef = useRef({ mode: null, at: 0 });
   // Latest-closure refs for handlers invoked by the mount-only native-menu IPC effect
   // (deps [tle]). Without these, that effect captures the FIRST render's handlers (when
   // tabs=[]), so the native macOS menu's "Close Tab" wiped every tab and Save/Load
@@ -1545,6 +1548,7 @@ export default function App() {
       else if (typeof val === "number") setFontSize(val);
     });
     listen(tle.onTriggerResetColumns, () => resetColumnWidthsRef.current?.());
+    listen(tle.onTriggerCellWidths, (mode) => fitCellWidthsRef.current?.(mode));
     listen(tle.onSetTheme, (name) => setThemeName(name));
     listen(tle.onTriggerHistogram, () => setHistogramVisible((v) => !v));
     listen(tle.onTriggerVtSettings, () => {
@@ -2097,6 +2101,7 @@ export default function App() {
     handleSaveSessionRef.current = handleSaveSession;
     handleLoadSessionRef.current = handleLoadSession;
     resetColumnWidthsRef.current = resetColumnWidths;
+    fitCellWidthsRef.current = fitCellWidths;
     handleCheckForUpdatesRef.current = handleCheckForUpdates;
   });
 
@@ -2629,6 +2634,42 @@ export default function App() {
     },
     [dateTimeFormat, timezone, ct?.tsColumns],
   );
+  // View → Full-width cells / Narrow-width cells: size every column from the longest value in
+  // the rows the grid shows (current search and filters), as displayed. See utils/cell-widths.js.
+  const fitCellWidths = useCallback(async (mode) => {
+    const tab = ct;
+    if (!tab?.dataReady || !tle?.getColumnLongestValues) return;
+    // The menu accelerator and the window's own key handler can both fire for one key press.
+    const now = Date.now();
+    if (lastCellWidthsRef.current.mode === mode && now - lastCellWidthsRef.current.at < 400) return;
+    lastCellWidthsRef.current = { mode, at: now };
+    const af = activeFilters(tab);
+    const result = await tle.getColumnLongestValues(tab.id, {
+      searchTerm: effectiveSearchTerm(tab.searchHighlight ? "" : tab.searchTerm), searchMode: tab.searchMode, searchCondition: tab.searchCondition || "contains",
+      columnFilters: af.columnFilters, checkboxFilters: af.checkboxFilters,
+      bookmarkedOnly: tab.showBookmarkedOnly,
+      tagFilter: (tab.disabledFilters || new Set()).has("__tags__") ? null : (tab.tagFilter || null),
+      rowIdFilter: tab.rowIdFilter || null,
+      dateRangeFilters: tab.dateRangeFilters || {}, advancedFilters: tab.advancedFilters || [],
+    });
+    if (isIpcError(result)) {
+      if (!isIpcCancelled(result)) toast.warning("Couldn't size the columns", { detail: ipcErrorMessage(result) });
+      return;
+    }
+    const gridFont = "'SF Mono','Fira Code',Menlo,monospace";
+    const widths = computeCellWidths({
+      headers: tab.headers || [],
+      longest: result || {},
+      mode,
+      fmt: fmtCell,
+      measureCell: textMeasurer(`${fontSize - 0.5}px ${gridFont}`),
+      measureHeader: textMeasurer(`600 11px ${gridFont}`),
+      tsColumns: tab.tsColumns || new Set(),
+      sortCol: tab.sortCol || null,
+      pinnedColumns: tab.pinnedColumns || [],
+    });
+    setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, columnWidths: { ...t.columnWidths, ...widths } } : t)));
+  }, [ct, fmtCell, fontSize, activeFilters]);
   const copyCell = useCallback((val, colName) => {
     const text = colName != null && colName !== "" ? fmtCell(colName, val) : (val || "");
     navigator.clipboard?.writeText(text);
@@ -3292,6 +3333,12 @@ export default function App() {
       const isTextControl = target instanceof HTMLElement
         && (target.matches("input, textarea, select") || target.isContentEditable);
       if (mod && e.key === "w") { e.preventDefault(); const cur = ctRef.current; if (cur) closeTabRef.current?.(cur.id); return; }
+      // ⌥⌘F / ⌥⌘N — Full-width / Narrow-width cells. e.code: Option changes e.key (ƒ, dead ˜).
+      if (mod && e.altKey && !e.shiftKey && (e.code === "KeyF" || e.code === "KeyN")) {
+        e.preventDefault();
+        fitCellWidthsRef.current?.(e.code === "KeyF" ? "full" : "narrow");
+        return;
+      }
       if (mod && e.key === "s") { e.preventDefault(); handleSaveSessionRef.current?.(); }
       if (mod && e.shiftKey && e.key === "O") { e.preventDefault(); handleLoadSessionRef.current?.(); }
       if (mod && e.key === "o") { e.preventDefault(); runOpenFileDialog(); }
@@ -3793,7 +3840,7 @@ export default function App() {
           th={th} ct={ct} tabs={tabs} tle={tle}
           handleExport={handleExport} handleSaveSession={handleSaveSession} handleLoadSession={handleLoadSession}
           handleCheckForUpdates={handleCheckForUpdates} handleExtractResident={handleExtractResident}
-          closeTab={closeTab} resetColumnWidths={resetColumnWidths} up={up} activeFilters={activeFilters}
+          closeTab={closeTab} resetColumnWidths={resetColumnWidths} fitCellWidths={fitCellWidths} up={up} activeFilters={activeFilters}
           allFilteredRowsSelected={allFilteredRowsSelected} selectedRowData={selectedRowData} isGrouped={isGrouped}
           handleSelectAllRows={handleSelectAllRows}
           proximityFilter={proximityFilter} setProximityFilter={setProximityFilter}

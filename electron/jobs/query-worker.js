@@ -29,6 +29,8 @@ function runQuery(db, method, payload = {}) {
       return db.getColumnValues(tabId, payload.colName, options);
     case "getEmptyColumns":
       return db.getEmptyColumns(tabId, options);
+    case "getColumnLongestValues":
+      return db.getColumnLongestValues(tabId, options);
     case "getGroupValues":
       return db.getGroupValues(tabId, payload.groupCol, options);
     case "searchCount":

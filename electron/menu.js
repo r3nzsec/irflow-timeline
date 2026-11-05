@@ -254,6 +254,17 @@ function buildMenu(deps) {
           click: () => mainWindow?.webContents.send("trigger-color-rules"),
         },
         { type: "separator" },
+        {
+          label: "Full-width cells",
+          accelerator: "CmdOrCtrl+Alt+F",
+          click: () => mainWindow?.webContents.send("trigger-cell-widths", "full"),
+        },
+        {
+          label: "Narrow-width cells",
+          accelerator: "CmdOrCtrl+Alt+N",
+          click: () => mainWindow?.webContents.send("trigger-cell-widths", "narrow"),
+        },
+        { type: "separator" },
         { role: "togglefullscreen" },
         { type: "separator" },
         { role: "zoomIn" }, { role: "zoomOut" }, { role: "resetZoom" },
