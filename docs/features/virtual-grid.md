@@ -170,13 +170,19 @@ Drag the right edge of any column header to resize it. Minimum width is 60px. Co
 
 ### Pinning
 
-`Cmd+Click` a column header and select **Pin Left** to pin it to the left side of the grid. Pinned columns use sticky positioning so they stay visible as you scroll horizontally — useful for keeping timestamp or event name columns always in view.
+Right-click (or `Cmd+Click`) a column header and select **Pin Column** to pin it to the left side of the grid. Pinned columns use sticky positioning so they stay visible as you scroll horizontally — useful for keeping timestamp or event name columns always in view.
+
+### Freezing the first column
+
+**View → Freeze First Column** pins the first column, the one just right of Tags, so it stays in view while you scroll sideways. **View → Unfreeze First Column** releases it. Freezing is pinning, so the column's 📌 button and the header menu's **Unpin Column** release it too.
 
 ### Hiding / Showing
 
+Right-click (or `Cmd+Click`) any column header, Tags included, and select **Hide Column** to hide it.
+
 Open the Column Manager from the toolbar to:
 
-- Hide columns you don't need
+- Hide columns you don't need, including the Tags column
 - Show previously hidden columns
 - Show All / Hide All with one click
 - Reorder columns via drag-and-drop
@@ -281,14 +287,14 @@ Query results are cached per unique filter configuration (up to 4 cache entries 
 
 The context menu uses a macOS-style glass/blur aesthetic with inline SVG icons for each action.
 
-**Open via:** `Cmd+Click` a column header.
+**Open via:** right-click or `Cmd+Click` a column header.
 
 ### Column Header Menu
 
 | Icon | Action | Description |
 |------|--------|-------------|
 | Pin | **Pin / Unpin** | Pin column to the left side |
-| Eye-slash | **Hide Column** | Remove column from view |
+| Eye-slash | **Hide Column** | Remove column from view (the Tags column too) |
 | Arrows | **Best Fit** | Auto-size column to content |
 | Undo | **Reset Widths** | Reset all column widths to default |
 | Up arrow | **Sort Ascending** | Sort A→Z / oldest→newest |

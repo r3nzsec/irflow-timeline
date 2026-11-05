@@ -122,8 +122,9 @@ Display preferences (datetime format, timezone, theme, font size, temp storage f
 - Tags ▸ (hover submenu — supports multi-row tagging)
 - VirusTotal lookup (for IPs, hashes, domains)
 
-**Right-click any column header** for column actions:
+**Right-click any column header** (or `Cmd+Click` it) for column actions:
 
+- Hide column (the Tags column too)
 - Pin / Unpin column
 - Group by column
 - Sort ascending / descending

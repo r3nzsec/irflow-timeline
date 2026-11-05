@@ -168,7 +168,7 @@ export function ColModal({ th, ct, up, ms, colMgrSearch, setColMgrSearch, colMgr
       <h3 style={ms.mh}>Column Manager</h3>
       <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
         <button onClick={() => up("hiddenColumns", new Set())} style={ms.bsm}>Show All</button>
-        <button onClick={() => up("hiddenColumns", new Set(ct.headers))} style={ms.bsm}>Hide All</button>
+        <button onClick={() => up("hiddenColumns", new Set([...ct.headers, "__tags__"]))} style={ms.bsm}>Hide All</button>
         <button onClick={() => up("columnOrder", [...ct.headers])} style={ms.bsm}>Reset Order</button>
       </div>
       <input
@@ -183,6 +183,21 @@ export function ColModal({ th, ct, up, ms, colMgrSearch, setColMgrSearch, colMgr
         Drag ⠿ to reorder · checkbox to show/hide
       </div>
       <div style={{ maxHeight: "55vh", overflow: "auto" }}>
+        {/* Tags is a built-in column: it always comes first, so it shows/hides but does not move. */}
+        {(!colMgrSearch || "tags".includes(colMgrSearch.toLowerCase())) && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 4px", borderBottom: `1px solid ${th.bgAlt}`, borderTop: "2px solid transparent", color: th.text, fontSize: 12, userSelect: "none" }}>
+            <span aria-hidden="true" style={{ color: "transparent", fontSize: 15, lineHeight: 1, padding: "0 3px", flexShrink: 0 }}>⠿</span>
+            <input
+              type="checkbox"
+              aria-label="Show the Tags column"
+              checked={!ct.hiddenColumns.has("__tags__")}
+              onChange={() => { const s = new Set(ct.hiddenColumns); s.has("__tags__") ? s.delete("__tags__") : s.add("__tags__"); up("hiddenColumns", s); }}
+              style={{ accentColor: th.borderAccent, cursor: "pointer", flexShrink: 0 }}
+            />
+            <span style={{ flex: 1 }}>Tags</span>
+            <span title="Built-in column; always first" style={{ fontSize: 10, color: th.textMuted, flexShrink: 0 }}>built-in</span>
+          </div>
+        )}
         {orderedCols.map((h, origIdx) => [h, origIdx]).filter(([h]) => !colMgrSearch || h.toLowerCase().includes(colMgrSearch.toLowerCase())).map(([h, origIdx]) => {
           const idx = origIdx;
           const isDragOver = colMgrDragOver === idx;

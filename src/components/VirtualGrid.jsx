@@ -43,7 +43,7 @@ export default function VirtualGrid({
   headerDragOver, setHeaderDragOver,
   // Resize state
   resizingCol, setResizingCol, resizeX, setResizeX, resizeW, setResizeW,
-  tagColWidth, setTagColWidth,
+  tagColWidth, setTagColWidth, tagsHidden = false,
   // Search
   // Histogram
   histogramVisible, histogramCol, setHistogramCol,
@@ -91,7 +91,8 @@ export default function VirtualGrid({
   // Structural (non-data) sticky columns rendered in each data row, for an accurate
   // aria-colcount: bookmark + checkbox + tags, plus VT and Evidence when present.
   const _hasEvidenceCol = !!(ct?.evidencePillsByRowid && Object.keys(ct.evidencePillsByRowid).length > 0);
-  const _structuralColCount = 3 + (ct?.vtEnrichment ? 1 : 0) + (_hasEvidenceCol ? 1 : 0);
+  const _tagsColCount = tagsHidden ? 0 : 1;
+  const _structuralColCount = 2 + _tagsColCount + (ct?.vtEnrichment ? 1 : 0) + (_hasEvidenceCol ? 1 : 0);
   // Horizontally virtualized slice of the scrollable columns — header, filter row and every
   // data row must render the same slice or they desync. `firstScrollColIndex` is the 1-based
   // aria-colindex of the first rendered scrollable column: without it a screen reader reads
@@ -107,8 +108,16 @@ export default function VirtualGrid({
   // carries aria-colspan={2} and the rest of the header numbering lines up with the data
   // rows, where those are two separate cells.
   const firstPinnedColIndex = _structuralColCount + 1;
-  const headerColIdxVt = 4;
-  const headerColIdxEvidence = 4 + (ct?.vtEnrichment ? 1 : 0);
+  const headerColIdxVt = 3 + _tagsColCount;
+  const headerColIdxEvidence = 3 + _tagsColCount + (ct?.vtEnrichment ? 1 : 0);
+  // Right-click on a header opens the same column menu as ⌘-click. Plain right-click is off
+  // elsewhere in the grid (see App.jsx); the menu closes only on a left mouse-down, so the
+  // right button's release cannot close it or pick an item.
+  const openHeaderMenu = useCallback((e, colName) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY, colName });
+  }, [setContextMenu]);
   const activateOnKey = useCallback((event, action) => {
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
@@ -121,14 +130,14 @@ export default function VirtualGrid({
   // during a scroll frame, which is what lets the memo hold. `ct` is the exception and is
   // documented in GridRow.jsx.
   const rowCtx = useMemo(() => ({
-    th, ct, isGrouped, tagColWidth, leftBase, vtW, fontSize, selectedColumn,
+    th, ct, isGrouped, tagColWidth, tagsHidden, leftBase, vtW, fontSize, selectedColumn,
     pinnedH, scrollH, pinnedOffsets, compiledColors, pageOffset, tw,
     windowedScrollH, firstScrollColIndex, colWindow,
     gw, fmtCell, renderCell, getRowBg,
     handleRowClick, handleBookmark, handleCheckboxToggle,
     setCellPopup, setCellContextMenu, up, activateOnKey,
   }), [
-    th, ct, isGrouped, tagColWidth, leftBase, vtW, fontSize, selectedColumn,
+    th, ct, isGrouped, tagColWidth, tagsHidden, leftBase, vtW, fontSize, selectedColumn,
     pinnedH, scrollH, pinnedOffsets, compiledColors, pageOffset, tw,
     windowedScrollH, firstScrollColIndex, colWindow,
     gw, fmtCell, renderCell, getRowBg,
@@ -446,30 +455,32 @@ export default function VirtualGrid({
                     <CheckboxIcon checked={selectionCount > 0 && allRowsSelected && selectedRows.size === 0} indeterminate={selectionCount > 0 && !(allRowsSelected && selectedRows.size === 0)} />
                   </button>}
                 </div>
-                {/* Tags column header — sticky, resizable, standard style */}
-                <div
-                  data-col-header="__tags__"
-                  role="columnheader" aria-colindex={3}
-                  aria-sort={ct.sortCol === "__tags__" ? (ct.sortDir === "asc" ? "ascending" : "descending") : "none"}
-                  tabIndex={0}
-                  onKeyDown={(e) => activateOnKey(e, () => handleSort("__tags__"))}
-                  onClick={(e) => { if (e.metaKey || e.ctrlKey) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, colName: "__tags__" }); return; } handleSort("__tags__"); }}
-                  onDoubleClick={() => { clearTimeout(sortTimerRef.current); }}
-                  onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                  style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: tagColWidth, minWidth: tagColWidth, boxSizing: "border-box", padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: `1px solid ${th.border}`, position: "sticky", left: isGrouped ? (16 + 26 + CHECKBOX_COL_WIDTH) : (BKMK_COL_WIDTH + CHECKBOX_COL_WIDTH), zIndex: 12, background: stickyHeaderBg, overflow: "hidden" }}>
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>Tags</span>
-                  {ct.sortCol === "__tags__" && <span style={{ fontSize: 11, color: th.accent, marginLeft: 3 }}>{ct.sortDir === "asc" ? "▲" : "▼"}</span>}
-                  <div onMouseDown={(e) => {
-                    e.preventDefault(); e.stopPropagation();
-                    const startX = e.clientX, startW = tagColWidth;
-                    const onMove = (ev) => setTagColWidth(Math.max(TAG_COL_WIDTH_MIN, startW + ev.clientX - startX));
-                    const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
-                    document.addEventListener("mousemove", onMove);
-                    document.addEventListener("mouseup", onUp);
-                  }}
-                    onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                    style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 5, cursor: "col-resize" }} />
-                </div>
+                {/* Tags column header — sticky, resizable, standard style; absent while hidden */}
+                {!tagsHidden && (
+                  <div
+                    data-col-header="__tags__"
+                    role="columnheader" aria-colindex={3}
+                    aria-sort={ct.sortCol === "__tags__" ? (ct.sortDir === "asc" ? "ascending" : "descending") : "none"}
+                    tabIndex={0}
+                    onKeyDown={(e) => activateOnKey(e, () => handleSort("__tags__"))}
+                    onClick={(e) => { if (e.metaKey || e.ctrlKey) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, colName: "__tags__" }); return; } handleSort("__tags__"); }}
+                    onDoubleClick={() => { clearTimeout(sortTimerRef.current); }}
+                    onContextMenu={(e) => openHeaderMenu(e, "__tags__")}
+                    style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: tagColWidth, minWidth: tagColWidth, boxSizing: "border-box", padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: `1px solid ${th.border}`, position: "sticky", left: isGrouped ? (16 + 26 + CHECKBOX_COL_WIDTH) : (BKMK_COL_WIDTH + CHECKBOX_COL_WIDTH), zIndex: 12, background: stickyHeaderBg, overflow: "hidden" }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>Tags</span>
+                    {ct.sortCol === "__tags__" && <span style={{ fontSize: 11, color: th.accent, marginLeft: 3 }}>{ct.sortDir === "asc" ? "▲" : "▼"}</span>}
+                    <div onMouseDown={(e) => {
+                      e.preventDefault(); e.stopPropagation();
+                      const startX = e.clientX, startW = tagColWidth;
+                      const onMove = (ev) => setTagColWidth(Math.max(TAG_COL_WIDTH_MIN, startW + ev.clientX - startX));
+                      const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+                      document.addEventListener("mousemove", onMove);
+                      document.addEventListener("mouseup", onUp);
+                    }}
+                      onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                      style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 5, cursor: "col-resize" }} />
+                  </div>
+                )}
                 {/* VT verdict column header — only when enrichment data exists */}
                 {ct.vtEnrichment && (() => {
                   
@@ -518,7 +529,7 @@ export default function VirtualGrid({
                     onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setHeaderDragOver(null); const src = e.dataTransfer.getData("text/column-name"); if (src && src !== h) reorderColumn(src, h); }}
                     onClick={(e) => { if (e.metaKey || e.ctrlKey) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, colName: h }); return; } if (e.altKey) { e.preventDefault(); e.stopPropagation(); setSelectedColumn?.(selectedColumn === h ? null : h); return; } handleSort(h); }}
                     onDoubleClick={() => handleHeaderDblClick(h)}
-                    onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                    onContextMenu={(e) => openHeaderMenu(e, h)}
                     style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: h === pinnedH[pinnedH.length - 1] ? `2px solid ${th.borderAccent}` : `1px solid ${th.border}`, borderLeft: selectedColumn === h ? `2px solid ${th.accent}` : headerDragOver === h ? `2px solid ${th.accent}` : "2px solid transparent", position: "sticky", left: pinnedOffsets.offsets[h], zIndex: 12, background: selectedColumn === h ? `linear-gradient(${th.accent}30, ${th.accent}30), ${stickyHeaderBg}` : headerDragOver === h ? `linear-gradient(${th.accent}1a, ${th.accent}1a), ${stickyHeaderBg}` : stickyHeaderBg, overflow: "hidden", transition: "background var(--m-fast) var(--ease-out), border-left-color var(--m-fast) var(--ease-out)" }}>
                     <button type="button" onClick={(e) => { e.stopPropagation(); unpinColumn(h); }} aria-label={`Unpin ${h}`}
                       style={{ width: 24, height: 24, padding: 0, background: "none", border: "none", fontSize: 11, marginRight: 3, cursor: "pointer", opacity: 0.8, flexShrink: 0 }} title="Unpin">📌</button>
@@ -541,7 +552,7 @@ export default function VirtualGrid({
                     onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setHeaderDragOver(null); const src = e.dataTransfer.getData("text/column-name"); if (src && src !== h) reorderColumn(src, h); }}
                     onClick={(e) => { if (e.metaKey || e.ctrlKey) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, colName: h }); return; } if (e.altKey) { e.preventDefault(); e.stopPropagation(); setSelectedColumn?.(selectedColumn === h ? null : h); return; } handleSort(h); }}
                     onDoubleClick={() => handleHeaderDblClick(h)}
-                    onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                    onContextMenu={(e) => openHeaderMenu(e, h)}
                     style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: `1px solid ${th.border}`, borderLeft: selectedColumn === h ? `2px solid ${th.accent}` : headerDragOver === h ? `2px solid ${th.accent}` : "2px solid transparent", position: "relative", overflow: "hidden", background: selectedColumn === h ? `${th.accent}30` : headerDragOver === h ? `${th.accent}1a` : undefined, transition: "background var(--m-fast) var(--ease-out), border-left-color var(--m-fast) var(--ease-out)" }}>
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{h}</span>
                     {ct.tsColumns.has(h) && <span aria-label="Timestamp column" style={{ fontSize: 11, marginRight: 2, opacity: 0.8 }}>⏱</span>}
@@ -560,8 +571,8 @@ export default function VirtualGrid({
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: isGrouped ? (16 + 26 + CHECKBOX_COL_WIDTH) : (BKMK_COL_WIDTH + CHECKBOX_COL_WIDTH), minWidth: isGrouped ? (16 + 26 + CHECKBOX_COL_WIDTH) : (BKMK_COL_WIDTH + CHECKBOX_COL_WIDTH), height: FILTER_HEIGHT, position: "sticky", left: 0, zIndex: 11, background: stickyFilterBg }}>
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={th.textMuted} strokeWidth="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" /></svg>
                 </div>
-                {/* Tags filter cell — standard layout with text input + dropdown */}
-                {(() => {
+                {/* Tags filter cell — standard layout with text input + dropdown; absent while hidden */}
+                {!tagsHidden && (() => {
                   const hasCbf = ct.tagFilter && (Array.isArray(ct.tagFilter) ? ct.tagFilter.length > 0 : true);
                   const hasTextFilter = !!(ct.columnFilters["__tags__"]);
                   const hasFilter = !!(hasTextFilter || hasCbf);
