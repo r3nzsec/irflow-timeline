@@ -118,6 +118,8 @@ Open **View → Edit Filter** to build multi-condition filters with a visual edi
 
 Advanced filters are applied alongside column filters and checkbox filters, giving you layered filter composition.
 
+**Filters under the column headers** are listed at the top of the editor: the text filter (as **Contains**), the ▼ value list (**Is one of**) and the date range (**Between**). They always apply on top of the conditions, so the conditions are listed below them, joined by AND. The preview shows the whole filter. In the editor you can change a header text filter's value or remove any header filter with ✕. **Apply** (or Enter) updates the header row to match, and **Clear All** clears the conditions and the header filters it lists. A header filter switched off with its toggle isn't listed and is left as it is.
+
 ### Filter Presets
 
 Save frequently used filter configurations as named presets:
