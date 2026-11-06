@@ -77,6 +77,19 @@ test("lookupTool returns null for non-tool names", () => {
   assert.equal(lookupTool(null), null);
 });
 
+test("Nizlo aliases resolve exactly and keep the documented install path sanctioned", () => {
+  const rx = buildCategoryRegex("rmm");
+  for (const name of ["Nizlo.Agent.exe", "Nizlo.Agent.Updater.exe", "Nizlo.RemoteBridge.exe"]) {
+    assert.ok(rx.test(name), `RMM_TOOLS regex must match ${name}`);
+    assert.equal(lookupTool(name)?.canonical, "Nizlo");
+  }
+  assert.equal(lookupTool("nizlo.com"), null, "generic domain text must not resolve as a process alias");
+  assert.deepEqual(
+    Array.from(lookupTool("Nizlo.Agent.exe").sanctionedPaths),
+    ["\\nizlo\\agent\\"],
+  );
+});
+
 test("every RMM entry with sanctionedPaths is well-formed for PI_ALLOWLIST seeding", () => {
   const rmm = TOOL_ENTRIES.filter((e) => e.category === "rmm" && e.sanctionedPaths);
   assert.ok(rmm.length >= 5, "expect at least 5 sanctioned RMM tools");
