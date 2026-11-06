@@ -891,7 +891,8 @@ export default function App() {
   // Debounced deps (typing: search term, column filters) — use useMemo to avoid JSON.stringify per render
   const debouncedDeps = useMemo(() => {
     const cf = ct?.columnFilters;
-    return `${ct?.searchTerm}|${ct?.searchMode}|${cf ? Object.keys(cf).sort().map(k => `${k}=${cf[k]}`).join(",") : ""}`;
+    // A header filter may be { op, value } (an operator other than Contains), so stringify it.
+    return `${ct?.searchTerm}|${ct?.searchMode}|${cf ? Object.keys(cf).sort().map(k => `${k}=${typeof cf[k] === "object" ? JSON.stringify(cf[k]) : cf[k]}`).join(",") : ""}`;
   }, [ct?.searchTerm, ct?.searchMode, ct?.columnFilters]);
   const prevDebouncedDeps = useRef(debouncedDeps);
   const lastFilterTabId = useRef(null); // distinguishes in-tab filter changes from tab switches

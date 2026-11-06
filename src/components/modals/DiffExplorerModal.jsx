@@ -24,7 +24,8 @@ export default function DiffExplorerModal({ selectedRowData }) {
   const selected = tab.checkboxFilters?._Diff;
   const selectedSet = Array.isArray(selected) ? new Set(selected) : null;
   const changedFields = stats.changedFields || [];
-  const fieldFilter = tab.columnFilters?._ChangedFields || "";
+  const changedFilter = tab.columnFilters?._ChangedFields;
+  const fieldFilter = (changedFilter && typeof changedFilter === "object" ? changedFilter.value : changedFilter) || "";
 
   const glass = (extra = {}) => ({
     background: th.glassBg,

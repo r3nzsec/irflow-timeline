@@ -33,7 +33,8 @@ export function aiHistoryQueryIpcOptions() {
 export function tabHasActiveExportFilters(tab, activeFiltersFn) {
   if (!tab) return false;
   const af = typeof activeFiltersFn === "function" ? activeFiltersFn(tab) : { columnFilters: {}, checkboxFilters: {} };
-  const colActive = Object.values(af.columnFilters || {}).some((v) => String(v || "").trim());
+  // A header filter is a string, or { op, value } for an operator other than Contains.
+  const colActive = Object.values(af.columnFilters || {}).some((v) => (v && typeof v === "object") || String(v || "").trim());
   const cbActive = Object.values(af.checkboxFilters || {}).some((s) => checkboxFilterActive(s));
   return !!(
     (tab.searchTerm && String(tab.searchTerm).trim() && !tab.searchHighlight)

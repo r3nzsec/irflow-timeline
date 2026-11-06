@@ -1,5 +1,8 @@
 import { useCallback } from "react";
-import { headerFilterRows, applyHeaderFilterRows, headerFilterColumnLabel as columnLabel } from "../../utils/header-filters.js";
+import {
+  headerFilterRows, applyHeaderFilterRows, headerFilterColumnLabel as columnLabel,
+  FILTER_OPERATORS, NO_VALUE_OPERATORS, filterOperator,
+} from "../../utils/header-filters.js";
 import useUIStore from "../../store/useUIStore.js";
 import useTabStore from "../../store/useTabStore.js";
 import useCurrentTab from "../../hooks/useCurrentTab.js";
@@ -18,20 +21,8 @@ export default function EditFilterModal() {
 
   if (modal?.type !== "editFilter" || !ct) return null;
 
-  const OPERATORS = [
-    { value: "contains", label: "Contains" },
-    { value: "not_contains", label: "Does not contain" },
-    { value: "equals", label: "Equals" },
-    { value: "not_equals", label: "Does not equal" },
-    { value: "starts_with", label: "Starts with" },
-    { value: "ends_with", label: "Ends with" },
-    { value: "greater_than", label: "Greater than" },
-    { value: "less_than", label: "Less than" },
-    { value: "is_empty", label: "Is empty" },
-    { value: "is_not_empty", label: "Is not empty" },
-    { value: "regex", label: "Matches regex" },
-  ];
-  const noValueOps = new Set(["is_empty", "is_not_empty"]);
+  const OPERATORS = FILTER_OPERATORS;
+  const noValueOps = NO_VALUE_OPERATORS;
   const existing = ct.advancedFilters || [];
   const initConditions = existing.length > 0
     ? existing.map((f, i) => ({ ...f, id: i + 1 }))
@@ -45,9 +36,13 @@ export default function EditFilterModal() {
   const headerRows = modal.headerRows || shownHeaderRows;
   const setHeaderRows = (rows) => setModal((p) => p?.type === "editFilter" ? { ...p, headerRows: rows, shownHeaderRows: p.shownHeaderRows || shownHeaderRows } : p);
   const updateHeaderValue = (key, value) => setHeaderRows(headerRows.map((r) => (r.key === key ? { ...r, value } : r)));
+  const updateHeaderOp = (key, op) => setHeaderRows(headerRows.map((r) => (r.key === key ? { ...r, op } : r)));
   const removeHeaderRow = (key) => setHeaderRows(headerRows.filter((r) => r.key !== key));
   const headerRowText = (r) => {
-    if (r.kind === "text") return `${columnLabel(r.column)} CONTAINS "${r.value}"`;
+    if (r.kind === "text") {
+      const label = filterOperator(r.op).label.toUpperCase();
+      return NO_VALUE_OPERATORS.has(r.op) ? `${columnLabel(r.column)} ${label}` : `${columnLabel(r.column)} ${label} "${r.value}"`;
+    }
     if (r.kind === "values") {
       const shown = r.values.slice(0, 5).map((v) => (String(v ?? "").trim() === "" ? "(empty)" : `"${v}"`));
       return `${columnLabel(r.column)} IS ONE OF (${shown.join(", ")}${r.values.length > 5 ? `, … ${r.values.length - 5} more` : ""})`;
@@ -73,7 +68,7 @@ export default function EditFilterModal() {
   };
 
   const buildPreview = () => {
-    const header = headerRows.filter((r) => r.kind !== "text" || r.value).map(headerRowText);
+    const header = headerRows.filter((r) => r.kind !== "text" || r.value || NO_VALUE_OPERATORS.has(r.op)).map(headerRowText);
     const own = buildConditionsPreview();
     if (!own) return header.length ? header.join(" AND ") : "No conditions defined";
     if (!header.length) return own;
@@ -146,8 +141,16 @@ export default function EditFilterModal() {
         <div key={r.key} data-header-filter={r.column} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
           <span style={{ width: 56, fontSize: 11, color: th.textDim, textAlign: "center", flexShrink: 0 }}>{idx === 0 ? "Where" : "AND"}</span>
           <div title={columnLabel(r.column)} style={{ ...staticStyle, width: 170, flexShrink: 0 }}>{columnLabel(r.column)}</div>
-          <div style={{ ...staticStyle, width: 140, flexShrink: 0 }}>{r.kind === "text" ? "Contains" : r.kind === "values" ? "Is one of" : "Between"}</div>
           {r.kind === "text" ? (
+            <select value={r.op} aria-label={`Header filter operator ${columnLabel(r.column)}`} onChange={(e) => updateHeaderOp(r.key, e.target.value)} style={{ ...selectStyle, width: 140, flexShrink: 0 }}>
+              {OPERATORS.map((op) => <option key={op.value} value={op.value}>{op.label}</option>)}
+            </select>
+          ) : (
+            <div style={{ ...staticStyle, width: 140, flexShrink: 0 }}>{r.kind === "values" ? "Is one of" : "Between"}</div>
+          )}
+          {r.kind === "text" && NO_VALUE_OPERATORS.has(r.op) ? (
+            <div style={{ flex: 1, minWidth: 80 }} />
+          ) : r.kind === "text" ? (
             <Input
               type="text"
               value={r.value}
