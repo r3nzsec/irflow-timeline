@@ -118,6 +118,7 @@ function runProcessServiceScan(state) {
         { name: "PDQ Connect", type: "rmm", exe: ["pdqconnectagent.exe"], svc: ["pdqconnect"], kw: [] },
         { name: "MeshAgent/MeshCentral", type: "rmm", exe: ["meshagent.exe"], svc: ["meshagent","mesh agent"], kw: [] },
         { name: "Action1", type: "rmm", exe: ["action1_connector.exe","action1_agent.exe"], svc: ["action1_agent","action1_connector"], kw: [] },
+        { name: "Nizlo", type: "rmm", exe: ["nizlo.agent.exe","nizlo.agent.updater.exe","nizlo.remotebridge.exe"], svc: ["nizlo rmm agent"], kw: [] },
         { name: "Ammyy Admin", type: "rmm", exe: ["aa_v3.exe","ammyy_admin.exe"], svc: [], kw: [] },
         { name: "Remote Utilities", type: "rmm", exe: ["rutview.exe","rutserv.exe"], svc: ["rutserv"], kw: [] },
         { name: "SimpleHelp", type: "rmm", exe: ["simplehelp.exe","simpleservice.exe"], svc: ["simplehelp"], kw: [] },

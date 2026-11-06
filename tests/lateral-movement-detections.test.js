@@ -125,6 +125,22 @@ function row(eid, opts = {}) {
 
 const OPTS = { excludeServiceAccounts: false, excludeLocalLogons: false };
 
+test("published Nizlo agent executable is identified as an RMM process", () => {
+  const rows = [
+    row("1", {
+      image: "C:\\Program Files\\Nizlo\\Agent\\Nizlo.Agent.exe",
+      parentImage: "C:\\Windows\\System32\\services.exe",
+      commandLine: '"C:\\Program Files\\Nizlo\\Agent\\Nizlo.Agent.exe"',
+    }),
+  ];
+  const { meta, ctx } = makeStub(HEADERS, rows);
+  const result = getLateralMovement(meta, OPTS, ctx);
+  const finding = (result.findings || []).find((item) =>
+    item.category === "RMM Executed" && /Nizlo/.test(item.title || ""));
+  assert.ok(finding, `expected Nizlo RMM Executed finding, got ${JSON.stringify((result.findings || []).map((item) => ({ category: item.category, title: item.title })))}`);
+  assert.equal(finding.mitre, "T1219");
+});
+
 // ── A. Named-pipe attribution ──────────────────────────────────────────────
 
 test("A: 5145 IPC$ access to \\pipe\\svcctl is attributed as remote service control (T1569.002)", () => {

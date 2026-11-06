@@ -87,6 +87,13 @@ export const TOOL_ENTRIES = [
     sanctionedPaths: ["\\atera\\"],
   },
   {
+    canonical: "Nizlo",
+    aliases: ["nizlo.agent", "nizlo.agent.updater", "nizlo.remotebridge"],
+    category: "rmm",
+    techniques: ["T1219"],
+    sanctionedPaths: ["\\nizlo\\agent\\"],
+  },
+  {
     canonical: "BeyondTrust",
     aliases: ["bomgar-scc", "bomgar"],
     category: "rmm",
