@@ -48,7 +48,7 @@ Sessions store the original file paths. If you move the source files after savin
 :::
 
 ::: warning Large File Re-Import
-Loading a session re-imports each file from scratch. For large datasets (10GB+), session restoration may take several minutes as all files are streamed back into SQLite. Plan accordingly when restoring sessions with very large timelines.
+Loading a session re-imports each file from scratch. For large datasets (10GB+), session restoration may take several minutes as all files are streamed back into DuckDB. Plan accordingly when restoring sessions with very large timelines.
 :::
 
 ## Session File Format

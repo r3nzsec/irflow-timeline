@@ -656,7 +656,7 @@ function getProcessTree(meta, options = {}, ctx) {
             }
             appendRowLevelAliases(termSelectParts);
             const orderCol = columns.ts ? meta.colMap[columns.ts] : null;
-            const termOrderClause = orderCol ? `ORDER BY sort_datetime(${orderCol}) ASC` : "ORDER BY data.rowid ASC";
+            const termOrderClause = orderCol ? `ORDER BY sort_datetime(${orderCol}) ASC, rowid` : "ORDER BY data.rowid ASC";
             const termSql = `SELECT ${termSelectParts.join(", ")} FROM data WHERE ${safeEid} IN (${terminateEids.map(() => "?").join(",")}) ${termOrderClause} LIMIT ${maxRows}`;
             const termRows = db.prepare(termSql).all(...terminateEids);
 
@@ -898,7 +898,7 @@ function getProcessTree(meta, options = {}, ctx) {
               }
             }
             const accOrderCol = columns.ts ? meta.colMap[columns.ts] : null;
-            const accOrderClause = accOrderCol ? `ORDER BY sort_datetime(${accOrderCol}) ASC` : "ORDER BY data.rowid ASC";
+            const accOrderClause = accOrderCol ? `ORDER BY sort_datetime(${accOrderCol}) ASC, rowid` : "ORDER BY data.rowid ASC";
             const accSql = `SELECT ${accSelectParts.join(", ")} FROM data WHERE ${safeEid} = ? ${accOrderClause} LIMIT ${maxRows}`;
             const accRows = db.prepare(accSql).all("10");
 
@@ -1135,7 +1135,7 @@ function getProcessTree(meta, options = {}, ctx) {
             }
             appendRowLevelAliases(privSelectParts);
             const privOrderCol = columns.ts ? meta.colMap[columns.ts] : null;
-            const privOrderClause = privOrderCol ? `ORDER BY sort_datetime(${privOrderCol}) ASC` : "ORDER BY data.rowid ASC";
+            const privOrderClause = privOrderCol ? `ORDER BY sort_datetime(${privOrderCol}) ASC, rowid` : "ORDER BY data.rowid ASC";
             const privSql = `SELECT ${privSelectParts.join(", ")} FROM data WHERE ${safeEid} IN (${privEids.map(() => "?").join(",")})${provFilter} ${privOrderClause} LIMIT ${maxRows}`;
             const privRows = db.prepare(privSql).all(...privEids, ...provParams);
 
@@ -1307,7 +1307,7 @@ function getProcessTree(meta, options = {}, ctx) {
             return parts.join(", ");
           };
           const orderCol = columns.ts ? meta.colMap[columns.ts] : null;
-          const orderClause = orderCol ? `ORDER BY sort_datetime(${orderCol}) ASC` : "ORDER BY data.rowid ASC";
+          const orderClause = orderCol ? `ORDER BY sort_datetime(${orderCol}) ASC, rowid` : "ORDER BY data.rowid ASC";
           const sel = enrichSelect();
 
           // Probe which EIDs exist before querying
@@ -1941,7 +1941,7 @@ function previewProcessTree(meta, options = {}, ctx) {
       if (!cn || !meta.colMap[cn]) continue;
       const safe = meta.colMap[cn];
       try {
-        const tvRows = db.prepare(`SELECT ${safe} as v, COUNT(*) as cnt FROM (SELECT ${safe} FROM data ${wc} LIMIT 2000) WHERE ${safe} IS NOT NULL AND TRIM(${safe}) != '' GROUP BY ${safe} ORDER BY cnt DESC LIMIT 5`).all(...params);
+        const tvRows = db.prepare(`SELECT ${safe} as v, COUNT(*) as cnt FROM (SELECT ${safe} FROM data ${wc} LIMIT 2000) WHERE ${safe} IS NOT NULL AND TRIM(${safe}) != '' GROUP BY ${safe} ORDER BY cnt DESC, v LIMIT 5`).all(...params);
         topValues[key] = tvRows.map(r => ({ value: String(r.v).substring(0, 120), count: r.cnt }));
       } catch (_) { /* ignore column errors */ }
     }

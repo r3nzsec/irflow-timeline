@@ -2,6 +2,7 @@ const path = require("path");
 const { Worker } = require("worker_threads");
 const { workerResourceLimits } = require("../utils/worker-heap");
 const { deriveWorkerBudget } = require("../utils/worker-budget");
+const { createWorkerPort, WORKER_DATA_KEY: DUCKDB_PORT_KEY } = require("../db/duckdb/client");
 
 class JobManager {
   constructor({ safeSend, dbg, maxWorkers, maxHeavyWorkers } = {}) {
@@ -190,8 +191,12 @@ class JobManager {
     job.updatedAt = Date.now();
     let thread;
     try {
+      // Every worker reaches the process's single DuckDB host through its own port
+      // (electron/db/duckdb/client.js), so it never opens a tab's file a second time.
+      const duck = createWorkerPort();
       thread = new Worker(job.workerPath, {
-        workerData: job.workerData,
+        workerData: { ...job.workerData, [DUCKDB_PORT_KEY]: duck.data },
+        transferList: duck.transfer,
         resourceLimits: workerResourceLimits(),
       });
     } catch (err) {

@@ -42,7 +42,7 @@ Gap analysis identifies periods where no events were recorded, which may indicat
 1. Events are bucketed by minute using `extract_datetime_minute()` in SQL
 2. Minute-level buckets are grouped into **sessions** — continuous sequences of activity without exceeding the gap threshold
 3. Silence periods between sessions that exceed the threshold are reported as **gaps**
-4. No in-memory sorting required — SQLite handles the ordering
+4. No in-memory sorting required — DuckDB handles the ordering
 
 ### Results
 

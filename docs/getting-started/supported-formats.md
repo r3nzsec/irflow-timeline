@@ -298,4 +298,4 @@ Skysight segments / summaries →  Computer History parser (own tab, 54-column s
 
 Files without a recognized extension are auto-detected by name patterns and magic bytes, so raw `$MFT` and `$J` files extracted by forensic tools work without renaming.
 
-All formats feed into the same SQLite-backed data engine, so once imported, all features (search, filter, histogram, process tree, etc.) work identically regardless of the source format.
+All formats feed into the same DuckDB-backed data engine, so once imported, all features (search, filter, histogram, process tree, etc.) work identically regardless of the source format.

@@ -2,7 +2,7 @@
  * main.js — Electron main process for IRFlow Timeline
  *
  * Coordinates between the renderer (React UI) and the backend
- * (SQLite DB + streaming parser). All data operations happen here
+ * (DuckDB + streaming parser). All data operations happen here
  * in the main process, with results sent to renderer via IPC.
  */
 
@@ -13,6 +13,7 @@ const fsp = require("fs/promises");
 const os = require("os");
 const crypto = require("crypto");
 const TimelineDB = require("./db");
+const { setTempDirectory: setDuckdbTempDirectory } = require("./db/duckdb/client");
 const { getXLSXSheets, extractResidentData } = require("./parsers");
 const { createUpdateController } = require("./updater");
 const { JobManager } = require("./jobs/job-manager");
@@ -168,15 +169,15 @@ function _newTempDbPath(tabId) {
   return path.join(resolveTempDir(), `tle_${tabId}_${crypto.randomBytes(4).toString("hex")}.db`);
 }
 
-// Point SQLite's temp-file spill (temp_store=FILE merge sorts during index builds) at the
-// same volume as the temp DBs. Set before workers spawn — they inherit process.env at spawn.
+// Point DuckDB's spill files (sorts and aggregations larger than its memory limit) at the
+// same volume as the temp DBs.
 function _applyTempStorageEnv() {
-  try { process.env.SQLITE_TMPDIR = resolveTempDir(); } catch {}
+  try { setDuckdbTempDirectory(resolveTempDir()); } catch {}
 }
 
 function _cleanupDbFiles(dbPath) {
   if (!dbPath) return;
-  for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+  for (const p of [dbPath, `${dbPath}.wal`, `${dbPath}-wal`, `${dbPath}-shm`]) {
     try { fs.unlinkSync(p); } catch {}
   }
 }
@@ -343,27 +344,10 @@ async function _buildIndexesAndFtsInWorker(tabId) {
     }
   }
 
-  // Trigram FTS5 on a multi-GB file inflates the temp DB ~4-5x on disk (a 30GB CSV →
-  // ~125-140GB FTS index) and is a multi-hour build that can fill os.tmpdir. Skip it for
-  // large files: substring search still works via the LIKE path in query-store
-  // _applySearch when ftsReady stays false — a perf, not a correctness, tradeoff. We leave
-  // meta.ftsReady false (do NOT markFtsBuilt) and just dismiss the FTS overlay.
-  const ftsDescriptor = db.getTabWorkerDescriptor(tabId);
-  if (ftsDescriptor?.isLargeFile) {
-    dbg("QUEUE", `Skipping trigram FTS build for large file ${tabId} — search uses LIKE fallback`);
-    safeSend("fts-progress", { tabId, indexed: 0, total: 0, done: true, skipped: true });
-    return;
-  }
-
-  let ftsResult;
-  try {
-    ftsResult = await _runIndexWorker(tabId, "fts");
-  } catch (err) {
-    db.markFtsBuilt(tabId, { error: err?.message || "FTS job failed" });
-    throw err;
-  }
-  db.markFtsBuilt(tabId, ftsResult?.descriptor || ftsResult);
-  if (ftsResult?.error) throw new Error(ftsResult.error);
+  // No full-text index with DuckDB: search scans the columns directly (query-store
+  // _applySearch), so there is nothing to build. Dismiss the search-index overlay. No
+  // `skipped` flag: the renderer reads it as "skipped because the file is large" and warns.
+  safeSend("fts-progress", { tabId, indexed: 0, total: 0, done: true });
 }
 
 async function runImportJob(filePath, tabId, sheetName, fileSize) {

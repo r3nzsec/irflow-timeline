@@ -15,7 +15,7 @@ IRFlow Timeline can merge multiple open tabs into a single unified timeline, cre
 
 ## What Happens During Merge
 
-- All rows from selected tabs are combined into a single SQLite database
+- All rows from selected tabs are combined into a single DuckDB database
 - A `_Source` column is added to identify the origin of each row
 - Columns are unified — matching column names are aligned, unique columns are preserved
 - The merged tab can be sorted by any timestamp column for chronological analysis

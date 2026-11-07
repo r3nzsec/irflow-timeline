@@ -292,7 +292,7 @@ function analyzeADS(meta, opts = {}) {
       if (zoneId && totalWithZoneId > 0) {
         const createdCol = created || `'' `;
         zoneIdFiles = db.prepare(
-          `SELECT ${entry ? entry + " as entryNumber" : "rowid as entryNumber"}, ${fn} as fileName, ${ext ? ext + " as extension" : "'' as extension"}, ${pp ? pp + " as parentPath" : "'' as parentPath"}, ${createdCol} as created, ${zoneId} as zoneIdContents FROM data WHERE ${zoneId} IS NOT NULL AND ${zoneId} != '' ORDER BY ${created ? "sort_datetime(" + created + ")" : "rowid"} DESC LIMIT 2000`
+          `SELECT ${entry ? entry + " as entryNumber" : "rowid as entryNumber"}, ${fn} as fileName, ${ext ? ext + " as extension" : "'' as extension"}, ${pp ? pp + " as parentPath" : "'' as parentPath"}, ${createdCol} as created, ${zoneId} as zoneIdContents FROM data WHERE ${zoneId} IS NOT NULL AND ${zoneId} != '' ORDER BY ${created ? "sort_datetime(" + created + ") DESC, rowid" : "rowid"} DESC LIMIT 2000`
         ).all();
         // Enrich with parsed zone data
         for (const f of zoneIdFiles) {
@@ -334,7 +334,7 @@ function analyzeADS(meta, opts = {}) {
       // Q5: Top directories with downloaded files
       let topDownloadDirs = [];
       if (zoneId && pp && totalWithZoneId > 0) {
-        topDownloadDirs = db.prepare(`SELECT ${pp} as path, COUNT(*) as count FROM data WHERE ${zoneId} IS NOT NULL AND ${zoneId} != '' GROUP BY ${pp} ORDER BY count DESC LIMIT 20`).all();
+        topDownloadDirs = db.prepare(`SELECT ${pp} as path, COUNT(*) as count FROM data WHERE ${zoneId} IS NOT NULL AND ${zoneId} != '' GROUP BY ${pp} ORDER BY count DESC, path LIMIT 20`).all();
       }
 
       // Q6: Non-Zone stream carriers — files that carry a named alternate data stream that is NOT
@@ -350,7 +350,7 @@ function analyzeADS(meta, opts = {}) {
         const noZone = zoneId ? `AND (${zoneId} IS NULL OR ${zoneId} = '')` : "";
         totalStreamCarriers = db.prepare(`SELECT COUNT(*) as cnt FROM data WHERE ${hasAds} = 'True' ${noZone} ${notDir}`).get()?.cnt || 0;
         if (totalStreamCarriers > 0) {
-          const orderBy = created ? `sort_datetime(${created}) DESC` : "rowid DESC";
+          const orderBy = created ? `sort_datetime(${created}) DESC, rowid DESC` : "rowid DESC";
           streamCarriers = db.prepare(
             `SELECT ${entry ? entry + " as entryNumber" : "rowid as entryNumber"}, ${fn ? fn + " as fileName" : "'' as fileName"}, ${ext ? ext + " as extension" : "'' as extension"}, ${pp ? pp + " as parentPath" : "'' as parentPath"}, ${created ? created + " as created" : "'' as created"}, ${fs ? fs + " as fileSize" : "'' as fileSize"}, ${siFn ? siFn + " as siFn" : "'' as siFn"}, ${uSec ? uSec + " as uSecZeros" : "'' as uSecZeros"}, ${adsStreamsCol ? adsStreamsCol + " as adsStreams" : "'' as adsStreams"} FROM data WHERE ${hasAds} = 'True' ${noZone} ${notDir} ORDER BY ${orderBy} LIMIT 500`
           ).all();
@@ -610,7 +610,7 @@ function analyzeADS(meta, opts = {}) {
         if (dirs.length > 0 && created && minCreated && maxCreated) {
           const dirPlaceholders = dirs.map(() => "?").join(",");
           const lineageRows = db.prepare(
-            `SELECT ${entry ? entry + " as entryNumber" : "rowid as entryNumber"}, ${fn} as fileName, ${ext ? ext + " as extension" : "'' as extension"}, ${pp} as parentPath, ${created} as created, ${zoneId ? `${zoneId} as zoneIdContents` : "'' as zoneIdContents"} FROM data WHERE ${pp} IN (${dirPlaceholders}) AND ${created} IS NOT NULL AND ${created} != '' AND sort_datetime(${created}) >= sort_datetime(?) AND sort_datetime(${created}) <= sort_datetime(?) ${notDir} ORDER BY sort_datetime(${created}) ASC LIMIT 8000`
+            `SELECT ${entry ? entry + " as entryNumber" : "rowid as entryNumber"}, ${fn} as fileName, ${ext ? ext + " as extension" : "'' as extension"}, ${pp} as parentPath, ${created} as created, ${zoneId ? `${zoneId} as zoneIdContents` : "'' as zoneIdContents"} FROM data WHERE ${pp} IN (${dirPlaceholders}) AND ${created} IS NOT NULL AND ${created} != '' AND sort_datetime(${created}) >= sort_datetime(?) AND sort_datetime(${created}) <= sort_datetime(?) ${notDir} ORDER BY sort_datetime(${created}) ASC, rowid LIMIT 8000`
           ).all(...dirs, minCreated, maxCreated);
           const rowsByDir = new Map();
           for (const r of lineageRows) {

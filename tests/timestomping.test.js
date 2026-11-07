@@ -9,8 +9,8 @@
 //   T2 — coverage: forward/future-dating are fetched + flagged, and identical-$SI clusters
 //        (bulk-timestomp tool signature) are detected.
 //
-// Pure-helper + analyzeFile tests run everywhere; detectTimestomping integration tests need a
-// live better-sqlite3 binding and skip otherwise (CI rebuilds it).
+// Pure-helper + analyzeFile tests run everywhere; detectTimestomping integration tests need the
+// DuckDB binding and skip otherwise.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -133,20 +133,19 @@ test("suppressReason: access-only mismatch with no other signal is suppressed", 
   assert.ok(suppressReason(f), "suppressed");
 });
 
-// ───────────────────────── detectTimestomping integration (SQLite) ─────────────────────────
-// The candidate query uses the sort_datetime() UDF (forward/future-dating), so register the real
-// runtime functions on whichever backend instantiates — better-sqlite3 (Electron/CI) or Node's
-// built-in node:sqlite (plain `node --test`), which share the .function() signature.
-// Pick a backend that actually INSTANTIATES (better-sqlite3's require can succeed while the native
-// binding fails to load under plain Node — so we must construct one, not just require it).
+// ───────────────────────── detectTimestomping integration (DuckDB) ─────────────────────────
+// The candidate query uses the sort_datetime() UDF (forward/future-dating), which the DuckDB
+// engine registers itself. Pick the backend only if it actually INSTANTIATES (the require can
+// succeed while the native binding fails to load).
 function pickDb(loader) {
   try { const Impl = loader(); const d = new Impl(":memory:"); if (d.close) d.close(); return Impl; } catch { return null; }
 }
-const DBImpl = pickDb(() => require("better-sqlite3")) || pickDb(() => require("node:sqlite").DatabaseSync);
+const { createTestDataTable } = require("./helpers/duckdb-data-table");
+const DBImpl = pickDb(() => require("./helpers/duckdb-data-table").Database);
 const HAVE_SQLITE = !!DBImpl;
-const skip = HAVE_SQLITE ? false : "no SQLite backend (better-sqlite3 not built and node:sqlite unavailable)";
-// The candidate query uses sort_datetime() (forward/future-dating); register the real UDFs (works
-// on both better-sqlite3 and node:sqlite, which share the .function(name, options, fn) signature).
+const skip = HAVE_SQLITE ? false : "DuckDB binding not available for this runtime";
+// The candidate query uses sort_datetime() (forward/future-dating); the DuckDB engine registers
+// the real UDFs, and registerRuntimeFunctions() checks their names against it.
 let registerRuntimeFunctions = () => {};
 if (HAVE_SQLITE) { try { ({ registerRuntimeFunctions } = require("../electron/db/runtime-functions")); } catch { /* ignore */ } }
 
@@ -166,8 +165,7 @@ function mftFile(over = {}) {
 function makeMeta(files) {
   const db = new DBImpl(":memory:");
   registerRuntimeFunctions(db);
-  db.exec(`CREATE TABLE data (${COLS.map((_, i) => `c${i} TEXT`).join(", ")})`);
-  const ins = db.prepare(`INSERT INTO data VALUES (${COLS.map(() => "?").join(",")})`);
+  const ins = createTestDataTable(db, COLS.map((_, i) => `c${i}`).join(", "));
   db.exec("BEGIN");
   for (const f of files) ins.run(...COLS.map((c) => (f[c] != null ? String(f[c]) : "")));
   db.exec("COMMIT");
@@ -406,16 +404,14 @@ test("T1-G3: suppression keeps exec/zeroed/cluster/forward carve-outs; drops the
 const EVTX_COLS = ["EventID", "TimeCreated", "Channel", "TargetFilename", "PreviousCreationUtcTime", "CreationUtcTime", "Image", "PayloadData1"];
 function makeEvtxMeta(rows) {
   const db = new DBImpl(":memory:"); registerRuntimeFunctions(db);
-  db.exec(`CREATE TABLE data (${EVTX_COLS.map((_, i) => `c${i} TEXT`).join(", ")})`);
-  const ins = db.prepare(`INSERT INTO data VALUES (${EVTX_COLS.map(() => "?").join(",")})`);
+  const ins = createTestDataTable(db, EVTX_COLS.map((_, i) => `c${i}`).join(", "));
   for (const r of rows) ins.run(...EVTX_COLS.map((c) => (r[c] != null ? String(r[c]) : "")));
   return { db, headers: EVTX_COLS, colMap: Object.fromEntries(EVTX_COLS.map((c, i) => [c, `c${i}`])) };
 }
 const USN_COLS = ["Name", "UpdateTimestamp", "UpdateReasons", "EntryNumber"];
 function makeUsnMeta(rows) {
   const db = new DBImpl(":memory:"); registerRuntimeFunctions(db);
-  db.exec(`CREATE TABLE data (${USN_COLS.map((_, i) => `c${i} TEXT`).join(", ")})`);
-  const ins = db.prepare(`INSERT INTO data VALUES (${USN_COLS.map(() => "?").join(",")})`);
+  const ins = createTestDataTable(db, USN_COLS.map((_, i) => `c${i}`).join(", "));
   for (const r of rows) ins.run(...USN_COLS.map((c) => (r[c] != null ? String(r[c]) : "")));
   return { db, headers: USN_COLS, colMap: Object.fromEntries(USN_COLS.map((c, i) => [c, `c${i}`])) };
 }

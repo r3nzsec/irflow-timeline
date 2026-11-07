@@ -4,108 +4,34 @@ const assert = require("node:assert/strict");
 const tagStore = require("../electron/db/tag-store");
 const { normalizeTagName, normalizeRowIdList } = tagStore;
 
+const Database = require("../electron/db/duckdb");
+
 /**
- * In-memory stand-in for a tab's better-sqlite3 handle. `tagSet` holds
- * "rowid tag" keys so PRIMARY KEY(rowid, tag) semantics (INSERT OR IGNORE
- * reporting 0 changes on a duplicate) are reproduced faithfully.
+ * A real tab: an in-memory DuckDB database with the production data/tags/bookmarks schema
+ * and the bookmark/tag statements db.js prepares.
  */
 function makeTab({ rowCount = 100, tags = [], bookmarks = [] } = {}) {
-  const tagSet = new Set(tags.map(([id, t]) => `${id} ${t}`));
-  const bmSet = new Set(bookmarks);
-  const sqlLog = [];
-
-  const collapse = (sql) => sql.replace(/\s+/g, " ").trim();
-  const tagOf = (key) => key.slice(key.indexOf(" ") + 1);
-  const idOf = (key) => key.slice(0, key.indexOf(" "));
+  const db = new Database(":memory:");
+  db.exec("CREATE TABLE data (rowid BIGINT, c0 VARCHAR)");
+  db.exec("CREATE TABLE bookmarks (rowid BIGINT PRIMARY KEY)");
+  db.exec("CREATE TABLE tags (rowid BIGINT, tag VARCHAR, PRIMARY KEY(rowid, tag))");
+  db.appendRows("data", Array.from({ length: rowCount }, (_, i) => [`row ${i + 1}`]), { firstRowid: 1 });
+  for (const [id, t] of tags) db.prepare("INSERT INTO tags (rowid, tag) VALUES (?, ?)").run(id, t);
+  for (const id of bookmarks) db.prepare("INSERT INTO bookmarks (rowid) VALUES (?)").run(id);
 
   const meta = {
     rowCount,
-    tagSet,
-    bmSet,
-    sqlLog,
+    db,
     indexesBuilding: true, // deliberately "mid index build" — writes must still land
     ftsBuilding: true,
-    tagInsertStmt: {
-      run(id, tag) {
-        const key = `${id} ${tag}`;
-        if (tagSet.has(key)) return { changes: 0 };
-        tagSet.add(key);
-        return { changes: 1 };
-      },
-    },
-    tagDeleteStmt: {
-      run(id, tag) {
-        return { changes: tagSet.delete(`${id} ${tag}`) ? 1 : 0 };
-      },
-    },
-    bmInsertStmt: { run(id) { if (bmSet.has(id)) return { changes: 0 }; bmSet.add(id); return { changes: 1 }; } },
-    bmDeleteStmt: { run(id) { return { changes: bmSet.delete(id) ? 1 : 0 }; } },
-    bmCheckStmt: { get(id) { return bmSet.has(id) ? { rowid: id } : undefined; } },
-    bmCountStmt: { get() { return { cnt: bmSet.size }; } },
-    db: {
-      transaction(fn) { return (...args) => fn(...args); },
-      prepare(sql) {
-        const flat = collapse(sql);
-        sqlLog.push(flat);
-        return {
-          run(...params) {
-            if (/^INSERT OR IGNORE INTO tags/i.test(flat)) {
-              // INSERT ... SELECT rowid, ? FROM data [WHERE ...]
-              const tag = params[0];
-              const targets = flat.includes("WHERE")
-                ? [1, 2]
-                : Array.from({ length: rowCount }, (_, i) => i + 1);
-              let changes = 0;
-              for (const id of targets) {
-                const key = `${id} ${tag}`;
-                if (!tagSet.has(key)) { tagSet.add(key); changes++; }
-              }
-              return { changes };
-            }
-            if (/^DELETE FROM tags WHERE tag = \?/i.test(flat)) {
-              const tag = params[0];
-              let changes = 0;
-              for (const key of [...tagSet]) if (tagOf(key) === tag) { tagSet.delete(key); changes++; }
-              return { changes };
-            }
-            if (/^UPDATE OR IGNORE tags SET tag = \? WHERE tag = \?$/i.test(flat)) {
-              const [to, from] = params;
-              let changes = 0;
-              for (const key of [...tagSet]) {
-                if (tagOf(key) !== from) continue;
-                const next = `${idOf(key)} ${to}`;
-                if (tagSet.has(next)) continue; // PK collision, IGNOREd; row left behind
-                tagSet.delete(key);
-                tagSet.add(next);
-                changes++;
-              }
-              return { changes };
-            }
-            if (/INSERT OR IGNORE INTO bookmarks/i.test(flat)) {
-              let changes = 0;
-              for (let id = 1; id <= rowCount; id++) if (!bmSet.has(id)) { bmSet.add(id); changes++; }
-              return { changes };
-            }
-            return { changes: 0 };
-          },
-          get() {
-            if (/COUNT\(\*\) AS cnt FROM data/i.test(flat)) {
-              return { cnt: flat.includes("WHERE") ? 2 : rowCount };
-            }
-            return { cnt: 0 };
-          },
-          all() {
-            const counts = new Map();
-            for (const key of tagSet) {
-              const tag = tagOf(key);
-              counts.set(tag, (counts.get(tag) || 0) + 1);
-            }
-            return [...counts.entries()]
-              .map(([tag, cnt]) => ({ tag, cnt }))
-              .sort((a, b) => b.cnt - a.cnt || a.tag.localeCompare(b.tag));
-          },
-        };
-      },
+    bmCheckStmt: db.prepare("SELECT rowid FROM bookmarks WHERE rowid = ?"),
+    bmInsertStmt: db.prepare("INSERT OR IGNORE INTO bookmarks (rowid) VALUES (?)"),
+    bmDeleteStmt: db.prepare("DELETE FROM bookmarks WHERE rowid = ?"),
+    bmCountStmt: db.prepare("SELECT COUNT(*) as cnt FROM bookmarks"),
+    tagInsertStmt: db.prepare("INSERT OR IGNORE INTO tags (rowid, tag) VALUES (?, ?)"),
+    tagDeleteStmt: db.prepare("DELETE FROM tags WHERE rowid = ? AND tag = ?"),
+    get tagSet() {
+      return new Set(db.prepare("SELECT rowid, tag FROM tags").all().map((r) => `${r.rowid} ${r.tag}`));
     },
   };
 
@@ -118,7 +44,8 @@ function makeTab({ rowCount = 100, tags = [], bookmarks = [] } = {}) {
     }
     if (options.searchTerm) { where.push("c0 LIKE ?"); params.push(`%${options.searchTerm}%`); }
   };
-  return { store, meta, has: (id, tag) => tagSet.has(`${id} ${tag}`) };
+  const has = (id, tag) => !!db.prepare("SELECT 1 AS x FROM tags WHERE rowid = ? AND tag = ?").get(id, tag);
+  return { store, meta, has };
 }
 
 test("tag names are normalized at the write boundary", () => {
@@ -286,4 +213,19 @@ test("countFiltered previews the write population without writing", () => {
   assert.deepEqual(store.countFiltered("tab", {}), { count: 900, scoped: false, totalRows: 900 });
   assert.deepEqual(store.countFiltered("tab", { rowIdFilter: [1, 2] }), { count: 2, scoped: true, totalRows: 900 });
   assert.equal(meta.tagSet.size, before);
+});
+
+test("large selections are written in multi-row statements with exact counts", () => {
+  // Selections past the small-batch size take the multi-row INSERT/DELETE path.
+  const ids = Array.from({ length: 150 }, (_, i) => i + 1);
+  const { store, has } = makeTab({ rowCount: 200, tags: [[10, "Bulk"]], bookmarks: [20] });
+  assert.equal(store.setTagOnRows("tab", ids, "Bulk", true).changed, 149);
+  assert.equal(has(150, "Bulk"), true);
+  assert.equal(store.setTagOnRows("tab", ids.slice(0, 100), "Bulk", false).changed, 100);
+  assert.equal(has(100, "Bulk"), false);
+  assert.equal(has(101, "Bulk"), true);
+  assert.deepEqual(store.setBookmarks("tab", ids, true), { requested: 150, changed: 149 });
+  assert.deepEqual(store.setBookmarks("tab", ids, false), { requested: 150, changed: 150 });
+  const tagMap = Object.fromEntries(ids.map((id) => [id, ["A", "B"]]));
+  assert.deepEqual(store.bulkAddTags("tab", tagMap), { ok: true, changed: 300 });
 });

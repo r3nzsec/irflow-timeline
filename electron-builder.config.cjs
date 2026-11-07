@@ -23,7 +23,9 @@ const config = {
     // Darwin prebuilds in both sub-builds. @electron/universal refuses identical Mach-O
     // files unless they are explicitly allowed, so copy these known, self-identifying
     // files through while it merges the rest of the application normally.
-    x64ArchFiles: "**/{hayabusa/hayabusa,node_modules/better-sqlite3/prebuilds/darwin-*.node}",
+    // DuckDB's per-architecture packages too: scripts/ensure-duckdb-bindings.cjs puts both of
+    // them in node_modules.
+    x64ArchFiles: "**/{hayabusa/hayabusa,node_modules/better-sqlite3/prebuilds/darwin-*.node,node_modules/@duckdb/node-bindings-darwin-*/*.{node,dylib}}",
     target: [
       {
         target: "dmg",
@@ -73,6 +75,8 @@ const config = {
   ],
   asarUnpack: [
     "node_modules/better-sqlite3/**",
+    // DuckDB's native library is loaded from disk (dlopen), so it cannot stay inside app.asar.
+    "node_modules/@duckdb/**",
   ],
   directories: {
     output: "release",

@@ -7,14 +7,13 @@
 // only the downloaded set, the old unrecognized `{filters:[...]}` shape is REFUSED (not tag-all),
 // and an empty options object still tags all (intentional, e.g. Sigma).
 //
-// Needs a live SQLite binding; skipped under a Node runtime without the native module built
-// (CI rebuilds it). Run after `npm rebuild better-sqlite3`.
+// Needs the DuckDB binding; skipped when it is not installed for this runtime.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
 let Database = null;
-try { Database = require("better-sqlite3"); } catch { /* native module not built */ }
+try { ({ Database } = require("./helpers/duckdb-data-table")); } catch { /* DuckDB binding not installed */ }
 const HAVE_SQLITE = (() => {
   if (!Database) return false;
   try { const d = new Database(":memory:"); d.close(); return true; } catch { return false; }
@@ -23,6 +22,7 @@ const skip = HAVE_SQLITE ? false : "better-sqlite3 native module not built for t
 
 const { analyzeADS, _buildAdsVerdict } = require("../electron/analyzers/ads");
 const { registerRuntimeFunctions } = require("../electron/db/runtime-functions");
+const { createTestDataTable } = require("./helpers/duckdb-data-table");
 
 // MFT column → safe-column map (matches db.js c0..cN sanitization). Row order matches the keys.
 const ADS_COLMAP = { HasAds: "c0", IsAds: "c1", ZoneIdContents: "c2", FileName: "c3", Extension: "c4", ParentPath: "c5", EntryNumber: "c6", Created0x10: "c7", FileSize: "c8", IsDirectory: "c9", AdsStreamCount: "c10", AdsStreams: "c11", "SI<FN": "c12", uSecZeros: "c13" };
@@ -30,8 +30,7 @@ const NCOLS = 14;
 function makeAdsMeta(rows) {
   const db = new Database(":memory:");
   registerRuntimeFunctions(db);
-  db.exec(`CREATE TABLE data (${Array.from({ length: NCOLS }, (_, i) => `c${i} TEXT`).join(", ")})`);
-  const ins = db.prepare(`INSERT INTO data VALUES (${Array.from({ length: NCOLS }, () => "?").join(",")})`);
+  const ins = createTestDataTable(db, Array.from({ length: NCOLS }, (_, i) => `c${i}`).join(", "));
   const tx = db.transaction((rs) => { for (const r of rs) ins.run(...r.concat(Array(Math.max(0, NCOLS - r.length)).fill(""))); });
   tx(rows);
   return { db, colMap: ADS_COLMAP, rowCount: rows.length };
@@ -199,8 +198,7 @@ function makeUsnMeta(rows) {
   const db = new Database(":memory:");
   registerRuntimeFunctions(db);
   // c0 Name, c1 EntryNumber, c2 UpdateTimestamp, c3 UpdateReasons
-  db.exec("CREATE TABLE data (c0 TEXT,c1 TEXT,c2 TEXT,c3 TEXT)");
-  const ins = db.prepare("INSERT INTO data VALUES (?,?,?,?)");
+  const ins = createTestDataTable(db, "c0, c1, c2, c3");
   for (const r of rows) ins.run(...r);
   return { db, colMap: { Name: "c0", EntryNumber: "c1", UpdateTimestamp: "c2", UpdateReasons: "c3" } };
 }
@@ -208,8 +206,7 @@ function makeEvtxMeta(rows) {
   const db = new Database(":memory:");
   registerRuntimeFunctions(db);
   // c0 EventID, c1 TimeCreated, c2 PayloadData1
-  db.exec("CREATE TABLE data (c0 TEXT,c1 TEXT,c2 TEXT)");
-  const ins = db.prepare("INSERT INTO data VALUES (?,?,?)");
+  const ins = createTestDataTable(db, "c0, c1, c2");
   for (const r of rows) ins.run(...r);
   return { db, headers: ["EventID", "TimeCreated", "PayloadData1"], colMap: { EventID: "c0", TimeCreated: "c1", PayloadData1: "c2" } };
 }
@@ -279,8 +276,7 @@ test("ADS T6: EVTX EID 15 is Sysmon-channel-scoped — a non-Sysmon EID 15 canno
   // EVTX meta WITH a Channel column. c0 EventID, c1 TimeCreated, c2 Channel, c3 PayloadData1.
   const db = new Database(":memory:");
   registerRuntimeFunctions(db);
-  db.exec("CREATE TABLE data (c0 TEXT,c1 TEXT,c2 TEXT,c3 TEXT)");
-  const ins = db.prepare("INSERT INTO data VALUES (?,?,?,?)");
+  const ins = createTestDataTable(db, "c0, c1, c2, c3");
   ins.run("15", "2026-05-20 10:00:01", "Microsoft-Windows-Sysmon/Operational", "TargetFilename: C:\\Users\\v\\Downloads\\invoice.pdf:payload.exe");
   ins.run("15", "2026-05-20 10:00:02", "Application", "TargetFilename: C:\\Users\\v\\Documents\\notes.txt:evil"); // non-Sysmon EID 15 → must be excluded
   const evtxMeta = { db, headers: ["EventID", "TimeCreated", "Channel", "PayloadData1"], colMap: { EventID: "c0", TimeCreated: "c1", Channel: "c2", PayloadData1: "c3" } };

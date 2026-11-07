@@ -3,18 +3,18 @@
 //   - convert explicit offsets to UTC (same instant the grid shows)
 //   - drop Windows FILETIME-epoch sentinels (1601-01-01)
 //
-// Needs a live SQLite binding; skipped under a Node runtime without the native module.
+// Needs the DuckDB binding; skipped when it is not installed for this runtime.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
 let Database = null;
-try { Database = require("better-sqlite3"); } catch { /* native module not built */ }
+try { ({ Database } = require("./helpers/duckdb-data-table")); } catch { /* DuckDB binding not installed */ }
 const HAVE_SQLITE = (() => {
   if (!Database) return false;
   try { const d = new Database(":memory:"); d.close(); return true; } catch { return false; }
 })();
-const skip = HAVE_SQLITE ? false : "better-sqlite3 native module not built for this runtime";
+const skip = HAVE_SQLITE ? false : "DuckDB binding not available for this runtime";
 
 const { registerRuntimeFunctions } = require("../electron/db/runtime-functions");
 

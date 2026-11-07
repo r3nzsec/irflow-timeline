@@ -16,7 +16,7 @@ Stacking provides frequency analysis of unique values in any column, presented a
 ## How It Works
 
 1. Select a column to analyze
-2. IRFlow Timeline queries SQLite for distinct values and their counts using `GROUP BY` with `COUNT(*)`
+2. IRFlow Timeline queries DuckDB for distinct values and their counts using `GROUP BY` with `COUNT(*)`
 3. Results are displayed in a resizable modal (default 860px wide) with:
    - Row index
    - Value name (resizable column, default 420px, min 120px)

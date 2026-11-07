@@ -12,9 +12,9 @@
 //     so Defender-tampering rules were invisible before a scan and excluded from
 //     the in-scope estimate.
 //
-// Runs against a real SQLite engine (node:sqlite) so LIKE semantics — especially
-// that a backslash is a literal, since SQLite gives LIKE no escape character by
-// default — are exercised for real rather than approximated by a stub.
+// Runs against the real DuckDB engine so LIKE semantics — especially that a
+// backslash is a literal, since LIKE has no escape character by default — are
+// exercised for real rather than approximated by a stub.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -22,8 +22,9 @@ const assert = require("node:assert/strict");
 const { previewPersistenceAnalysis } = require("../electron/analyzers/persistence");
 
 let DatabaseSync = null;
-try { ({ DatabaseSync } = require("node:sqlite")); } catch { /* Node < 22.5 — tests below skip */ }
-const needsSqlite = { skip: DatabaseSync ? false : "node:sqlite unavailable on this Node build" };
+let createTestDataTable = null;
+try { ({ Database: DatabaseSync, createTestDataTable } = require("./helpers/duckdb-data-table")); } catch { /* DuckDB binding not installed */ }
+const needsSqlite = { skip: DatabaseSync ? false : "DuckDB binding not available for this runtime" };
 
 // Build an in-memory `data` table with sanitized c0..cN columns, mirroring how the
 // real TimelineDB stores an imported file (headers -> colMap -> c<idx>).
@@ -31,8 +32,7 @@ function makeDb(headers, rows) {
   const db = new DatabaseSync(":memory:");
   const colMap = {};
   headers.forEach((h, i) => { colMap[h] = `c${i}`; });
-  db.exec(`CREATE TABLE data (${headers.map((_, i) => `c${i} TEXT`).join(", ")})`);
-  const ins = db.prepare(`INSERT INTO data VALUES (${headers.map(() => "?").join(", ")})`);
+  const ins = createTestDataTable(db, headers.map((_, i) => `c${i}`).join(", "));
   for (const r of rows) ins.run(...headers.map((h) => (r[h] != null ? String(r[h]) : null)));
   return { meta: { db, headers, colMap, tabId: "preview" }, ctx: { applyStandardFilters() {} } };
 }

@@ -376,20 +376,18 @@ async function diffTabs(diffTabId, spec, onProgress) {
   this.createTab(diffTabId, unified);
   const resultMeta = this.databases.get(diffTabId);
   const totalRows = (baseline.rowCount || 0) + (compare.rowCount || 0);
-  const cacheKiB = Math.min(1048576, Math.max(65536, Math.ceil((totalRows * 200) / 1024 * 1.5)));
-  resultMeta.db.pragma(`cache_size = ${-cacheKiB}`);
 
+  // Baseline identities go into _diff_a; each compare page is matched against them with one
+  // join (_diff_b holds the page's keys) and the matched keys are recorded in _diff_m, so
+  // what is left of _diff_a at the end is the Removed set. (One statement per page: DuckDB
+  // is built for set operations, and a lookup and delete per row would cost far more.)
   const resultDb = resultMeta.db;
-  resultDb.exec(`CREATE TABLE _diff_a (
-    ident TEXT NOT NULL,
-    n INTEGER NOT NULL,
-    hash TEXT NOT NULL,
-    src_rowid INTEGER NOT NULL,
-    PRIMARY KEY (ident, n)
-  )`);
-  const insertA = resultDb.prepare("INSERT INTO _diff_a (ident, n, hash, src_rowid) VALUES (?,?,?,?)");
-  const lookupA = resultDb.prepare("SELECT hash, src_rowid FROM _diff_a WHERE ident = ? AND n = ?");
-  const deleteA = resultDb.prepare("DELETE FROM _diff_a WHERE ident = ? AND n = ?");
+  resultDb.exec(`CREATE TABLE _diff_a (ident VARCHAR NOT NULL, n BIGINT NOT NULL, hash VARCHAR NOT NULL, src_rowid BIGINT NOT NULL)`);
+  resultDb.exec(`CREATE TABLE _diff_b (i BIGINT NOT NULL, ident VARCHAR NOT NULL, n BIGINT NOT NULL)`);
+  resultDb.exec(`CREATE TABLE _diff_m (ident VARCHAR NOT NULL, n BIGINT NOT NULL)`);
+  const lookupPage = resultDb.prepare(
+    "SELECT b.i AS i, a.hash AS hash, a.src_rowid AS src_rowid FROM _diff_b b JOIN _diff_a a ON a.ident = b.ident AND a.n = b.n",
+  );
 
   let processed = 0;
   const report = (phase, extra = "") => {
@@ -406,16 +404,16 @@ async function diffTabs(diffTabId, spec, onProgress) {
   const identSeqA = new Map();
   report("indexing", baselineName);
   await forEachPage(baseline, PAGE, async (page) => {
-    const tx = resultDb.transaction(() => {
-      for (const sqlRow of page) {
-        const row = sqlRowToObject(baseline, sqlRow);
-        const ident = identityKey(row, matchKeys, compareCols, "a", sqlRow._mrid);
-        const n = (identSeqA.get(ident) || 0) + 1;
-        identSeqA.set(ident, n);
-        insertA.run(ident, n, hashRow(row, compareCols), sqlRow._mrid);
-      }
-    });
-    tx();
+    const entries = new Array(page.length);
+    for (let i = 0; i < page.length; i++) {
+      const sqlRow = page[i];
+      const row = sqlRowToObject(baseline, sqlRow);
+      const ident = identityKey(row, matchKeys, compareCols, "a", sqlRow._mrid);
+      const n = (identSeqA.get(ident) || 0) + 1;
+      identSeqA.set(ident, n);
+      entries[i] = [ident, n, hashRow(row, compareCols), sqlRow._mrid];
+    }
+    resultDb.appendRows("_diff_a", entries);
     processed += page.length;
     report("indexing", baselineName);
     await yieldEventLoop();
@@ -456,28 +454,36 @@ async function diffTabs(diffTabId, spec, onProgress) {
   await forEachPage(compare, PAGE, async (page) => {
     const classified = [];
     const needA = [];
-    const tx = resultDb.transaction(() => {
-      for (const sqlRow of page) {
-        const rowB = sqlRowToObject(compare, sqlRow);
-        const ident = identityKey(rowB, matchKeys, compareCols, "b", sqlRow._mrid);
-        const n = (identSeqB.get(ident) || 0) + 1;
-        identSeqB.set(ident, n);
-        const bHash = hashRow(rowB, compareCols);
-        const hit = lookupA.get(ident, n);
-        if (!hit) {
-          classified.push({ status: "Added", rowB, ident });
-          continue;
-        }
-        deleteA.run(ident, n);
-        if (hit.hash === bHash) {
-          classified.push({ status: "Unchanged", rowB, ident });
-        } else {
-          classified.push({ status: "Changed", rowB, ident, aRowid: hit.src_rowid });
-          needA.push(hit.src_rowid);
-        }
+    const keys = new Array(page.length);
+    for (let i = 0; i < page.length; i++) {
+      const sqlRow = page[i];
+      const rowB = sqlRowToObject(compare, sqlRow);
+      const ident = identityKey(rowB, matchKeys, compareCols, "b", sqlRow._mrid);
+      const n = (identSeqB.get(ident) || 0) + 1;
+      identSeqB.set(ident, n);
+      keys[i] = { rowB, ident, n, bHash: hashRow(rowB, compareCols) };
+    }
+    resultDb.exec("DELETE FROM _diff_b");
+    resultDb.appendRows("_diff_b", keys.map((k, i) => [i, k.ident, k.n]));
+    const hits = new Map();
+    for (const hit of lookupPage.all()) hits.set(hit.i, hit);
+    const matched = [];
+    for (let i = 0; i < keys.length; i++) {
+      const { rowB, ident, n, bHash } = keys[i];
+      const hit = hits.get(i);
+      if (!hit) {
+        classified.push({ status: "Added", rowB, ident });
+        continue;
       }
-    });
-    tx();
+      matched.push([ident, n]);
+      if (hit.hash === bHash) {
+        classified.push({ status: "Unchanged", rowB, ident });
+      } else {
+        classified.push({ status: "Changed", rowB, ident, aRowid: hit.src_rowid });
+        needA.push(hit.src_rowid);
+      }
+    }
+    resultDb.appendRows("_diff_m", matched);
 
     const aMap = fetchRowsByIds(baseline, needA);
     for (const item of classified) {
@@ -503,14 +509,17 @@ async function diffTabs(diffTabId, spec, onProgress) {
   });
 
   report("copying", baselineName);
+  // Unmatched baseline rows, in baseline order.
   const selectRem = resultDb.prepare(
-    "SELECT rowid AS _rid, ident, src_rowid FROM _diff_a WHERE rowid > ? ORDER BY rowid LIMIT ?"
+    `SELECT a.ident AS ident, a.src_rowid AS src_rowid FROM _diff_a a
+      WHERE a.src_rowid > ? AND NOT EXISTS (SELECT 1 FROM _diff_m m WHERE m.ident = a.ident AND m.n = a.n)
+      ORDER BY a.src_rowid LIMIT ?`
   );
   let lastRid = 0;
   for (;;) {
     const rem = selectRem.all(lastRid, PAGE);
     if (!rem.length) break;
-    lastRid = rem[rem.length - 1]._rid;
+    lastRid = rem[rem.length - 1].src_rowid;
     const aMap = fetchRowsByIds(baseline, rem.map((r) => r.src_rowid));
     for (const rec of rem) {
       stats.removed += 1;
@@ -521,21 +530,10 @@ async function diffTabs(diffTabId, spec, onProgress) {
   }
 
   flush();
-  resultDb.exec("DROP TABLE IF EXISTS _diff_a");
+  resultDb.exec("DROP TABLE IF EXISTS _diff_a; DROP TABLE IF EXISTS _diff_b; DROP TABLE IF EXISTS _diff_m");
 
   report("indexing", "");
   const result = this.finalizeImport(diffTabId);
-
-  const diffSafe = resultMeta.colMap["_Diff"];
-  if (diffSafe && !resultMeta.indexedCols.has(diffSafe)) {
-    resultDb.exec(`CREATE INDEX IF NOT EXISTS idx_${diffSafe} ON data(${diffSafe})`);
-    resultMeta.indexedCols.add(diffSafe);
-  }
-  const dtSafe = resultMeta.colMap["datetime"];
-  if (dtSafe && !resultMeta.indexedCols.has(dtSafe)) {
-    resultDb.exec(`CREATE INDEX IF NOT EXISTS idx_${dtSafe} ON data(${dtSafe})`);
-    resultMeta.indexedCols.add(dtSafe);
-  }
 
   return {
     headers: unified,

@@ -16,7 +16,7 @@ Yes. IRFlow Timeline is released under the [Apache 2.0 license](https://github.c
 
 ### How large of a file can IRFlow Timeline handle?
 
-IRFlow Timeline has been tested with files exceeding **30 GB** and **150 million+ rows**. Files are never fully loaded into memory — they stream into a temporary SQLite database in chunks. The practical limit is your available disk space (the SQLite database is roughly 1.5x the original file size). See [Performance Tips](/reference/performance-tips) for hardware recommendations.
+IRFlow Timeline has been tested with files exceeding **30 GB** and **150 million+ rows**. Files are never fully loaded into memory — they stream into a temporary DuckDB database in chunks. The practical limit is your available disk space (DuckDB compresses each column, so the database is usually smaller than the original file). See [Performance Tips](/reference/performance-tips) for hardware recommendations.
 
 ### What makes this different from Timeline Explorer on Windows?
 
@@ -31,7 +31,7 @@ IRFlow Timeline is inspired by Eric Zimmerman's Timeline Explorer but adds capab
 - Gap & Burst Analysis for anomaly detection
 - Log Source Coverage heatmap
 - **AI Artifacts** — collect local AI assistant history (including Grok Build and Grok Bot) into timeline evidence; **ChatGPT Computer History** for macOS interaction telemetry; **AI Secret Hunt** for exposed keys, tokens, and credentials
-- Handles 30GB+ files via SQLite streaming (no row limits)
+- Handles 30GB+ files via streaming into DuckDB (no row limits)
 
 ### Can I analyze local AI assistant history?
 
@@ -124,11 +124,11 @@ The UI remains interactive during import. You can continue working in other tabs
 
 ### Search returns no results even though the data exists
 
-The full-text search (FTS) index builds in the background after import. If you search before it completes, the app falls back to LIKE-based search, which may miss some matches. Check the toolbar for the FTS build progress indicator. Once it shows complete, FTS search will return comprehensive results.
+There is no separate search index to wait for: the DuckDB engine scans every column directly, so search returns complete results as soon as a tab opens. If a search finds nothing, check the Match mode and Condition next to the search box.
 
 ### The app uses a lot of disk space
 
-Each open tab creates a temporary SQLite database approximately **1.5x the size** of the original file. These are stored in your system temp directory (`/tmp`) and are cleaned up when the tab is closed or the app exits.
+Each open tab creates a temporary DuckDB database, usually **smaller than the original file** because DuckDB compresses each column. These are stored in your system temp directory (or the folder set under Preferences → Temp Storage) and are cleaned up when the tab is closed or the app exits.
 
 | Original File | Temp DB Size |
 |--------------|-------------|

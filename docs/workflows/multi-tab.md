@@ -74,7 +74,7 @@ A common workflow for multi-source investigations:
 ## Tips
 
 ::: tip Memory Management
-Each tab creates its own SQLite database. For very large investigations (10+ tabs with large files), monitor system memory usage.
+Each tab creates its own DuckDB database file; all tabs share one DuckDB instance and its memory limit (half of system memory). For very large investigations (10+ tabs with large files), monitor system memory usage.
 :::
 
 ::: tip Tab Naming

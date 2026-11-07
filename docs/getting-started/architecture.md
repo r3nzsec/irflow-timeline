@@ -1,5 +1,5 @@
 ---
-description: IRFlow Timeline architecture — React renderer, Electron main process, a worker-thread pool, the SQLite data engine, forensic analyzers, and streaming parsers.
+description: IRFlow Timeline architecture — React renderer, Electron main process, a worker-thread pool, the DuckDB data engine, forensic analyzers, and streaming parsers.
 ---
 
 # Architecture
@@ -81,53 +81,61 @@ The main process runs with full Node.js access and acts as the orchestrator:
 
 CPU-heavy work runs off the main thread in `worker_threads`, coordinated by `job-manager.js`:
 
-- **`import-worker`** — streams a source file through `parsers/index.js` into a temp SQLite DB (single AI app folders via `parsers/ai-history/` decode path)
-- **`ai-history-profile-worker`** — **Collect AI Artifacts** merged extract: walks profile/collection trees with `parsers/ai-history/profile-scan.js`, streams rows into a temp SQLite DB without holding the full merge in memory
+- **`import-worker`** — streams a source file through `parsers/index.js` into a temp DuckDB database (single AI app folders via `parsers/ai-history/` decode path)
+- **`ai-history-profile-worker`** — **Collect AI Artifacts** merged extract: walks profile/collection trees with `parsers/ai-history/profile-scan.js`, streams rows into a temp DuckDB database without holding the full merge in memory
 - **`computer-history-worker`** — ChatGPT Computer History (Skysight) parse of `events.jsonl` segments and activity summaries into the dedicated 54-column tab
 - **`triage-discover-worker`** — inventories a folder-based triage collection without blocking the main process
 - **`vhdx-extract-worker`** — read-only VHDX/NTFS extraction of recognized KAPE artifacts into a scratch collection tree, with free-space checks, progress, and cancellation
-- **`index-worker`** — builds column indexes, then the FTS5 index, in the background
+- **`index-worker`** — stores each timestamp column's sort key in the background
 - **`query-worker`** — streams heavy filtered/sorted result pages off the main thread
 - **`analyzer-worker`** — runs forensic detectors (including AI Secret Hunt via `analyzers/ai-history/`)
 - **`sigma-worker`** — runs Sigma / Hayabusa scans
 
-Workers parse/scan into their own temp SQLite files that the main process then **adopts** (`db.adoptTabFromFile()`). Progress streams over IPC; cancellation is `postMessage('cancel')` → 250 ms grace → `terminate()`.
+Workers parse/scan into temp database files that the main process then **adopts** (`db.adoptTabFromFile()`). Every thread reaches the same DuckDB instance (see below), so a file is never opened twice. Progress streams over IPC; cancellation is `postMessage('cancel')` → 250 ms grace → `terminate()`.
 
 `JobManager` applies one global budget across every worker type, then a second ceiling to memory-heavy imports/indexes/analyzers/scans. Defaults scale from 1 worker on systems below 16 GiB to 4 workers on systems with at least 64 GiB, while heavy work is capped at 1 or 2. `TLE_MAX_WORKERS` and `TLE_MAX_HEAVY_WORKERS` provide bounded operational overrides. Workers remain counted until their `exit` event, and `jobs-metrics` exposes current limits plus live/queued totals.
 
-### Data Engine (SQLite)
+### Data Engine (DuckDB)
 
-**Files:** `electron/db.js` facade (~1,435 lines) + `electron/db/` submodules (~1,850 lines)
+**Files:** `electron/db.js` facade + `electron/db/` submodules + `electron/db/duckdb/`
 
-The `TimelineDB` facade wraps `better-sqlite3`. Each tab gets its own temp SQLite DB in `os.tmpdir()`. Logic is split into submodules:
+The `TimelineDB` facade stores each tab in its own temp DuckDB database file in the temp folder (Preferences → Temp Storage). Logic is split into submodules:
 
 - **`query-store.js`** — filter / sort / paginate / search
 - **`tag-store.js`** — tags / bookmarks / bulk ops
 - **`timeline-analytics.js`** — histogram / gap / burst / stacking / log-source coverage
-- **`runtime-functions.js`** — custom SQLite UDFs
+- **`runtime-functions.js`** — the app's SQL functions (date parsing, regex, fuzzy match)
+- **`sql-match.js`** — regex and fuzzy conditions DuckDB runs natively
+- **`duckdb/`** — the engine layer:
+  - **`host.js`** — one worker thread per process owns DuckDB. Every tab file is `ATTACH`ed to a single in-memory instance, so all tabs share one buffer pool and thread pool, and the main thread and job workers all reach the same instance.
+  - **`client.js`** — synchronous calls to the host: the request goes over a `MessagePort` and the caller waits on a shared-memory flag (`Atomics.wait`), as it did inside a SQLite call, while DuckDB itself runs multi-threaded.
+  - **`index.js`** — a `prepare` / `all` / `get` / `run` / `iterate` / `transaction` API, bulk loading through DuckDB's appender, and result transfer as one JSON string per row.
+  - **`sql.js`** — rewrites the SQLite idioms the analyzers use (case-insensitive `LIKE` → `ILIKE`, lenient `CAST` → `TRY_CAST`, 64-bit `INTEGER`, `[bracket]` identifiers) and computes the date helpers in SQL for plain ISO timestamps.
+  - **`udfs.js`** — registers the JavaScript SQL functions with DuckDB.
 
 **Schema per tab** (columns sanitized to `c0..cN` at creation, mapped back via `colMap`):
 ```sql
-CREATE TABLE data (rowid INTEGER PRIMARY KEY, c0 TEXT, c1 TEXT, ...);
-CREATE VIRTUAL TABLE data_fts USING fts5(c0, c1, ..., content=data);
-CREATE TABLE bookmarks (rowid INTEGER PRIMARY KEY);
-CREATE TABLE tags (rowid INTEGER, tag TEXT, PRIMARY KEY(rowid, tag));
+CREATE TABLE data (rowid BIGINT, c0 VARCHAR, c1 VARCHAR, ...);  -- rowid = 1, 2, 3, … in import order
+CREATE TABLE bookmarks (rowid BIGINT PRIMARY KEY);
+CREATE TABLE tags (rowid BIGINT, tag VARCHAR, PRIMARY KEY(rowid, tag));
 CREATE TABLE color_rules (id, col_name, condition, value, bg_color, fg_color);
 ```
 
-**Custom SQL functions (5):** `REGEXP`, `FUZZY_MATCH`, `EXTRACT_DATE`, `EXTRACT_DATETIME_MINUTE`, `SORT_DATETIME` (the last also backs sortable expression indexes).
+**Custom SQL functions:** `regexp`, `fuzzy_match`, `extract_date`, `extract_datetime_minute`, `sort_datetime`, `norm_guid`, `norm_logon_id`, `norm_host`, `norm_pid`.
 
-**Performance tuning (phase-dependent):**
-- Import: `journal_mode=OFF`, large cache, mmap disabled (write-only)
-- Index/FTS build: deferred until the import queue drains, yielding to the event loop
-- Query: WAL mode, 256 MB cache, mmap enabled; passive `wal_checkpoint` every 5 min
-- Column indexes (then FTS5) built asynchronously after import
+**Performance:**
+- Import: rows are bulk-loaded with DuckDB's appender on the DuckDB thread while the parser reads the next batch
+- No indexes or full-text index: DuckDB scans columns in parallel, and search checks each column with a case-insensitive substring match
+- After import, the background build stores `sort_datetime(col)` for every timestamp column in a hidden `<col>__sdt` column, so sorting and time-range filters on zoned or non-ISO timestamps do not run JavaScript per row
+- DuckDB uses up to half of the system memory and spills larger sorts and aggregations to the temp folder
+
+**SQLite stays** for reading SQLite evidence files (Plaso storage, browser, VS Code, Codex and other AI app databases, the EVTX message database), for saved Sigma scan results (`results.sqlite`, which scan history keeps across versions and scan packages export), the VirusTotal cache and the XLSX importer's shared-string scratch table.
 
 ### Forensic Analyzers & Detection
 
 **Directory:** `electron/analyzers/` — **12 domains**
 
-The renderer never touches SQLite directly; the main process owns the `db` facade and delegates specialized detection to analyzer modules, each querying the tab DB and returning findings with severity / MITRE mapping:
+The renderer never touches the database directly; the main process owns the `db` facade and delegates specialized detection to analyzer modules, each querying the tab DB and returning findings with severity / MITRE mapping:
 
 - Standalone modules: `ransomware.js`, `timestomping.js`, `ads.js`, `file-activity.js`, `usn-journal.js`
 - Subsystems: `lateral-movement/`, `persistence/`, `process-tree/`, `rdp-bitmap-cache/`, `sigma/`, `ai-history/` (**AI Secret Hunt** — regex + entropy scan over `FullText` on AI Query History tabs), `triage-collection/` (KAPE/triage inventory and host attribution)
@@ -144,7 +152,7 @@ External-tool and scan inputs are validated through `utils/path-authorizer.js` s
 
 **Directory:** `electron/parsers/` — dispatched by `parsers/index.js` (extension + magic-byte detection)
 
-Streaming parsers convert source files into batched SQLite inserts:
+Streaming parsers convert source files into batched inserts:
 
 - **`csv.js`** — RFC 4180, delimiter auto-detect, quote-aware; raw chunk processing with adaptive batches (up to 100,000 rows, ~100 MB target per batch)
 - **`xlsx.js`** — ExcelJS streaming `WorkbookReader` with spill-to-SQLite shared strings (`.xls` falls back to SheetJS)
@@ -161,15 +169,15 @@ Streaming parsers convert source files into batched SQLite inserts:
 
 ```
 open → main.enqueueImport() → import-worker (parsers/index.js, streaming)
-     → temp SQLite DB → main.adoptTabFromFile() → renderer (row window + metadata)
-     → after queue drains: index-worker (column indexes → FTS5)
+     → temp DuckDB database → main.adoptTabFromFile() → renderer (row window + metadata)
+     → after queue drains: index-worker (timestamp sort keys)
 ```
 
 1. A file is opened (dialog / drag-drop / `open-file`) and added to the serialized import queue.
 2. XLSX with multiple sheets → the renderer shows a sheet picker first.
-3. `import-worker` streams the file into a temp SQLite DB; progress via `import-progress`.
+3. `import-worker` streams the file into a temp DuckDB database; progress via `import-progress`.
 4. On completion the main process adopts the worker's DB; the initial row window + metadata go to the renderer.
-5. After the queue drains, `index-worker` builds column indexes, then the FTS5 index, in the background (`index-progress` / `fts-progress`).
+5. After the queue drains, `index-worker` stores the timestamp sort keys in the background (`index-progress`).
 
 ### AI Artifacts Pipeline (v1.0.8)
 
@@ -177,7 +185,7 @@ open → main.enqueueImport() → import-worker (parsers/index.js, streaming)
 Collect AI Artifacts → discover-ai-history-profile (main)
                     → extract-ai-history-profile → ai-history-profile-worker
                     → parsers/ai-history/profile-scan + per-app parsers
-                    → temp SQLite DB → adoptTabFromFile() → AI Query History tab
+                    → temp DuckDB database → adoptTabFromFile() → AI Query History tab
 Per-app import     → decode-ai-history → import-worker (ai-history parsers)
 AI Secret Hunt     → analyze-ai-history → analyzers/ai-history/ (in-process or analyzer-worker)
 ```
@@ -206,7 +214,8 @@ UI action → IPC → db.queryRows() → SQL (filters/sort) → LIMIT/OFFSET win
 | **Zustand** | ^5.0.12 | Renderer state stores |
 | **Vite** | ^6.0.7 | Renderer build tooling |
 | **VitePress** | ^1.6.4 | Documentation site |
-| **better-sqlite3** | ^13.0.3 | SQLite bindings (zero-copy) |
+| **@duckdb/node-api** | 1.5.6-r.2 | DuckDB, the timeline engine |
+| **better-sqlite3** | ^13.0.3 | Reads SQLite evidence files; Sigma result store, VirusTotal cache |
 | **ExcelJS** | ^4.4.0 | XLSX streaming |
 | **SheetJS (xlsx)** | 0.20.3 | Legacy XLS parsing |
 | **@ts-evtx/core** | ^1.1.1 | EVTX binary parsing |
@@ -228,10 +237,10 @@ External binaries bundled as `extraResources`: **Hayabusa** (Sigma over raw EVTX
 | **DMG** | `npm run dist:dmg` | macOS installer |
 | **Universal** | `npm run dist:universal` | Intel + Apple Silicon |
 | **Smoke build** | `npm run dist:smoke` | Unsigned local build (`SKIP_NOTARIZE=1`) |
-| **Runtime smoke** | `npm run smoke:electron` | Electron + SQLite + EVTX-message ABI check |
+| **Runtime smoke** | `npm run smoke:electron` | Electron + DuckDB engine + SQLite + EVTX-message ABI check |
 | **Tests** | `npm test` | `node --test tests/*.test.js` |
 
-`npm run dist*` runs `bundle:tools` first. After `npm install`, run `npm run rebuild` to rebuild `better-sqlite3` against Electron's ABI.
+`npm run dist*` runs `bundle:tools` first, which also fetches both macOS DuckDB binaries for the universal build (`bundle:duckdb`). After `npm install`, run `npm run rebuild` to rebuild `better-sqlite3` against Electron's ABI; DuckDB ships prebuilt binaries and needs no rebuild.
 
 ## Security Model
 

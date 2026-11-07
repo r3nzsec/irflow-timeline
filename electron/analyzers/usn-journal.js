@@ -35,8 +35,8 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
     const journalSpan = { start: "", end: "", total: 0, usnMin: null, usnMax: null };
     try {
       const span = db.prepare(
-        `SELECT (SELECT ${tsCol} FROM data WHERE ${tsCol} IS NOT NULL AND ${tsCol} != '' ORDER BY sort_datetime(${tsCol}) ASC LIMIT 1) AS jstart,
-                (SELECT ${tsCol} FROM data WHERE ${tsCol} IS NOT NULL AND ${tsCol} != '' ORDER BY sort_datetime(${tsCol}) DESC LIMIT 1) AS jend,
+        `SELECT (SELECT ${tsCol} FROM data WHERE ${tsCol} IS NOT NULL AND ${tsCol} != '' ORDER BY sort_datetime(${tsCol}) ASC, rowid LIMIT 1) AS jstart,
+                (SELECT ${tsCol} FROM data WHERE ${tsCol} IS NOT NULL AND ${tsCol} != '' ORDER BY sort_datetime(${tsCol}) DESC, rowid LIMIT 1) AS jend,
                 COUNT(*) AS jtotal FROM data`
       ).get();
       journalSpan.start = span?.jstart || "";
@@ -857,7 +857,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
           WHERE ${timeFilter}
             AND (${reasonCol} LIKE '%RenameOldName%' OR ${reasonCol} LIKE '%RenameNewName%')
             ${pathLike}
-          ORDER BY ${entryCol}, CAST(${usnCol || "rowid"} AS INTEGER)
+          ORDER BY ${entryCol}, CAST(${usnCol || "rowid"} AS INTEGER), rowid
         `).all(...baseParams);
 
         const renameGroups = new Map();
@@ -941,7 +941,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
             AND ${reasonCol} LIKE '%FileDelete%'
             ${notDir}
             ${pathLike}
-          ORDER BY sort_datetime(${tsCol}) ASC
+          ORDER BY sort_datetime(${tsCol}) ASC, rowid
           LIMIT 5000
         `).all(...baseParams);
         result.deletions = { count: deleteRows.length, events: deleteRows };
@@ -960,7 +960,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
             AND ${reasonCol} LIKE '%FileCreate%'
             ${notDir}
             ${pathLike}
-          ORDER BY sort_datetime(${tsCol}) ASC
+          ORDER BY sort_datetime(${tsCol}) ASC, rowid
           LIMIT 5000
         `).all(...baseParams);
         result.creations = { count: createRows.length, events: createRows };
@@ -981,7 +981,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
             AND (${reasonCol} LIKE '%FileCreate%' OR ${reasonCol} LIKE '%DataExtend%')
             AND LOWER(${extCol || "''"}) IN (${extPlaceholders})
             ${pathLike}
-          ORDER BY sort_datetime(${tsCol}) ASC
+          ORDER BY sort_datetime(${tsCol}) ASC, rowid
           LIMIT 1000
         `).all(...baseParams, ...archiveExts);
 
@@ -994,7 +994,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
             FROM data
             WHERE ${timeFilter} AND ${parentPathCol} = ?
               AND ${reasonCol} LIKE '%FileCreate%' ${notDir}
-            ORDER BY sort_datetime(${tsCol}) ASC
+            ORDER BY sort_datetime(${tsCol}) ASC, rowid
             LIMIT 100
           `).all(effectiveStart, effectiveEnd, dir);
           dirActivity.push({ directory: dir, fileCount: childRows.length, files: childRows.slice(0, 50) });
@@ -1018,7 +1018,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
             AND LOWER(${extCol || "''"}) IN (${extPlaceholders})
             ${notDir}
             ${pathLike}
-          ORDER BY sort_datetime(${tsCol}) ASC
+          ORDER BY sort_datetime(${tsCol}) ASC, rowid
           LIMIT 3000
         `).all(...baseParams, ...execExts);
 
@@ -1060,7 +1060,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
             AND (${patternConditions})
             ${notDir}
             ${pathLike}
-          ORDER BY sort_datetime(${tsCol}) ASC
+          ORDER BY sort_datetime(${tsCol}) ASC, rowid
           LIMIT 3000
         `).all(effectiveStart, effectiveEnd, ...persistPatterns, ...(normPath ? [`%${normPath}%`] : []));
 
@@ -1113,7 +1113,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
             AND (${patternConditions})
             ${notDir}
             ${pathLike}
-          ORDER BY sort_datetime(${tsCol}) ASC
+          ORDER BY sort_datetime(${tsCol}) ASC, rowid
           LIMIT 3000
         `).all(effectiveStart, effectiveEnd, ...suspPatterns, ...(normPath ? [`%${normPath}%`] : []));
 
@@ -1164,7 +1164,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
             AND ${reasonCol} LIKE '%SecurityChange%'
             ${notDir}
             ${pathLike}
-          ORDER BY sort_datetime(${tsCol}) ASC
+          ORDER BY sort_datetime(${tsCol}) ASC, rowid
           LIMIT 3000
         `).all(...baseParams);
 
@@ -1202,7 +1202,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
             AND (${reasonCol} LIKE '%DataOverwrite%' OR ${reasonCol} LIKE '%DataExtend%')
             ${notDir}
             ${pathLike}
-          ORDER BY sort_datetime(${tsCol}) ASC
+          ORDER BY sort_datetime(${tsCol}) ASC, rowid
           LIMIT 3000
         `).all(...baseParams);
 
@@ -1235,7 +1235,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
             AND ${reasonCol} LIKE '%StreamChange%'
             ${notDir}
             ${pathLike}
-          ORDER BY sort_datetime(${tsCol}) ASC
+          ORDER BY sort_datetime(${tsCol}) ASC, rowid
           LIMIT 2000
         `).all(...baseParams);
 
@@ -1263,7 +1263,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
             AND ${reasonCol} = 'Close'
             ${notDir}
             ${pathLike}
-          ORDER BY sort_datetime(${tsCol}) ASC
+          ORDER BY sort_datetime(${tsCol}) ASC, rowid
           LIMIT 3000
         `).all(...baseParams);
 
@@ -1339,7 +1339,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
         // ransomware/wiper signal (encryption is fast); not a cumulative count over a long window.
         volume.peakDestructivePerMinute = db.prepare(
           `SELECT COUNT(*) c FROM data WHERE ${timeFilter} ${pathLike} AND ${destructivePred} AND ${userCond} ${notDir}
-           GROUP BY substr(${tsCol}, 1, 16) ORDER BY c DESC LIMIT 1`
+           GROUP BY substr(${tsCol}, 1, 16) ORDER BY c DESC, substr(${tsCol}, 1, 16) LIMIT 1`
         ).get(...baseParams)?.c || 0;
       } catch (e) { volume.peakDestructivePerMinute = 0; }
       try {
@@ -1353,7 +1353,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
           const topExt = db.prepare(
             `SELECT lower(${extCol}) AS ext, COUNT(*) c, SUM(COUNT(*)) OVER () AS total FROM data
              WHERE ${timeFilter} ${pathLike} AND ${destructivePred} AND ${userCond} ${notDir} AND ${extCol} IS NOT NULL AND ${extCol} != ''
-             GROUP BY lower(${extCol}) ORDER BY c DESC LIMIT 1`
+             GROUP BY lower(${extCol}) ORDER BY c DESC, ext LIMIT 1`
           ).get(...baseParams);
           if (topExt && topExt.total > 0) {
             volume.topDestructiveExtension = topExt.ext || "";
@@ -1421,7 +1421,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
           breakdowns.extensions = db.prepare(
             `SELECT lower(${extCol}) AS ext, COUNT(*) AS count, SUM(CASE WHEN ${destructivePred} THEN 1 ELSE 0 END) AS destructive
              FROM data WHERE ${timeFilter} ${pathLike} ${notDir} AND ${extCol} IS NOT NULL AND ${extCol} != '' AND ${userCond}
-             GROUP BY lower(${extCol}) ORDER BY count DESC LIMIT 15`
+             GROUP BY lower(${extCol}) ORDER BY count DESC, ext LIMIT 15`
           ).all(...baseParams).map((r) => ({ ext: r.ext || "", count: r.count || 0, destructive: r.destructive || 0 }));
         }
       } catch (e) { /* best-effort */ }
@@ -1430,7 +1430,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
           breakdowns.directories = db.prepare(
             `SELECT ${parentPathCol} AS path, COUNT(*) AS count, ${entryCol ? `COUNT(DISTINCT ${entryCol})` : "COUNT(*)"} AS entries, SUM(CASE WHEN ${destructivePred} THEN 1 ELSE 0 END) AS destructive
              FROM data WHERE ${timeFilter} ${pathLike} ${notDir} AND ${parentPathCol} IS NOT NULL AND ${parentPathCol} != '' AND ${userCond}
-             GROUP BY ${parentPathCol} ORDER BY count DESC LIMIT 15`
+             GROUP BY ${parentPathCol} ORDER BY count DESC, path LIMIT 15`
           ).all(...baseParams).map((r) => ({ path: r.path || "", count: r.count || 0, entries: r.entries || 0, destructive: r.destructive || 0 }));
         }
       } catch (e) { /* best-effort */ }
@@ -1449,7 +1449,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
             `SELECT ${entryCol} AS entry, COUNT(DISTINCT ${seqCol}) AS seqCount, COUNT(*) AS events
              FROM data WHERE ${timeFilter} ${pathLike} ${notDir} AND ${entryCol} IS NOT NULL AND ${entryCol} != ''
              GROUP BY ${entryCol} HAVING COUNT(DISTINCT ${seqCol}) > 1
-             ORDER BY seqCount DESC, events DESC LIMIT 200`
+             ORDER BY seqCount DESC, events DESC, entry LIMIT 200`
           ).all(...baseParams);
           if (reused.length > 0) {
             // Fetch every record for the candidate entries in ONE pass (not 200 per-entry queries).
@@ -1513,7 +1513,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
            FROM data WHERE ${timeFilter} ${pathLike} ${notDir}
              AND (${reasonCol} LIKE '%FileCreate%' OR ${reasonCol} LIKE '%RenameNewName%')
              AND ${extCol ? `lower(${extCol}) IN (${extIn})` : `(${nameLikeFilter})`}
-           ORDER BY sort_datetime(${tsCol}) DESC LIMIT 20000`
+           ORDER BY sort_datetime(${tsCol}) DESC, rowid LIMIT 20000`
         ).all(...baseParams, ...(extCol ? payloadExts : payloadExts.map((e) => `%${e}`)));
         result.masqueradeTruncated = cand.length >= 20000;
         // RTL/bidi OVERRIDE + ISOLATE controls (U+202A-202E, U+2066-2069) that actually reorder
@@ -1556,13 +1556,14 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
           const execIn = dropperExts.map(() => "?").join(",");
           const TRUSTED_INSTALL_RE = /\\program files(?: \(x86\))?\\|\\windows\\(?:system32|syswow64|winsxs|installer|servicing|softwaredistribution)\\/i;
           const rows = db.prepare(
-            `SELECT ${entryCol} AS entry, ${seqCol} AS seq, ${nameCol} AS name, ${extCol ? `${extCol} AS ext` : "'' AS ext"}, ${parentPathCol ? `${parentPathCol} AS parent` : "'' AS parent"},
+            // name/ext/parent come from the group's last record (SQLite's bare-column choice).
+            `SELECT ${entryCol} AS entry, ${seqCol} AS seq, arg_max(${nameCol}, rowid) AS name, ${extCol ? `arg_max(${extCol}, rowid) AS ext` : "'' AS ext"}, ${parentPathCol ? `arg_max(${parentPathCol}, rowid) AS parent` : "'' AS parent"},
                     MIN(${tsCol}) AS first, MAX(${tsCol}) AS last,
                     MAX(CASE WHEN ${flagLike("FileCreate")} THEN 1 ELSE 0 END) AS hasCreate,
                     MAX(CASE WHEN ${flagLike("FileDelete")} THEN 1 ELSE 0 END) AS hasDelete
              FROM data WHERE ${timeFilter} ${pathLike} ${notDir} ${extCol ? `AND lower(${extCol}) IN (${execIn})` : ""}
              GROUP BY ${entryCol}, ${seqCol} HAVING hasCreate = 1 AND hasDelete = 1
-             ORDER BY (CAST(strftime('%s', sort_datetime(MAX(${tsCol}))) AS INTEGER) - CAST(strftime('%s', sort_datetime(MIN(${tsCol}))) AS INTEGER)) ASC LIMIT 2000`
+             ORDER BY (epoch(TRY_CAST(substr(sort_datetime(MAX(${tsCol})), 1, 19) AS TIMESTAMP)) - epoch(TRY_CAST(substr(sort_datetime(MIN(${tsCol})), 1, 19) AS TIMESTAMP))) ASC, entry, seq LIMIT 2000`
           ).all(...baseParams, ...(extCol ? dropperExts : []));
           for (const r of rows) {
             const ext = deriveExtension(r.name, r.ext);
@@ -1597,7 +1598,7 @@ function analyzeUsnJournal(meta, { startTime, endTime, analyses, pathFilter, mft
            FROM data WHERE ${timeFilter} ${pathLike} ${notDir}
              AND ${flagLike("StreamChange")} AND ${flagLike("NamedDataTruncation")} AND NOT ${flagLike("FileDelete")}
              ${extCol ? `AND lower(${extCol}) IN (${extIn})` : ""}
-           ORDER BY sort_datetime(${tsCol}) DESC LIMIT 500`
+           ORDER BY sort_datetime(${tsCol}) DESC, rowid LIMIT 500`
         ).all(...baseParams, ...(extCol ? payloadExts : []));
         const seen = new Set();
         for (const r of rows) {
@@ -2508,7 +2509,7 @@ function resolveUsnPaths(meta, mftTabId, getDatabaseMeta) {
           SELECT ${entryCol} as entry, ${seqCol} as seq, ${nameCol} as name,
                  ${parentEntryCol} as parentEntry, ${parentSeqCol} as parentSeq
           FROM data WHERE ${attrsCol} LIKE '%Directory%'
-          ORDER BY sort_datetime(${tsCol}) DESC
+          ORDER BY sort_datetime(${tsCol}) DESC, rowid
         `).all();
       } catch (e) {
         dbg("DB", `USN rewind: $J directory query fallback`, { error: e.message });
@@ -2611,23 +2612,34 @@ function resolveUsnPaths(meta, mftTabId, getDatabaseMeta) {
       }
 
       // Step 4: Resolve paths and batch UPDATE
-      // IMPORTANT: better-sqlite3 cannot run write operations while a read cursor is
-      // active on the same connection. We page through rows by rowid (keyset pagination)
-      // instead of loading the entire table with .all() — a multi-GB $J can have tens of
-      // millions of rows and would OOM the main process. Each page is fully materialized
-      // (.all()) and consumed before its UPDATE transaction runs, so no cursor is active
-      // during writes. Updating ParentPath does not affect the rowid-ordered paging.
+      // We page through rows by rowid (keyset pagination) instead of loading the entire
+      // table with .all() — a multi-GB $J can have tens of millions of rows and would OOM
+      // the main process. Each page is fully materialized and consumed before its UPDATE
+      // runs. Updating ParentPath does not affect the rowid-ordered paging.
+      // Each page's resolved paths are loaded into a staging table and applied with one
+      // UPDATE … FROM (DuckDB rewrites a column far faster as a set than row by row).
       const PAGE_SIZE = 50000;
       const selectPage = meta.db.prepare(
         `SELECT rowid, ${parentEntryCol} as parentEntry, ${parentSeqCol} as parentSeq
          FROM data WHERE rowid > ? ORDER BY rowid LIMIT ?`
       );
-      const updateStmt = meta.db.prepare(
-        `UPDATE data SET ${parentPathCol} = ? WHERE rowid = ?`
-      );
-      const updateBatch = meta.db.transaction((updates) => {
-        for (const u of updates) updateStmt.run(u.path, u.rowid);
-      });
+      meta.db.exec("DROP TABLE IF EXISTS _usn_paths; CREATE TABLE _usn_paths (rid BIGINT, path VARCHAR)");
+      const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+      const updateBatch = (updates) => {
+        meta.db.exec("DELETE FROM _usn_paths");
+        meta.db.appendRows("_usn_paths", updates.map((u) => [u.rowid, u.path]));
+        // The background sort-key build may be writing this table at the same moment; DuckDB
+        // then reports a conflict instead of waiting for the lock as SQLite did. Retry briefly.
+        for (let attempt = 0; ; attempt++) {
+          try {
+            meta.db.exec(`UPDATE data SET ${parentPathCol} = p.path FROM _usn_paths p WHERE data.rowid = p.rid`);
+            return;
+          } catch (e) {
+            if (attempt >= 20 || !/conflict/i.test(e?.message || "")) throw e;
+            pause(250);
+          }
+        }
+      };
 
       let resolved = 0, mftResolved = 0, total = 0;
       let lastRowid = 0;
@@ -2653,6 +2665,7 @@ function resolveUsnPaths(meta, mftTabId, getDatabaseMeta) {
         }
         if (batch.length > 0) updateBatch(batch);
       }
+      meta.db.exec("DROP TABLE IF EXISTS _usn_paths");
 
       const stats = {
         resolved,

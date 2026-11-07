@@ -1,5 +1,5 @@
 ---
-description: Five search modes — full-text, regex, fuzzy, LIKE, and mixed — to find evidence across massive forensic timelines.
+description: Search modes — mixed, LIKE, fuzzy, and regex — to find evidence across massive forensic timelines.
 ---
 
 # Search & Filtering
@@ -14,24 +14,12 @@ Access the search bar with `Cmd+F`. Select a search mode from the dropdown next 
 
 ### Mixed (Default)
 
-Combines full-text search and substring matching for the broadest results. Runs an FTS query first, then supplements with LIKE matching for partial terms.
+Matches every word anywhere in the row as a case-insensitive substring, so a term inside a longer token (`b4ckd00r` in `crackb4ckd00r`) is found. Supports `+term`, `-term`, `"quoted phrases"` and `Column:value`.
 
 Best for: General-purpose searching when you're not sure of exact phrasing.
 
-### FTS (Full-Text Search)
-
-Uses SQLite FTS5 for word-level tokenized search. Matches whole words and supports prefix queries.
-
-```
-powershell          → matches "powershell.exe", "PowerShell"
-"lateral movement"  → matches the exact phrase
-power*              → prefix match: powershell, powerpoint, etc.
-```
-
-Best for: Fast keyword searches across large datasets.
-
-::: info FTS Index
-The FTS index is built lazily on first search. Building processes 100,000 rows per chunk asynchronously so the UI remains responsive. If the index isn't ready yet, the search transparently falls back to LIKE mode.
+::: info No search index to wait for
+The DuckDB engine checks each column directly (in parallel), so search returns complete results as soon as a tab opens — there is no full-text index to build first.
 :::
 
 ### LIKE (Substring)

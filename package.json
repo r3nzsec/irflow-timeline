@@ -1,7 +1,7 @@
 {
   "name": "irflow-timeline",
   "version": "1.0.13",
-  "description": "SQLite-backed DFIR workspace for macOS. Large forensic datasets, native artifacts, AI application histories, and OS activity telemetry become searchable timelines with source provenance.",
+  "description": "DuckDB-backed DFIR workspace for macOS. Large forensic datasets, native artifacts, AI application histories, and OS activity telemetry become searchable timelines with source provenance.",
   "main": "electron/main.js",
   "author": "DFIR Community",
   "license": "Apache-2.0",
@@ -14,7 +14,8 @@
     "start": "npm run build:renderer && electron .",
     "bundle:hayabusa": "bash scripts/bundle-hayabusa.sh",
     "bundle:bmc-tools": "bash scripts/bundle-bmc-tools.sh",
-    "bundle:tools": "npm run bundle:hayabusa && npm run bundle:bmc-tools",
+    "bundle:duckdb": "node scripts/ensure-duckdb-bindings.cjs",
+    "bundle:tools": "npm run bundle:hayabusa && npm run bundle:bmc-tools && npm run bundle:duckdb",
     "dist": "npm run bundle:tools && npm run build:renderer && electron-builder --config electron-builder.config.cjs --mac",
     "dist:release": "npm run dist",
     "dist:smoke": "npm run bundle:tools && npm run build:renderer && SKIP_NOTARIZE=1 CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config electron-builder.config.cjs --mac",
@@ -46,6 +47,7 @@
     "wait-on": "^8.0.1"
   },
   "dependencies": {
+    "@duckdb/node-api": "1.5.6-r.2",
     "@ts-evtx/core": "^1.1.1",
     "@ts-evtx/messages": "^1.1.1",
     "better-sqlite3": "^13.0.3",

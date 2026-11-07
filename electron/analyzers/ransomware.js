@@ -346,7 +346,7 @@ function scanRansomwareExtensions(meta, progressCb) {
     // Phase 1: Get all extensions with counts >= 50
     _p({ stage: "extensions", pct: 5, detail: "Scanning extension distribution" });
     const allExts = db.prepare(
-      `SELECT LOWER(${ext}) as extension, COUNT(*) as cnt FROM data WHERE ${ext} IS NOT NULL AND ${ext} != '' ${notDir} GROUP BY LOWER(${ext}) HAVING cnt >= 50 ORDER BY cnt DESC LIMIT 200`
+      `SELECT LOWER(${ext}) as extension, COUNT(*) as cnt FROM data WHERE ${ext} IS NOT NULL AND ${ext} != '' ${notDir} GROUP BY LOWER(${ext}) HAVING cnt >= 50 ORDER BY cnt DESC, extension LIMIT 200`
     ).all();
 
     // Filter to non-common extensions
@@ -356,7 +356,7 @@ function scanRansomwareExtensions(meta, progressCb) {
     // Phase 1b: Also try lower threshold (cnt >= 5) if no candidates at >= 50
     if (rawCandidates.length === 0) {
       const lowExts = db.prepare(
-        `SELECT LOWER(${ext}) as extension, COUNT(*) as cnt FROM data WHERE ${ext} IS NOT NULL AND ${ext} != '' ${notDir} GROUP BY LOWER(${ext}) HAVING cnt >= 5 ORDER BY cnt DESC LIMIT 200`
+        `SELECT LOWER(${ext}) as extension, COUNT(*) as cnt FROM data WHERE ${ext} IS NOT NULL AND ${ext} != '' ${notDir} GROUP BY LOWER(${ext}) HAVING cnt >= 5 ORDER BY cnt DESC, extension LIMIT 200`
       ).all();
       const lowCandidates = lowExts.filter(e => !RW_COMMON_EXTENSIONS.has(e.extension));
       if (lowCandidates.length > 0) rawCandidates.push(...lowCandidates);
@@ -376,7 +376,7 @@ function scanRansomwareExtensions(meta, progressCb) {
       let peakMinute = null, peakMinuteCount = 0, burstScore = 0;
       if (lastMod) {
         const peak = db.prepare(
-          `SELECT extract_datetime_minute(${lastMod}) as bucket, COUNT(*) as cnt FROM data WHERE LOWER(${ext}) = LOWER(?) ${notDir} AND ${lastMod} IS NOT NULL AND ${lastMod} != '' GROUP BY bucket HAVING bucket IS NOT NULL ORDER BY cnt DESC LIMIT 1`
+          `SELECT extract_datetime_minute(${lastMod}) as bucket, COUNT(*) as cnt FROM data WHERE LOWER(${ext}) = LOWER(?) ${notDir} AND ${lastMod} IS NOT NULL AND ${lastMod} != '' GROUP BY bucket HAVING bucket IS NOT NULL ORDER BY cnt DESC, bucket LIMIT 1`
         ).get(rc.extension);
         if (peak) {
           peakMinute = peak.bucket;
@@ -387,7 +387,7 @@ function scanRansomwareExtensions(meta, progressCb) {
 
       // Sample paths (top 3 directories)
       const pathRows = db.prepare(
-        `SELECT ${pp} as path FROM data WHERE LOWER(${ext}) = LOWER(?) ${notDir} GROUP BY ${pp} ORDER BY COUNT(*) DESC LIMIT 3`
+        `SELECT ${pp} as path FROM data WHERE LOWER(${ext}) = LOWER(?) ${notDir} GROUP BY ${pp} ORDER BY COUNT(*) DESC, path LIMIT 3`
       ).all(rc.extension);
       const samplePaths = pathRows.map(r => r.path);
 
@@ -423,7 +423,7 @@ function scanRansomwareExtensions(meta, progressCb) {
       const dirCountRow = db.prepare(`SELECT COUNT(DISTINCT ${pp}) as dc FROM data ${notDir ? "WHERE " + notDir.replace(/^AND /,"") : ""}`).get();
       const noteThreshold = (dirCountRow?.dc || 0) < 500 ? 3 : 10;
       const noteRows = db.prepare(
-        `SELECT ${fn} as fileName, LOWER(${ext}) as extension, COUNT(DISTINCT ${pp}) as dirCount, COUNT(*) as total FROM data WHERE LOWER(${ext}) IN ('.txt','.html','.htm','.hta','.url','.bmp','.png') AND CAST(${fs} AS REAL) < 102400 ${notDir} GROUP BY LOWER(${fn}) HAVING dirCount >= ${noteThreshold} ORDER BY dirCount DESC LIMIT 20`
+        `SELECT MIN(${fn}) as fileName, MIN(LOWER(${ext})) as extension, COUNT(DISTINCT ${pp}) as dirCount, COUNT(*) as total FROM data WHERE LOWER(${ext}) IN ('.txt','.html','.htm','.hta','.url','.bmp','.png') AND CAST(${fs} AS REAL) < 102400 ${notDir} GROUP BY LOWER(${fn}) HAVING dirCount >= ${noteThreshold} ORDER BY dirCount DESC, LOWER(${fn}) LIMIT 20`
       ).all();
 
       const parseTs = (s) => { const m = String(s).match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/); return m ? new Date(Date.UTC(+m[1], m[2]-1, +m[3], +m[4], +m[5], +m[6])) : null; };
@@ -1036,8 +1036,8 @@ function analyzeRansomware(meta, { encryptedExt, ransomNotePattern, noteMatchMod
 
     // Q2: First and Last encrypted files
     _p({ stage: "timeline", pct: 10, detail: `${encryptedCount.toLocaleString()} encrypted files found` });
-    const firstQ = db.prepare(`SELECT data.rowid as rowId, ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${lastMod} as timestamp${coreTsSelect} FROM data WHERE ${extWhereAll} ${notDir} ORDER BY sort_datetime(${lastMod}) ASC LIMIT 1`).get(...extParts);
-    const lastQ = db.prepare(`SELECT data.rowid as rowId, ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${lastMod} as timestamp${coreTsSelect} FROM data WHERE ${extWhereAll} ${notDir} ORDER BY sort_datetime(${lastMod}) DESC LIMIT 1`).get(...extParts);
+    const firstQ = db.prepare(`SELECT data.rowid as rowId, ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${lastMod} as timestamp${coreTsSelect} FROM data WHERE ${extWhereAll} ${notDir} ORDER BY sort_datetime(${lastMod}) ASC, rowid LIMIT 1`).get(...extParts);
+    const lastQ = db.prepare(`SELECT data.rowid as rowId, ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${lastMod} as timestamp${coreTsSelect} FROM data WHERE ${extWhereAll} ${notDir} ORDER BY sort_datetime(${lastMod}) DESC, rowid LIMIT 1`).get(...extParts);
     const startAnchorDt = pickAnchorTs(firstQ, "start") || parseTs(firstQ?.timestamp);
     const endAnchorDt = pickAnchorTs(lastQ, "end") || parseTs(lastQ?.timestamp);
 
@@ -1051,7 +1051,7 @@ function analyzeRansomware(meta, { encryptedExt, ransomNotePattern, noteMatchMod
     // Q2b: First 50 encrypted files (encryption spread) — with multi-timestamp columns
     const fsSel = fs ? `, ${fs} as fileSize` : "";
     const firstEncryptedFiles = db.prepare(
-      `SELECT data.rowid as rowId, ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${lastMod} as timestamp${fsSel}${coreTsSelect} FROM data WHERE ${extWhereAll} ${notDir} ORDER BY sort_datetime(${lastMod}) ASC LIMIT 50`
+      `SELECT data.rowid as rowId, ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${lastMod} as timestamp${fsSel}${coreTsSelect} FROM data WHERE ${extWhereAll} ${notDir} ORDER BY sort_datetime(${lastMod}) ASC, rowid LIMIT 50`
     ).all(...extParts);
 
     // Q3: Ransom notes — multi-mode matching (exact/contains/regex/multi)
@@ -1087,7 +1087,7 @@ function analyzeRansomware(meta, { encryptedExt, ransomNotePattern, noteMatchMod
           noteParams = [noteParam];
       }
       ransomNotes = db.prepare(
-        `SELECT data.rowid as rowId, ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${createdCol} as created${noteExtraCols} FROM data WHERE (${noteWhere}) ORDER BY sort_datetime(${createdCol}) ASC LIMIT 1000`
+        `SELECT data.rowid as rowId, ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${createdCol} as created${noteExtraCols} FROM data WHERE (${noteWhere}) ORDER BY sort_datetime(${createdCol}) ASC, rowid LIMIT 1000`
       ).all(...noteParams);
       if (mode === "regex") {
         const compiled = compileSafeRegex(noteParam, "i");
@@ -1120,7 +1120,7 @@ function analyzeRansomware(meta, { encryptedExt, ransomNotePattern, noteMatchMod
             const usnExtLikes = extParts.map(() => `LOWER(${usnName}) LIKE ?`).join(" OR ");
             const usnExtParams = extParts.map((e) => `%${e.toLowerCase()}`);
             const renameEvents = usnDb.prepare(
-              `SELECT ${usnTs} as timestamp, ${usnName} as name${usnExtC ? `, ${usnExtC} as extension` : ""}${usnPp ? `, ${usnPp} as parentPath` : ""}, ${usnReasons} as reasons FROM data WHERE ${usnReasons} LIKE '%RenameNewName%' AND sort_datetime(${usnTs}) BETWEEN sort_datetime(?) AND sort_datetime(?) AND (${usnExtLikes}) ORDER BY sort_datetime(${usnTs}) ASC LIMIT 500`
+              `SELECT ${usnTs} as timestamp, ${usnName} as name${usnExtC ? `, ${usnExtC} as extension` : ""}${usnPp ? `, ${usnPp} as parentPath` : ""}, ${usnReasons} as reasons FROM data WHERE ${usnReasons} LIKE '%RenameNewName%' AND sort_datetime(${usnTs}) BETWEEN sort_datetime(?) AND sort_datetime(?) AND (${usnExtLikes}) ORDER BY sort_datetime(${usnTs}) ASC, rowid LIMIT 500`
             ).all(usnStart, usnEnd, ...usnExtParams);
             const overwriteEvents = usnDb.prepare(
               `SELECT extract_datetime_minute(${usnTs}) as bucket, COUNT(*) as count FROM data WHERE (${usnReasons} LIKE '%DataOverwrite%' OR ${usnReasons} LIKE '%DataExtend%') AND sort_datetime(${usnTs}) BETWEEN sort_datetime(?) AND sort_datetime(?) GROUP BY bucket HAVING bucket IS NOT NULL ORDER BY bucket`
@@ -1162,7 +1162,7 @@ function analyzeRansomware(meta, { encryptedExt, ransomNotePattern, noteMatchMod
           const kwLikes = kws.map(() => `LOWER(${concat}) LIKE ?`).join(" OR ");
           const kwParams = kws.map((k) => `%${k.toLowerCase()}%`);
           const rows = evtxMeta.db.prepare(
-            `SELECT ${cols.ts} as timestamp, ${cols.eid} as eventId, substr(${concat}, 1, 400) as text FROM data WHERE sort_datetime(${cols.ts}) BETWEEN sort_datetime(?) AND sort_datetime(?) AND (CAST(${cols.eid} AS TEXT) IN ('1102','104','7045') OR (${kwLikes})) ORDER BY sort_datetime(${cols.ts}) ASC LIMIT 300`
+            `SELECT ${cols.ts} as timestamp, ${cols.eid} as eventId, substr(${concat}, 1, 400) as text FROM data WHERE sort_datetime(${cols.ts}) BETWEEN sort_datetime(?) AND sort_datetime(?) AND (CAST(${cols.eid} AS TEXT) IN ('1102','104','7045') OR (${kwLikes})) ORDER BY sort_datetime(${cols.ts}) ASC, rowid LIMIT 300`
           ).all(evStart, evEnd, ...kwParams);
           const byTechnique = {}, byCategory = {}, hits = [];
           for (const r of rows) {
@@ -1182,7 +1182,7 @@ function analyzeRansomware(meta, { encryptedExt, ransomNotePattern, noteMatchMod
 
     // Q5: Top affected directories — subtree grouped with encrypted/total ratios
     _p({ stage: "directories", pct: 35, detail: "Mapping affected directories" });
-    const encDirsRaw = db.prepare(`SELECT ${pp} as path, COUNT(*) as count FROM data WHERE ${extWhereAll} ${notDir} GROUP BY ${pp} ORDER BY count DESC LIMIT 500`).all(...extParts);
+    const encDirsRaw = db.prepare(`SELECT ${pp} as path, COUNT(*) as count FROM data WHERE ${extWhereAll} ${notDir} GROUP BY ${pp} ORDER BY count DESC, path LIMIT 500`).all(...extParts);
     const allDirsRaw = db.prepare(`SELECT ${pp} as path, COUNT(*) as total FROM data WHERE ${pp} IN (SELECT DISTINCT ${pp} FROM data WHERE ${extWhereAll} ${notDir}) ${notDir} GROUP BY ${pp}`).all(...extParts);
     const topDirectories = _groupBySubtree(encDirsRaw, allDirsRaw);
 
@@ -1210,7 +1210,7 @@ function analyzeRansomware(meta, { encryptedExt, ransomNotePattern, noteMatchMod
         const zoneCol = zoneId || `''`;
         const q7extra = `${inUse ? `, ${inUse} as inUse` : ""}${siFN ? `, ${siFN} as siFN` : ""}${lastMod ? `, ${lastMod} as lastModified` : ""}${recChange ? `, ${recChange} as recordChange0x10` : ""}${created0x30 ? `, ${created0x30} as created0x30` : ""}${lastMod0x30 ? `, ${lastMod0x30} as lastMod0x30` : ""}`;
         suspiciousFiles = db.prepare(
-          `SELECT data.rowid as rowId, ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${created} as created, ${ext} as extension, ${zoneCol} as zoneId${q7extra} FROM data WHERE sort_datetime(${created}) BETWEEN sort_datetime(?) AND sort_datetime(?) AND LOWER(${ext}) IN (${extPlaceholders}) ${notDir} ORDER BY sort_datetime(${created}) ASC LIMIT 200`
+          `SELECT data.rowid as rowId, ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${created} as created, ${ext} as extension, ${zoneCol} as zoneId${q7extra} FROM data WHERE sort_datetime(${created}) BETWEEN sort_datetime(?) AND sort_datetime(?) AND LOWER(${ext}) IN (${extPlaceholders}) ${notDir} ORDER BY sort_datetime(${created}) ASC, rowid LIMIT 200`
         ).all(windowStart, windowEnd, ...suspExts);
 
         // Score each suspicious file
@@ -1270,7 +1270,7 @@ function analyzeRansomware(meta, { encryptedExt, ransomNotePattern, noteMatchMod
           sel.push(`substr(${concat}, 1, 600) as text`);
           const chanClause = cols.channel ? ` AND (LOWER(${cols.channel}) LIKE '%sysmon%' OR LOWER(${cols.channel}) LIKE '%sec%')` : "";
           const rows = evtxMeta.db.prepare(
-            `SELECT ${sel.join(", ")} FROM data WHERE CAST(${cols.eid} AS TEXT) IN ('1','4688')${chanClause} AND sort_datetime(${cols.ts}) BETWEEN sort_datetime(?) AND sort_datetime(?) ORDER BY sort_datetime(${cols.ts}) ASC LIMIT 1000`
+            `SELECT ${sel.join(", ")} FROM data WHERE CAST(${cols.eid} AS TEXT) IN ('1','4688')${chanClause} AND sort_datetime(${cols.ts}) BETWEEN sort_datetime(?) AND sort_datetime(?) ORDER BY sort_datetime(${cols.ts}) ASC, rowid LIMIT 1000`
           ).all(pStart, pEnd);
           const lc = (s) => String(s == null ? "" : s).toLowerCase();
           const nz = (v) => { const s = String(v == null ? "" : v).trim(); return s || null; };
@@ -1356,10 +1356,10 @@ function analyzeRansomware(meta, { encryptedExt, ransomNotePattern, noteMatchMod
             const wStart = burst.buckets[0].bucket + ":00";
             const wEnd = burst.buckets[burst.buckets.length - 1].bucket + ":59";
             ipSamples = db.prepare(
-              `SELECT ${ext} as extension, ${fn} as fileName, ${pp} as parentPath, ${created} as created0x10, ${lastMod} as lastMod0x10, ${lastMod0x30} as lastMod0x30 FROM data WHERE ${ipWhere} AND sort_datetime(${lastMod}) BETWEEN sort_datetime(?) AND sort_datetime(?) ORDER BY sort_datetime(${lastMod}) ASC LIMIT 200`
+              `SELECT ${ext} as extension, ${fn} as fileName, ${pp} as parentPath, ${created} as created0x10, ${lastMod} as lastMod0x10, ${lastMod0x30} as lastMod0x30 FROM data WHERE ${ipWhere} AND sort_datetime(${lastMod}) BETWEEN sort_datetime(?) AND sort_datetime(?) ORDER BY sort_datetime(${lastMod}) ASC, rowid LIMIT 200`
             ).all(...bizExts, ...pathParams, wStart, wEnd);
             ipExtBreakdown = db.prepare(
-              `SELECT LOWER(${ext}) as extension, COUNT(*) as count FROM data WHERE ${ipWhere} AND sort_datetime(${lastMod}) BETWEEN sort_datetime(?) AND sort_datetime(?) GROUP BY LOWER(${ext}) ORDER BY count DESC LIMIT 30`
+              `SELECT LOWER(${ext}) as extension, COUNT(*) as count FROM data WHERE ${ipWhere} AND sort_datetime(${lastMod}) BETWEEN sort_datetime(?) AND sort_datetime(?) GROUP BY LOWER(${ext}) ORDER BY count DESC, extension LIMIT 30`
             ).all(...bizExts, ...pathParams, wStart, wEnd);
             // S3: USN DataOverwrite/DataExtend WITHOUT a rename, aligned to the burst minutes.
             if (usnMeta && usnMeta.db) {
@@ -1515,7 +1515,7 @@ function analyzeRansomware(meta, { encryptedExt, ransomNotePattern, noteMatchMod
         // 10a: Deleted encrypted file details
         if (inUse) {
           antiForensics.deletedEncrypted = db.prepare(
-            `SELECT ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${lastMod} as lastModified${created ? `, ${created} as created` : ""} FROM data WHERE ${extWhereAll} AND ${inUse} = 'False' ${notDir} ORDER BY sort_datetime(${lastMod}) ASC LIMIT 20`
+            `SELECT ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${lastMod} as lastModified${created ? `, ${created} as created` : ""} FROM data WHERE ${extWhereAll} AND ${inUse} = 'False' ${notDir} ORDER BY sort_datetime(${lastMod}) ASC, rowid LIMIT 20`
           ).all(...extParts);
         }
         // 10b: Timestomped files in encryption window
@@ -1529,13 +1529,13 @@ function analyzeRansomware(meta, { encryptedExt, ransomNotePattern, noteMatchMod
           const cleanupExts = [".exe",".dll",".bat",".cmd",".ps1",".vbs",".js",".log",".tmp",".dat"];
           const clPh = cleanupExts.map(() => "?").join(",");
           antiForensics.cleanup = db.prepare(
-            `SELECT ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${ext} as extension, ${created} as created, ${lastMod} as lastModified FROM data WHERE ${inUse} = 'False' AND LOWER(${ext}) IN (${clPh}) AND sort_datetime(${created}) BETWEEN sort_datetime(?) AND sort_datetime(?) ${notDir} ORDER BY sort_datetime(${created}) ASC LIMIT 30`
+            `SELECT ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${ext} as extension, ${created} as created, ${lastMod} as lastModified FROM data WHERE ${inUse} = 'False' AND LOWER(${ext}) IN (${clPh}) AND sort_datetime(${created}) BETWEEN sort_datetime(?) AND sort_datetime(?) ${notDir} ORDER BY sort_datetime(${created}) ASC, rowid LIMIT 30`
           ).all(...cleanupExts, afStart, afEnd);
         }
         // 10d: Suspicious drops in risky paths during window
         if (created) {
           antiForensics.drops = db.prepare(
-            `SELECT ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${ext} as extension, ${created} as created FROM data WHERE sort_datetime(${created}) BETWEEN sort_datetime(?) AND sort_datetime(?) AND (LOWER(${pp}) LIKE '%\\temp\\%' OR LOWER(${pp}) LIKE '%\\programdata\\%' OR LOWER(${pp}) LIKE '%\\appdata\\%' OR LOWER(${pp}) LIKE '%users\\public%' OR LOWER(${pp}) LIKE '%$recycle.bin%') ${notDir} ORDER BY sort_datetime(${created}) ASC LIMIT 30`
+            `SELECT ${entry} as entryNumber, ${fn} as fileName, ${pp} as parentPath, ${ext} as extension, ${created} as created FROM data WHERE sort_datetime(${created}) BETWEEN sort_datetime(?) AND sort_datetime(?) AND (LOWER(${pp}) LIKE '%\\temp\\%' OR LOWER(${pp}) LIKE '%\\programdata\\%' OR LOWER(${pp}) LIKE '%\\appdata\\%' OR LOWER(${pp}) LIKE '%users\\public%' OR LOWER(${pp}) LIKE '%$recycle.bin%') ${notDir} ORDER BY sort_datetime(${created}) ASC, rowid LIMIT 30`
           ).all(afStart, afEnd);
         }
     }

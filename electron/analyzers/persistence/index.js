@@ -373,7 +373,7 @@ function getPersistenceAnalysis(meta, options = {}, ctx) {
     }
 
     const orderCol = columns.ts ? meta.colMap[columns.ts] : null;
-    const orderClause = orderCol ? `ORDER BY ${orderCol} ASC` : "ORDER BY data.rowid ASC";
+    const orderClause = orderCol ? `ORDER BY ${orderCol} ASC, data.rowid ASC` : "ORDER BY data.rowid ASC";
 
     // --- Normalization helpers for correlation ---
     const _normSvcName = (s) => (s || "").replace(/"/g, "").trim().toLowerCase();

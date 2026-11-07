@@ -9,19 +9,18 @@
 // was not "(empty)". Unchecking the one you could see left the others selected, and their
 // rows stayed on screen — the filter looked like it had been ignored.
 //
-// Needs a live SQLite binding; skipped under a Node runtime without the native module built
-// (CI rebuilds it). Run after `npm rebuild better-sqlite3`.
+// Needs the DuckDB binding; skipped when it is not installed for this runtime.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
 let Database = null;
-try { Database = require("better-sqlite3"); } catch { /* native module not built */ }
+try { ({ Database } = require("./helpers/duckdb-data-table")); } catch { /* DuckDB binding not installed */ }
 const HAVE_SQLITE = (() => {
   if (!Database) return false;
   try { const d = new Database(":memory:"); d.close(); return true; } catch { return false; }
 })();
-const skip = HAVE_SQLITE ? false : "better-sqlite3 native module not built for this runtime";
+const skip = HAVE_SQLITE ? false : "DuckDB binding not available for this runtime";
 
 const TimelineDB = require("../electron/db");
 

@@ -55,8 +55,7 @@ Use the search bar at the top (`Cmd+F`):
 
 1. Type your search term
 2. Select a search mode from the dropdown:
-   - **Mixed** — Combines full-text and substring search (default)
-   - **FTS** — Full-text search (word-level matching)
+   - **Mixed** — Every word anywhere in the row, case-insensitive (default)
    - **LIKE** — Substring match
    - **Fuzzy** — Tolerates typos
    - **Regex** — Regular expression patterns

@@ -114,7 +114,7 @@ export default function SigmaResultsView() {
                       }} />
                     </div>
                     <div style={{ fontSize: 10, color: th.textMuted, marginTop: 8, fontFamily: "-apple-system, sans-serif" }}>
-                      {ip.text || (isDone ? "Indexes building in background — modal will close shortly" : "Inserting rows into SQLite tab...")}
+                      {ip.text || (isDone ? "Indexes building in background — modal will close shortly" : "Inserting rows into DuckDB tab...")}
                     </div>
                   </div>
                 );

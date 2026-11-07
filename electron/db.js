@@ -1,21 +1,23 @@
 /**
- * db.js — SQLite-backed data engine for IRFlow Timeline
+ * db.js — DuckDB-backed data engine for IRFlow Timeline
+ *
+ * Tabs are stored and queried with DuckDB (see electron/db/duckdb/). Rows are bulk-loaded with
+ * DuckDB's appender, there are no column or FTS5 indexes (DuckDB scans columns in parallel),
+ * and the background "index" build stores each timestamp column's sort key instead.
  *
  * Architecture:
- *   1. Streaming import: CSV/XLSX rows are inserted in batches via transactions
- *   2. FTS5 full-text search index for global search
- *   3. SQL-based filtering, sorting, pagination (only visible rows in memory)
- *   4. Column metadata, stats, and type detection stored alongside data
- *   5. Temp database files auto-cleaned on close
+ *   1. Streaming import: CSV/XLSX rows are appended in batches
+ *   2. SQL-based filtering, sorting, pagination (only visible rows in memory)
+ *   3. Column metadata, stats, and type detection stored alongside data
+ *   4. Temp database files auto-cleaned on close
  *
  * This enables handling 30-50GB+ files because:
- *   - Rows stream from disk → SQLite (never all in JS heap)
+ *   - Rows stream from disk → DuckDB (never all in JS heap)
  *   - Queries use LIMIT/OFFSET (only ~10k rows in memory at once)
- *   - FTS5 handles full-text search natively
- *   - SQLite B-tree indexes handle sorting without in-memory sort
+ *   - DuckDB's columnar, multi-threaded scans handle search, sorting and aggregation
  */
 
-const Database = require("better-sqlite3");
+const Database = require("./db/duckdb");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -25,17 +27,20 @@ const crypto = require("crypto");
 const { dbg } = require("./logger");
 const { registerRuntimeFunctions } = require("./db/runtime-functions");
 const { safeRegexTester } = require("./utils/safe-regex");
+const { regexCondition } = require("./db/sql-match");
+
+// Suffix of the column that stores sort_datetime(<col>) once the background build has run.
+const SORT_KEY_SUFFIX = "__sdt";
 
 /**
  * Attach the tab's write statements to `meta` as memoized lazy properties.
  *
  * Each one compiles on first access and then replaces itself with a plain data property,
- * so callers keep using `meta.insertStmt` / `meta.tagInsertStmt` unchanged and a tab that
+ * so callers keep using `meta.bmInsertStmt` / `meta.tagInsertStmt` unchanged and a tab that
  * only ever reads never compiles them at all. Properties stay writable and configurable
  * so tests can substitute stubs.
  */
-function lazyWriteStatements(meta, { colList, placeholders }) {
-  const hasCols = meta.safeCols.length > 0;
+function lazyWriteStatements(meta) {
   const define = (name, build) => {
     Object.defineProperty(meta, name, {
       configurable: true,
@@ -51,18 +56,7 @@ function lazyWriteStatements(meta, { colList, placeholders }) {
     });
   };
 
-  define("insertStmt", () => (hasCols
-    ? meta.db.prepare(`INSERT INTO data (${colList}) VALUES (${placeholders})`)
-    : null));
-  define("multiInsertStmt", () => {
-    if (!hasCols || meta.multiRowCount <= 1) return null;
-    const singleRow = `(${placeholders})`;
-    return meta.db.prepare(`INSERT INTO data (${colList}) VALUES ${Array(meta.multiRowCount).fill(singleRow).join(",")}`);
-  });
-  // Sized against multiInsertStmt: null whenever there is no multi-row insert to fill.
-  define("insertFlat", () => (hasCols && meta.multiRowCount > 1
-    ? new Array(meta.multiRowCount * meta.safeCols.length)
-    : null));
+  // Rows go in through DuckDB's appender (insertBatchArrays), not prepared INSERTs.
   define("bmCheckStmt", () => meta.db.prepare("SELECT rowid FROM bookmarks WHERE rowid = ?"));
   define("bmInsertStmt", () => meta.db.prepare("INSERT OR IGNORE INTO bookmarks (rowid) VALUES (?)"));
   define("bmDeleteStmt", () => meta.db.prepare("DELETE FROM bookmarks WHERE rowid = ?"));
@@ -72,15 +66,29 @@ function lazyWriteStatements(meta, { colList, placeholders }) {
   return meta;
 }
 
+/** Column names that hold stored sort keys (e.g. c3__sdt → c3). */
+function sortKeyColsFromTable(db) {
+  try {
+    return db.pragma("table_info(data)")
+      .map((c) => c.name)
+      .filter((n) => n.endsWith(SORT_KEY_SUFFIX))
+      .map((n) => n.slice(0, -SORT_KEY_SUFFIX.length));
+  } catch {
+    return [];
+  }
+}
+
+/** Let the tab's SQL read stored sort keys instead of calling sort_datetime() per row. */
+function applySortKeys(meta) {
+  const map = new Map();
+  for (const safe of meta.sortKeyCols || []) map.set(safe, `${safe}${SORT_KEY_SUFFIX}`);
+  meta.db.setComputedColumns("sort_datetime", map);
+}
+
 class TimelineDB {
   constructor() {
     this.databases = new Map(); // tabId -> { db, dbPath, headers, rowCount, tsColumns }
-    // Periodic WAL checkpoint — prevent unbounded WAL growth on long sessions
-    this._walInterval = setInterval(() => {
-      for (const [, meta] of this.databases) {
-        try { if (meta.db?.open) meta.db.pragma("wal_checkpoint(PASSIVE)"); } catch {}
-      }
-    }, 5 * 60 * 1000); // every 5 minutes
+    // DuckDB checkpoints its own WAL; nothing to schedule here.
   }
 
   // ── EVTX field utilities (delegated to analyzers/evtx-utils.js) ──
@@ -118,35 +126,12 @@ class TimelineDB {
     try {
     registerRuntimeFunctions(db);
 
-    // page_size MUST be set before any tables are created
-    // 64KB pages: fewer B-tree nodes, faster bulk writes & index creation
-    db.pragma("page_size = 65536");
-
-    // Scale pragmas based on file size — reduce memory for very large files to prevent OOM
+    // DuckDB sizes its own memory and threads (electron/db/duckdb/host.js); the file size
+    // only decides which background work is worth doing.
     const fileSize = this._fileSizeHint || 0;
     const isLargeFile = fileSize > 5 * 1024 * 1024 * 1024; // >5GB
     this._fileSizeHint = 0; // consume the hint
 
-    // Performance pragmas for bulk import (maximise write throughput)
-    db.pragma("journal_mode = OFF"); // no journal — fastest writes (temp DB, crash = re-import)
-    db.pragma("synchronous = OFF");
-    // Size the write cache by FILE SIZE (~1.5× the file, clamped) instead of a flat 1GB — a 5MB
-    // KAPE artifact does not need a 1GB cache, and this is the real per-import RSS governor (lower
-    // RSS also unblocks safe concurrent imports later). Large files cap at 256MB to avoid OOM.
-    const cacheKiB = isLargeFile ? 262144 : Math.min(1048576, Math.max(16384, Math.ceil((fileSize / 1024) * 1.5)));
-    db.pragma(`cache_size = ${-cacheKiB}`); // negative = KiB
-    db.pragma(`temp_store = ${isLargeFile ? "FILE" : "MEMORY"}`); // disk temp for large files
-    db.pragma("mmap_size = 0"); // disable mmap during import (write-only)
-    // EXCLUSIVE locking is only safe in a worker thread, which closes its connection
-    // cleanly after import (releasing the lock). In the main process, in-process imports
-    // (sigma "Open as Tab", mergeTabs, diffTabs) keep the connection open for queries, so the
-    // lock would never release and the index/FTS worker (separate worker_threads
-    // connection) would hang at "database is locked". Detected via isMainThread.
-    const { isMainThread } = require("worker_threads");
-    if (!isMainThread) {
-      db.pragma("locking_mode = EXCLUSIVE"); // single-user, avoid lock overhead
-    }
-    db.pragma("threads = 4"); // parallel sort for internal operations
 
     // Sanitize headers for SQL column names
     const safeCols = headers.map((h, i) => ({
@@ -154,26 +139,25 @@ class TimelineDB {
       safe: `c${i}`,
     }));
 
-    // Create main data table
-    const colDefs = safeCols.map((c) => `${c.safe} TEXT`).join(", ");
-    db.exec(`CREATE TABLE data (rowid INTEGER PRIMARY KEY, ${colDefs})`);
-
-    // FTS5 table created lazily on first search (avoid DDL overhead during import)
+    // Create main data table. rowid is an ordinary column numbered by insertBatchArrays
+    // (1, 2, 3, … in import order, like SQLite's implicit rowid); no primary key, because
+    // DuckDB's zone maps already find rowid ranges and a key index would slow the load.
+    const colDefs = safeCols.map((c) => `${c.safe} VARCHAR`).join(", ");
+    db.exec(`CREATE TABLE data (rowid BIGINT${colDefs ? ", " + colDefs : ""})`);
 
     // Create bookmarks table
-    db.exec(`CREATE TABLE bookmarks (rowid INTEGER PRIMARY KEY)`);
+    db.exec(`CREATE TABLE bookmarks (rowid BIGINT PRIMARY KEY)`);
 
     // Create tags table
-    db.exec(`CREATE TABLE tags (rowid INTEGER, tag TEXT, PRIMARY KEY(rowid, tag))`);
-    db.exec(`CREATE INDEX idx_tags_tag ON tags(tag, rowid)`);
-    db.exec(`CREATE INDEX idx_tags_rowid ON tags(rowid)`);
+    db.exec(`CREATE TABLE tags (rowid BIGINT, tag VARCHAR, PRIMARY KEY(rowid, tag))`);
 
     // Create color rules table
+    db.exec(`CREATE SEQUENCE color_rules_id_seq START 1`);
     db.exec(
       `CREATE TABLE color_rules (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        col_name TEXT, condition TEXT, value TEXT,
-        bg_color TEXT, fg_color TEXT
+        id BIGINT PRIMARY KEY DEFAULT nextval('color_rules_id_seq'),
+        col_name VARCHAR, condition VARCHAR, value VARCHAR,
+        bg_color VARCHAR, fg_color VARCHAR
       )`
     );
 
@@ -189,36 +173,6 @@ class TimelineDB {
       }
     });
 
-    // Prepare bulk insert statement
-    const colList = safeCols.map((c) => c.safe).join(", ");
-    const placeholders = safeCols.map(() => "?").join(", ");
-    const insertStmt = db.prepare(
-      `INSERT INTO data (${colList}) VALUES (${placeholders})`
-    );
-
-    // Prepare multi-row INSERT for faster bulk loading
-    // SQLite limit is 32766 host parameters — use full capacity (no artificial 1000 cap)
-    const multiRowCount = Math.max(1, Math.floor(32766 / safeCols.length));
-    let multiInsertStmt = null;
-    if (multiRowCount > 1) {
-      const singleRow = `(${placeholders})`;
-      const multiValues = Array(multiRowCount).fill(singleRow).join(",");
-      multiInsertStmt = db.prepare(
-        `INSERT INTO data (${colList}) VALUES ${multiValues}`
-      );
-    }
-
-    // Pre-allocate flat params array (reused across all insertBatchArrays calls)
-    const insertFlat = multiRowCount > 1 ? new Array(multiRowCount * safeCols.length) : null;
-
-    // Pre-cache bookmark/tag prepared statements (avoids re-prepare per operation)
-    const bmCheckStmt = db.prepare("SELECT rowid FROM bookmarks WHERE rowid = ?");
-    const bmInsertStmt = db.prepare("INSERT OR IGNORE INTO bookmarks (rowid) VALUES (?)");
-    const bmDeleteStmt = db.prepare("DELETE FROM bookmarks WHERE rowid = ?");
-    const bmCountStmt = db.prepare("SELECT COUNT(*) as cnt FROM bookmarks");
-    const tagInsertStmt = db.prepare("INSERT OR IGNORE INTO tags (rowid, tag) VALUES (?, ?)");
-    const tagDeleteStmt = db.prepare("DELETE FROM tags WHERE rowid = ? AND tag = ?");
-
     const meta = {
       tabId,
       db,
@@ -228,19 +182,16 @@ class TimelineDB {
       tsColumns,
       numericColumns: new Set(),
       indexedCols: new Set(),
+      sortKeyCols: new Set(),
       rowCount: 0,
       ftsReady: false,
       isLargeFile,
-      insertStmt,
-      multiInsertStmt,
-      multiRowCount,
-      insertFlat,
-      bmCheckStmt, bmInsertStmt, bmDeleteStmt, bmCountStmt,
-      tagInsertStmt, tagDeleteStmt,
       colMap: Object.fromEntries(safeCols.map((c) => [c.original, c.safe])),
       reverseColMap: Object.fromEntries(safeCols.map((c) => [c.safe, c.original])),
     };
 
+    lazyWriteStatements(meta);
+    applySortKeys(meta);
     this.databases.set(tabId, meta);
     dbg("DB", `createTab OK`, { tabId, colCount: headers.length, tsColumns: [...tsColumns] });
     return { tabId, headers, tsColumns: [...tsColumns] };
@@ -256,42 +207,16 @@ class TimelineDB {
   /**
    * Insert a batch of rows as arrays (fast path — used by parser)
    * Each row is a pre-built array of values in column order.
-   * No object allocation or property lookup per row.
+   * Rows are numbered rowid = 1, 2, 3, … across batches and handed to DuckDB's appender,
+   * which loads them without parsing any SQL, on the DuckDB thread while the parser
+   * reads the next batch.
    */
   insertBatchArrays(tabId, rows) {
     const meta = this.databases.get(tabId);
     if (!meta) throw new Error(`Tab ${tabId} not found`);
+    if (!rows || rows.length === 0) return meta.rowCount;
 
-    const singleStmt = meta.insertStmt;
-    const multiStmt = meta.multiInsertStmt;
-    const multiN = meta.multiRowCount;
-    const colCount = meta.headers.length;
-    const flat = meta.insertFlat; // pre-allocated in createTab, reused across all calls
-
-    const tx = meta.db.transaction(() => {
-      let i = 0;
-
-      if (multiStmt && multiN > 1 && flat) {
-        while (i + multiN <= rows.length) {
-          for (let r = 0; r < multiN; r++) {
-            const row = rows[i + r];
-            const off = r * colCount;
-            for (let c = 0; c < colCount; c++) {
-              flat[off + c] = row[c];
-            }
-          }
-          multiStmt.run(flat);
-          i += multiN;
-        }
-      }
-
-      // Remainder with single-row inserts
-      while (i < rows.length) {
-        singleStmt.run(rows[i]);
-        i++;
-      }
-    });
-    tx();
+    meta.db.appendRows("data", rows, { firstRowid: meta.rowCount + 1 });
 
     meta.rowCount += rows.length;
     return meta.rowCount;
@@ -303,39 +228,34 @@ class TimelineDB {
   insertBatch(tabId, rows) {
     const meta = this.databases.get(tabId);
     if (!meta) throw new Error(`Tab ${tabId} not found`);
-
-    const stmt = meta.insertStmt;
     const hdrs = meta.headers;
-    const tx = meta.db.transaction(() => {
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        const values = new Array(hdrs.length);
-        for (let c = 0; c < hdrs.length; c++) {
-          values[c] = row[hdrs[c]] ?? "";
-        }
-        stmt.run(values);
-      }
-    });
-    tx();
-
-    meta.rowCount += rows.length;
-    return meta.rowCount;
+    const arrays = new Array(rows.length);
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const values = new Array(hdrs.length);
+      for (let c = 0; c < hdrs.length; c++) values[c] = row[hdrs[c]] ?? "";
+      arrays[i] = values;
+    }
+    return this.insertBatchArrays(tabId, arrays);
   }
 
   /**
    * Finalize import: detect column types, switch to query mode.
-   * Indexes, FTS, and ANALYZE are all deferred to async background builds
+   * The timestamp sort keys are stored later by a background build (buildIndexesAsync)
    * so the UI becomes interactive immediately after import completes.
    */
-  finalizeImport(tabId, options = {}) {
+  finalizeImport(tabId, _options = {}) {
     dbg("DB", `finalizeImport start`, { tabId });
     const meta = this.databases.get(tabId);
     if (!meta) { dbg("DB", `finalizeImport: no meta for tab`); return; }
-    const skipWalPromotion = !!options.skipWalPromotion;
 
     const db = meta.db;
 
-    // FTS index is built lazily on first search — skip here for fast import.
+    // Wait for the batches still loading on the DuckDB thread (and surface a failed one)
+    // before the type detection below reads the rows.
+    db.flush();
+
+    // No full-text index: search scans the columns (query-store _applySearch).
     meta.ftsReady = false;
 
     // Sort indexes are built asynchronously after import — skip here.
@@ -390,15 +310,9 @@ class TimelineDB {
       }
     });
 
-    // Workers skip WAL promotion here — adoptTabFromFile on the main process sets WAL/mmap.
-    // Avoids a full checkpoint on close when the temp DB used journal_mode=OFF during ingest.
-    if (!skipWalPromotion) {
-      db.pragma("journal_mode = WAL"); // need WAL for concurrent reads during build
-      db.pragma("synchronous = NORMAL");
-      db.pragma("cache_size = -262144"); // 256MB cache for queries
-    }
-
-    // Skip ANALYZE here — run after async index build completes
+    // Write the appended rows into the database file so the next thread to open it
+    // starts from a compact file rather than replaying the WAL.
+    try { db.checkpoint(); } catch (e) { dbg("DB", `checkpoint after import failed`, { tabId, error: e.message }); }
 
     return {
       rowCount: meta.rowCount,
@@ -410,7 +324,7 @@ class TimelineDB {
 
   /**
    * Re-open a tab database created by an import worker. The worker owns parsing
-   * and finalization; the main process adopts the completed SQLite file here so
+   * and finalization; the main process adopts the completed database file here so
    * existing query/analyzer/tag APIs keep using the TimelineDB facade.
    */
   adoptTabFromFile(tabId, descriptor = {}) {
@@ -432,25 +346,7 @@ class TimelineDB {
     const db = new Database(dbPath);
     registerRuntimeFunctions(db);
 
-    try {
-      db.pragma("journal_mode = WAL");
-      db.pragma("synchronous = NORMAL");
-      db.pragma("cache_size = -262144");
-      db.pragma("mmap_size = 536870912");
-    } catch (e) {
-      dbg("DB", `adoptTabFromFile pragma setup failed`, { tabId, error: e.message });
-    }
-
     const safeCols = headers.map((h, i) => ({ original: h, safe: `c${i}` }));
-    const colList = safeCols.map((c) => c.safe).join(", ");
-    const placeholders = safeCols.map(() => "?").join(", ");
-    const multiRowCount = safeCols.length > 0 ? Math.max(1, Math.floor(32766 / safeCols.length)) : 1;
-
-    let detectedFtsCreated = !!ftsCreated;
-    try {
-      const fts = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'data_fts'").get();
-      detectedFtsCreated = detectedFtsCreated || !!fts;
-    } catch {}
 
     const meta = {
       tabId,
@@ -462,24 +358,24 @@ class TimelineDB {
       numericColumns: new Set(numericColumns),
       rowCount,
       ftsReady: !!ftsReady,
-      ftsCreated: detectedFtsCreated,
+      ftsCreated: !!ftsCreated,
       ftsBuilding: false,
       indexesReady: !!indexesReady,
       indexesBuilding: false,
       indexedCols: new Set(indexedCols),
+      // Read from the file, not the descriptor: another thread may have stored them since.
+      sortKeyCols: new Set(sortKeyColsFromTable(db)),
       isLargeFile: !!isLargeFile,
-      multiRowCount,
       colMap: Object.fromEntries(safeCols.map((c) => [c.original, c.safe])),
       reverseColMap: Object.fromEntries(safeCols.map((c) => [c.safe, c.original])),
     };
 
     // Write statements are prepared on first use, not on adopt. Adoption is not only the
     // main process taking over an imported tab — every scroll-window query spawns a
-    // worker that adopts the same tab, runs one SELECT, and exits. Preparing the whole
-    // write surface there compiled an INSERT with up to 32,766 placeholders (a SQL string
-    // tens of KB wide) plus six bookmark/tag statements for a connection that never
-    // writes, paying that cost on the latency path of every fetch during a fast scroll.
-    lazyWriteStatements(meta, { colList, placeholders });
+    // worker that adopts the same tab, runs one SELECT, and exits, and preparing the
+    // bookmark/tag statements there would only add latency to every fetch.
+    lazyWriteStatements(meta);
+    applySortKeys(meta);
 
     this.databases.set(tabId, meta);
     dbg("DB", `adoptTabFromFile OK`, { tabId, dbPath, rowCount, headerCount: headers.length });
@@ -501,6 +397,7 @@ class TimelineDB {
       ftsCreated: !!meta.ftsCreated,
       indexesReady: !!meta.indexesReady,
       indexedCols: [...(meta.indexedCols || [])],
+      sortKeyCols: [...(meta.sortKeyCols || [])],
     };
   }
 
@@ -515,6 +412,10 @@ class TimelineDB {
     meta.indexesBuilding = false;
     meta.indexesReady = !result.error;
     if (Array.isArray(result.indexedCols)) meta.indexedCols = new Set(result.indexedCols);
+    if (Array.isArray(result.sortKeyCols)) {
+      meta.sortKeyCols = new Set(result.sortKeyCols);
+      applySortKeys(meta);
+    }
   }
 
   markFtsBuilding(tabId, building) {
@@ -532,7 +433,7 @@ class TimelineDB {
 
   /**
    * Close a database connection without deleting its files. Used by workers
-   * after handing an imported SQLite file back to the main process.
+   * after handing an imported database file back to the main process.
    */
   releaseTab(tabId) {
     const meta = this.databases.get(tabId);
@@ -542,260 +443,49 @@ class TimelineDB {
   }
 
   /**
-   * Build column sort index on demand (called on first sort of that column).
-   * Deferred from import to keep file open near-instant.
+   * Called by query-store before it sorts on a column. SQLite needed a B-tree index here;
+   * DuckDB sorts without one, so this only records that the column has been used.
    */
   _ensureIndex(tabId, colName) {
     const meta = this.databases.get(tabId);
     if (!meta) return;
     const safeCol = meta.colMap[colName];
-    if (!safeCol || meta.indexedCols.has(safeCol)) return;
-    try {
-      // Temporarily tune pragmas for fast index build (same as buildIndexesAsync)
-      meta.db.pragma("synchronous = OFF");
-      meta.db.pragma("threads = 8");
-      meta.db.pragma("mmap_size = 0");
-      const isLarge = meta.rowCount > 5000000;
-      meta.db.pragma(`cache_size = ${isLarge ? -262144 : -1048576}`);
-
-      const collation = (meta.numericColumns && meta.numericColumns.has(colName)) ? "BINARY" : "NOCASE";
-      meta.db.exec(`CREATE INDEX IF NOT EXISTS idx_${safeCol} ON data(${safeCol} COLLATE ${collation})`);
-      // Timestamp columns: expression index so ORDER BY sort_datetime(col)
-      // uses the index instead of calling JS per-row.
-      if (meta.tsColumns.has(colName)) {
-        meta.db.exec(`CREATE INDEX IF NOT EXISTS idx_sort_${safeCol} ON data(sort_datetime(${safeCol}))`);
-      }
-
-      // Restore normal query pragmas
-      meta.db.pragma("synchronous = NORMAL");
-      meta.db.pragma("cache_size = -262144");
-      meta.db.pragma("mmap_size = 536870912");
-    } catch (e) {
-      // Restore pragmas even on failure
-      try { meta.db.pragma("synchronous = NORMAL"); } catch (_) {}
-      try { meta.db.pragma("mmap_size = 536870912"); } catch (_) {}
-    }
-    meta.indexedCols.add(safeCol);
+    if (safeCol) meta.indexedCols.add(safeCol);
   }
 
   /**
-   * Build FTS index on demand (called on first search).
-   * If the async chunked build is in progress, this is a no-op (search
-   * falls back to LIKE until FTS is ready). If it was never started
-   * (e.g. session restore), builds synchronously as a fallback.
+   * There is no full-text index any more: search scans the columns with ILIKE
+   * (query-store _applySearch), which DuckDB runs in parallel over the column data.
    */
-  _ensureFts(tabId) {
-    const meta = this.databases.get(tabId);
-    if (!meta || meta.ftsReady) return;
-    // If async build is in progress, don't block — search will use LIKE fallback
-    if (meta.ftsBuilding) return;
+  _ensureFts(_tabId) {}
 
-    const colList = meta.safeCols.map((c) => c.safe).join(", ");
-
-    // Create FTS5 table if it doesn't exist yet
-    if (!meta.ftsCreated) {
-      meta.db.exec(
-        // trigram tokenizer → MATCH does case-insensitive SUBSTRING matching (3+ chars),
-        // matching the substring semantics of the LIKE fallback (issue #8: b4ckd00r must
-        // match crackb4ckd00r). Used as an indexed prefilter in query-store _applySearch.
-        `CREATE VIRTUAL TABLE IF NOT EXISTS data_fts USING fts5(${colList}, content=data, content_rowid=rowid, tokenize='trigram')`
-      );
-      meta.ftsCreated = true;
-    }
-
-    meta.db.exec(
-      `INSERT INTO data_fts(rowid, ${colList}) SELECT rowid, ${colList} FROM data`
-    );
-    meta.db.exec(`INSERT INTO data_fts(data_fts) VALUES('optimize')`);
-    meta.ftsReady = true;
+  buildFtsAsync(_tabId, _onProgress) {
+    return Promise.resolve({ skipped: true });
   }
 
   /**
-   * Build FTS index asynchronously in chunks.
-   * Yields to the event loop between chunks so IPC queries remain responsive.
-   * Called automatically after finalizeImport — no UI hang.
+   * Store sort_datetime(col) for every timestamp column in a hidden `<col>__sdt` column,
+   * in the background after import (this is the old index-build step and keeps its
+   * progress events). sort_datetime() is JavaScript for zoned and non-ISO timestamps
+   * (Hayabusa's "+09:00", Plaso, US-style dates), so without the stored key every sort or
+   * time-range filter on such a column would run it over every row again. Once a column
+   * is done, the tab's SQL reads the stored key instead (applySortKeys).
    *
    * @param {string} tabId
-   * @param {Function} onProgress - ({ indexed, total, done }) callback per chunk
-   * @returns {Promise<void>}
-   */
-  buildFtsAsync(tabId, onProgress) {
-    const meta = this.databases.get(tabId);
-    if (!meta || meta.ftsReady || meta.ftsBuilding) return Promise.resolve({ skipped: true });
-    meta.ftsBuilding = true;
-
-    const colList = meta.safeCols.map((c) => c.safe).join(", ");
-    const db = meta.db;
-
-    // Create FTS5 virtual table
-    if (!meta.ftsCreated) {
-      db.exec(
-        // trigram tokenizer → MATCH does case-insensitive SUBSTRING matching (3+ chars),
-        // matching the substring semantics of the LIKE fallback (issue #8: b4ckd00r must
-        // match crackb4ckd00r). Used as an indexed prefilter in query-store _applySearch.
-        `CREATE VIRTUAL TABLE IF NOT EXISTS data_fts USING fts5(${colList}, content=data, content_rowid=rowid, tokenize='trigram')`
-      );
-      meta.ftsCreated = true;
-    }
-
-    const totalRows = meta.rowCount || db.prepare("SELECT COUNT(*) as cnt FROM data").get().cnt;
-    // Smaller chunks give the renderer visible progress while keeping large
-    // imports efficient. The worker owns the blocking work, so responsiveness
-    // now matters more than minimizing chunk count.
-    const CHUNK = totalRows <= 1000000 ? 50000 : (totalRows <= 5000000 ? 100000 : 250000);
-    let lastRowid = 0;
-
-    // Aggressive pragmas for FTS build — keep WAL mode so concurrent reads
-    // (queryRows, histogram, etc.) remain safe during the build.
-    // Scale down for large files to prevent OOM
-    const large = meta.isLargeFile;
-    db.pragma("synchronous = OFF");
-    db.pragma(`cache_size = ${large ? -262144 : -1048576}`); // 256MB or 1GB
-    db.pragma(`temp_store = ${large ? "FILE" : "MEMORY"}`);
-    db.pragma("threads = 8"); // parallel sort/merge
-
-    // Send initial progress so the UI can show the FTS overlay immediately
-    if (onProgress) onProgress({ indexed: 0, total: totalRows, done: false });
-
-    return new Promise((resolve) => {
-      const insertChunk = () => {
-        // Tab may have been closed while building — check both map and flag
-        if (meta.closed || !this.databases.has(tabId)) {
-          meta.ftsBuilding = false;
-          resolve({ cancelled: true });
-          return;
-        }
-
-        try {
-          const inserted = db.prepare(
-            `INSERT INTO data_fts(rowid, ${colList}) SELECT rowid, ${colList} FROM data WHERE rowid > ? ORDER BY rowid LIMIT ?`
-          ).run(lastRowid, CHUNK);
-
-          // Track actual last rowid inserted (not fixed increment) —
-          // handles non-contiguous rowids correctly
-          if (inserted.changes > 0) {
-            const last = db.prepare(`SELECT MAX(rowid) as m FROM data_fts`).get();
-            lastRowid = last?.m || lastRowid + CHUNK;
-          }
-          const indexed = Math.min(lastRowid, totalRows);
-
-          if (inserted.changes < CHUNK) {
-            if (onProgress) onProgress({ indexed: totalRows, total: totalRows, done: false, optimizing: true });
-            // All rows indexed — run ANALYZE now that all indexes + FTS exist
-            try { db.exec("ANALYZE"); } catch (e) { dbg("DB", `ANALYZE failed`, { error: e.message }); }
-
-            // Restore conservative query-mode pragmas
-            db.pragma("synchronous = NORMAL");
-            db.pragma("cache_size = -262144"); // 256MB for queries
-            db.pragma("mmap_size = 536870912"); // 512MB mmap for reads
-            try { db.pragma("wal_checkpoint(PASSIVE)"); } catch (e) { /* ignore */ }
-            meta.ftsReady = true;
-            meta.ftsBuilding = false;
-            if (onProgress) onProgress({ indexed: totalRows, total: totalRows, done: true });
-            resolve({ indexed: totalRows, total: totalRows, done: true });
-          } else {
-            if (onProgress) onProgress({ indexed, total: totalRows, done: false });
-            // Yield to event loop before next chunk — keeps UI responsive
-            setImmediate(insertChunk);
-          }
-        } catch (e) {
-          // DB handle was closed, or a disk-full / I/O error hit mid-INSERT. Drop the
-          // partial FTS table and checkpoint so a half-built trigram index (potentially
-          // tens of GB) is reclaimed immediately instead of stranding disk until the tab
-          // closes. Search falls back to LIKE because ftsReady stays false.
-          dbg("DB", `buildFtsAsync chunk failed`, { tabId, error: e.message });
-          meta.ftsBuilding = false;
-          meta.ftsReady = false;
-          try {
-            db.exec("DROP TABLE IF EXISTS data_fts");
-            meta.ftsCreated = false;
-            db.pragma("wal_checkpoint(TRUNCATE)");
-          } catch (_) { /* db likely closed — temp files reclaimed on tab close */ }
-          resolve({ error: e.message });
-        }
-      };
-
-      // Defer first chunk — let the UI render the FTS overlay first
-      setImmediate(insertChunk);
-    });
-  }
-
-  /**
-   * Build column indexes asynchronously after import.
-   * Yields to the event loop between each index so IPC queries remain responsive.
-   * Called automatically after finalizeImport — the UI is already interactive.
-   *
-   * @param {string} tabId
-   * @param {Function} onProgress - ({ built, total, done, currentCol }) callback per index
-   * @returns {Promise<void>}
+   * @param {Function} onProgress - ({ built, total, done, currentCol }) callback per column
+   * @returns {Promise<object>}
    */
   buildIndexesAsync(tabId, onProgress) {
     const meta = this.databases.get(tabId);
     if (!meta || meta.indexesReady || meta.indexesBuilding) return Promise.resolve({ skipped: true });
     meta.indexesBuilding = true;
 
-    const allCols = meta.safeCols.filter((c) => !meta.indexedCols.has(c.safe));
-
-    // Prioritize timestamp columns first — users typically sort by time immediately
-    const tsSet_ = meta.tsColumns || new Set();
-    allCols.sort((a, b) => {
-      const aTs = tsSet_.has(a.original) ? 0 : 1;
-      const bTs = tsSet_.has(b.original) ? 0 : 1;
-      return aTs - bTs;
-    });
-
-    // For large files, eagerly index timestamp columns plus EventID/Channel (JS Sigma
-    // logsource pre-filters). Other columns are indexed lazily on first sort via
-    // _ensureIndex — this avoids the ~30-50GB all-column index footprint on huge imports.
-    // Deferred columns are intentionally NOT added to indexedCols, so _ensureIndex still
-    // builds them on demand. (Small files keep eager all-column indexing for snappy filters.)
-    const isSigmaFilterCol = (name) => /^(EventID|EventId|event_id|eventid|id|Channel|SourceName|Provider)$/i.test(String(name || ""));
-    const eagerCols = meta.isLargeFile
-      ? allCols.filter((c) => tsSet_.has(c.original) || isSigmaFilterCol(c.original))
-      : allCols;
-
-    // Pre-filter: skip columns with uniform values (cardinality ≤ 1)
-    // Sample-based: check first + middle + last 100 rows instead of full DISTINCT scan
-    const cols = [];
-    const skippedCols = [];
-    const midOffset = Math.max(0, Math.floor(meta.rowCount / 2));
-    for (const col of eagerCols) {
-      try {
-        const distinct = meta.db
-          .prepare(`SELECT COUNT(*) AS c FROM (SELECT DISTINCT ${col.safe} FROM (SELECT ${col.safe} FROM (SELECT * FROM data LIMIT 100) UNION ALL SELECT ${col.safe} FROM (SELECT * FROM data LIMIT 100 OFFSET ${midOffset}) UNION ALL SELECT ${col.safe} FROM (SELECT * FROM data ORDER BY rowid DESC LIMIT 100)))`)
-          .get();
-        if (distinct && distinct.c <= 1) {
-          skippedCols.push(col.original);
-          meta.indexedCols.add(col.safe); // Mark as "done" so _ensureIndex won't rebuild
-          continue;
-        }
-      } catch { /* If check fails, build the index anyway */ }
-      cols.push(col);
-    }
-    if (skippedCols.length > 0) {
-      dbg("DB", `buildIndexesAsync skipping uniform columns`, { skipped: skippedCols });
-    }
-
-    // Determine collation per column: binary for numeric/timestamp, NOCASE for text
-    const numericSet = meta.numericColumns || new Set();
-    const tsSet = meta.tsColumns || new Set();
-
+    const cols = meta.safeCols.filter((c) => meta.tsColumns.has(c.original) && !meta.sortKeyCols.has(c.safe));
     const total = cols.length;
     let built = 0;
+    const snapshot = () => ({ indexedCols: [...meta.indexedCols], sortKeyCols: [...meta.sortKeyCols] });
 
-    dbg("DB", `buildIndexesAsync start`, { tabId, total, skipped: skippedCols.length });
-
-    // Aggressive pragmas for index build — keep WAL mode so concurrent reads
-    // (queryRows, histogram, etc.) remain safe during the build.
-    // Scale down for large files to prevent OOM
-    const large = meta.isLargeFile;
-    meta.db.pragma("synchronous = OFF");
-    meta.db.pragma(`cache_size = ${large ? -262144 : -1048576}`); // 256MB or 1GB
-    meta.db.pragma(`temp_store = ${large ? "FILE" : "MEMORY"}`);
-    meta.db.pragma("threads = 8"); // parallel sort for CREATE INDEX
-    meta.db.pragma("mmap_size = 0"); // disable mmap — rely on cache (write-heavy)
-
-    // Send initial progress so the UI overlay renders immediately
+    dbg("DB", `buildIndexesAsync start`, { tabId, total });
     if (onProgress) onProgress({ built: 0, total, done: false, currentCol: cols[0]?.original });
 
     return new Promise((resolve) => {
@@ -803,96 +493,76 @@ class TimelineDB {
         // Tab may have been closed while building — check both map and flag
         if (meta.closed || !this.databases.has(tabId)) {
           meta.indexesBuilding = false;
-          resolve({ cancelled: true, indexedCols: [...meta.indexedCols] });
+          resolve({ cancelled: true, ...snapshot() });
           return;
         }
 
-        if (built >= cols.length) {
-          try {
-            // Bounded ANALYZE so the query planner actually USES the indexes just built. This MUST
-            // run here (not only in buildFtsAsync): FTS is skipped for large files (>5GB), so
-            // otherwise a freshly-imported large DB has indexes but ZERO planner stats and the first
-            // sort/filter full-scans (the #1 import-speed pain point). analysis_limit=1000 keeps it
-            // to seconds even on 100M+ rows.
-            meta.db.pragma("analysis_limit = 1000");
-            try { meta.db.exec("ANALYZE"); } catch (e) { dbg("DB", `buildIndexesAsync ANALYZE failed`, { tabId, error: e.message }); }
-            // Restore conservative query-mode pragmas
-            meta.db.pragma("synchronous = NORMAL");
-            meta.db.pragma("cache_size = -262144"); // 256MB for queries
-            meta.db.pragma("mmap_size = 536870912"); // 512MB mmap for reads
-            try { meta.db.pragma("wal_checkpoint(PASSIVE)"); } catch (e) { /* ignore */ }
-          } catch (e) {
-            dbg("DB", `buildIndexesAsync pragma restore failed (tab likely closed)`, { tabId, error: e.message });
-          }
-
+        if (built >= total) {
+          try { meta.db.checkpoint(); } catch (e) { dbg("DB", `checkpoint after sort keys failed`, { tabId, error: e.message }); }
+          // query-store samples the value lists of "unindexed" columns on very large tabs
+          // until this build is done; afterwards DuckDB groups whole columns cheaply.
+          for (const c of meta.safeCols) meta.indexedCols.add(c.safe);
           meta.indexesReady = true;
           meta.indexesBuilding = false;
           dbg("DB", `buildIndexesAsync complete`, { tabId, total });
           if (onProgress) onProgress({ built: total, total, done: true, currentCol: null });
-          resolve({ built: total, total, done: true, indexedCols: [...meta.indexedCols], skippedCols });
+          resolve({ built: total, total, done: true, ...snapshot(), skippedCols: [] });
           return;
         }
 
+        const col = cols[built];
         try {
-          // Build up to 5 indexes per yield — each CREATE INDEX on 1M+ rows takes 1-3s,
-          // batching reduces total build time ~50% while keeping UI responsive
-          const BATCH = 5;
-          for (let b = 0; b < BATCH && built < cols.length; b++) {
-            if (meta.closed) break; // re-check between indexes
-            const col = cols[built];
-            try {
-              // Use binary collation for numeric/timestamp columns (faster sort),
-              // COLLATE NOCASE for text columns (case-insensitive filter/sort)
-              const useBinary = numericSet.has(col.original) || tsSet.has(col.original);
-              if (useBinary) {
-                meta.db.exec(`CREATE INDEX IF NOT EXISTS idx_${col.safe} ON data(${col.safe})`);
-              } else {
-                meta.db.exec(`CREATE INDEX IF NOT EXISTS idx_${col.safe} ON data(${col.safe} COLLATE NOCASE)`);
-              }
-              // Timestamp columns: add expression index on sort_datetime() so
-              // ORDER BY sort_datetime(col) can use the index instead of calling
-              // the JS function per-row during sort.
-              if (tsSet.has(col.original)) {
-                meta.db.exec(`CREATE INDEX IF NOT EXISTS idx_sort_${col.safe} ON data(sort_datetime(${col.safe}))`);
-              }
-              meta.indexedCols.add(col.safe);
-            } catch (e) {
-              // A disk-full / I/O error won't recover on the next column — abort the whole
-              // build so it is surfaced (instead of silently producing a half-indexed DB
-              // that looks identical to success). Other per-column failures are skipped.
-              if (/SQLITE_(FULL|IOERR)/.test(e?.code || "") || /disk (is )?full|out of memory|I\/O error|SQLITE_FULL/i.test(e?.message || "")) {
-                throw e;
-              }
-              dbg("DB", `index creation failed for ${col.original}`, { error: e.message });
-            }
-            built++;
-          }
+          this._storeSortKey(meta, col.safe);
         } catch (e) {
-          // DB handle was closed between our check and the operation
-          dbg("DB", `buildIndexesAsync batch failed (tab likely closed)`, { tabId, error: e.message });
-          meta.indexesBuilding = false;
-          resolve({ error: e.message, indexedCols: [...meta.indexedCols] });
-          return;
+          // A full disk or I/O error will not recover on the next column; stop and report.
+          if (/disk|no space|I\/O|out of memory/i.test(e?.message || "")) {
+            dbg("DB", `buildIndexesAsync failed`, { tabId, error: e.message });
+            meta.indexesBuilding = false;
+            resolve({ error: e.message, ...snapshot() });
+            return;
+          }
+          dbg("DB", `sort key failed for ${col.original}`, { error: e.message });
         }
-
-        if (onProgress) onProgress({ built, total, done: false, currentCol: cols[Math.min(built, cols.length) - 1]?.original });
-
-        // Yield to event loop after each batch — keeps UI responsive
+        built++;
+        if (onProgress) onProgress({ built, total, done: false, currentCol: col.original });
         setImmediate(buildNext);
       };
 
-      // Defer first index — let the UI render the overlay first
+      // Defer the first column — let the UI render the overlay first
       setImmediate(buildNext);
     });
+  }
+
+  /** Fill `<safe>__sdt` with sort_datetime(<safe>), a million rows per transaction. */
+  _storeSortKey(meta, safe) {
+    const key = `${safe}${SORT_KEY_SUFFIX}`;
+    // Another thread may be writing this table (USN path resolution); DuckDB reports a
+    // conflict rather than waiting, so retry the schema change briefly.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        meta.db.exec(`ALTER TABLE data ADD COLUMN IF NOT EXISTS ${key} VARCHAR`);
+        break;
+      } catch (e) {
+        if (attempt >= 20 || !/conflict/i.test(e?.message || "")) throw e;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+      }
+    }
+    const maxRow = meta.db.prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM data").get().m;
+    const STEP = 1000000;
+    const update = meta.db.prepare(`UPDATE data SET ${key} = sort_datetime(${safe}) WHERE rowid > ? AND rowid <= ?`);
+    for (let lo = 0; lo < maxRow; lo += STEP) {
+      if (meta.closed) throw new Error("Tab closed");
+      update.run(lo, lo + STEP);
+    }
+    meta.sortKeyCols.add(safe);
+    applySortKeys(meta);
   }
 
   /**
    * Check if background builds (indexes/FTS) are running on a tab.
    *
-   * NOTE: this must NOT be used to block bookmark/tag writes. Both builds run on
-   * THIS connection, on the main thread, chunked between event-loop turns, and
-   * they only touch `data`/`data_fts` — a write to the tiny `tags`/`bookmarks`
-   * tables in between chunks is safe. Gating on it silently discarded everything
+   * NOTE: this must NOT be used to block bookmark/tag writes. The build only
+   * touches `data` — a write to the tiny `tags`/`bookmarks` tables meanwhile is safe. Gating on it silently discarded everything
    * an analyst tagged during the minutes-long index build that follows a large
    * import, while the UI showed the tag as applied.
    */
@@ -920,15 +590,16 @@ class TimelineDB {
     const db = meta.db;
     const colList = meta.safeCols.map((c) => c.safe);
 
-    // Phase 1: batched REGEXP alternation scan for matching rowIds
-    // Concatenate columns with COALESCE/|| in SQL so REGEXP is called once per row
+    // Phase 1: batched regexp alternation scan for matching rowIds
+    // Concatenate columns with COALESCE/|| in SQL so regexp() is called once per row
     // instead of once per column×row — reduces function calls by ~Nx for N columns
     const concatExpr = colList.map((c) => `COALESCE(${c},'')`).join(" || ' ' || ");
     const matchedSet = new Set();
     for (let i = 0; i < iocPatterns.length; i += batchSize) {
       const batch = iocPatterns.slice(i, i + batchSize);
       const altPattern = batch.join("|");
-      const rows = db.prepare(`SELECT rowid FROM data WHERE (${concatExpr}) REGEXP ?`).all(altPattern);
+      const cond = regexCondition(db, `(${concatExpr})`, altPattern);
+      const rows = db.prepare(`SELECT rowid FROM data WHERE ${cond.sql}`).all(...cond.params);
       for (const r of rows) matchedSet.add(r.rowid);
     }
 
@@ -1322,20 +993,15 @@ class TimelineDB {
     if (this._countCache) this._countCache.delete(tabId);
     if (this._filterCache) this._filterCache.delete(tabId);
     try {
-      meta.db.pragma("analysis_limit = 1000");
-      meta.db.pragma("optimize");
       meta.db.close();
     } catch (e) {}
     try {
       fs.unlinkSync(meta.dbPath);
     } catch (e) {}
-    // Clean WAL/SHM files too
-    try {
-      fs.unlinkSync(meta.dbPath + "-wal");
-    } catch (e) {}
-    try {
-      fs.unlinkSync(meta.dbPath + "-shm");
-    } catch (e) {}
+    // DuckDB's write-ahead log, plus SQLite's WAL/SHM names in case an old temp file is around
+    for (const suffix of [".wal", "-wal", "-shm"]) {
+      try { fs.unlinkSync(meta.dbPath + suffix); } catch (e) {}
+    }
   }
 
   /**
@@ -1373,14 +1039,6 @@ class TimelineDB {
     let totalInserted = 0;
     const totalRows = sourceMetas.reduce((sum, s) => sum + s.meta.rowCount, 0);
     const MERGE_BATCH = 50000;
-
-    // createTab now sizes the write cache from _fileSizeHint, which the merge path never sets
-    // (it streams from sibling DBs, not a file) — so without this it would pin to the 16MB floor
-    // and a multi-million-row merge would flush dirty pages far too often (journal_mode=OFF here).
-    // Size a transient bulk cache by the merged row volume (~200 B/row est.), floored 64MB / capped
-    // 1GB; finalizeImport restores the conservative query cache after the inserts.
-    const mergeCacheKiB = Math.min(1048576, Math.max(65536, Math.ceil((totalRows * 200) / 1024 * 1.5)));
-    mergedMeta.db.pragma(`cache_size = ${-mergeCacheKiB}`); // negative = KiB
 
     for (let si = 0; si < sourceMetas.length; si++) {
       const src = sourceMetas[si];
@@ -1445,19 +1103,6 @@ class TimelineDB {
     // Finalize (creates indexedCols Set, detects types)
     if (onProgress) onProgress({ phase: "indexing", current: totalInserted, total: totalRows, sourceName: "" });
     const result = this.finalizeImport(mergedTabId);
-
-    // Index the unified datetime and _Source columns
-    const mergedDb = mergedMeta.db;
-    const dtSafe = mergedMeta.colMap["datetime"];
-    if (dtSafe && !mergedMeta.indexedCols.has(dtSafe)) {
-      mergedDb.exec(`CREATE INDEX IF NOT EXISTS idx_${dtSafe} ON data(${dtSafe})`);
-      mergedMeta.indexedCols.add(dtSafe);
-    }
-    const srcColSafe = mergedMeta.colMap["_Source"];
-    if (srcColSafe && !mergedMeta.indexedCols.has(srcColSafe)) {
-      mergedDb.exec(`CREATE INDEX IF NOT EXISTS idx_${srcColSafe} ON data(${srcColSafe})`);
-      mergedMeta.indexedCols.add(srcColSafe);
-    }
 
     return {
       headers: unifiedHeaders,
@@ -1538,7 +1183,6 @@ class TimelineDB {
    * Close all databases
    */
   closeAll() {
-    if (this._walInterval) { clearInterval(this._walInterval); this._walInterval = null; }
     for (const tabId of this.databases.keys()) {
       this.closeTab(tabId);
     }
