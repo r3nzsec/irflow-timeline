@@ -18,6 +18,7 @@ export const SEARCH_CONDITIONS = [
   { value: "contains", label: "Contains", description: "Match text containing the entered value." },
   { value: "fuzzy", label: "Fuzzy", description: "Find close spellings and likely typos." },
   { value: "startswith", label: "Starts with", description: "Match values beginning with the entered text." },
+  { value: "endswith", label: "Ends with", description: "Match values ending with the entered text." },
   { value: "like", label: "Like", description: "Use SQL-style % and _ wildcards." },
   { value: "equals", label: "Equals", description: "Match the complete cell value." },
 ];

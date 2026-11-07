@@ -67,6 +67,21 @@ Full regular expression pattern matching.
 
 Best for: Complex pattern matching, IP addresses, structured data extraction.
 
+### Search Conditions
+
+While you search, the condition radios under the search bar set how a term matches a cell:
+
+| Condition | Matches |
+|---|---|
+| **Contains** | Cells containing the term (the default) |
+| **Fuzzy** | Close spellings and likely typos |
+| **Starts with** | Cells beginning with the term |
+| **Ends with** | Cells ending with the term, such as `.exe` or `system32` |
+| **Like** | SQL-style `%` and `_` wildcards |
+| **Equals** | The whole cell value |
+
+Starts with and Ends with ignore letter case; Equals is exact.
+
 ## Filter Types
 
 ### Column Filters
