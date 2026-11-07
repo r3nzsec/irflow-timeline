@@ -27,7 +27,7 @@ import { isUnsetWindowsTimestamp } from "../utils/forensic-normalize.js";
  */
 function GridRowInner({ ctx, row, ai, sel, bm, tabIndex }) {
   const {
-    th, ct, isGrouped, tagColWidth, leftBase, vtW, fontSize, selectedColumn,
+    th, ct, isGrouped, tagColWidth, tagsHidden, leftBase, vtW, fontSize, selectedColumn,
     pinnedH, pinnedOffsets, compiledColors, pageOffset, tw,
     windowedScrollH, firstScrollColIndex, colWindow,
     gw, fmtCell, renderCell, getRowBg,
@@ -51,8 +51,8 @@ function GridRowInner({ ctx, row, ai, sel, bm, tabIndex }) {
   // cells, so its indices must be explicit — and ARIA requires that every cell in a row
   // carry one once any of them does. These mirror the arithmetic behind
   // firstScrollColIndex, which VirtualGrid derives from the same lane order.
-  const colIdxVt = 4;
-  const colIdxEvidence = 4 + (ct.vtEnrichment ? 1 : 0);
+  const colIdxVt = tagsHidden ? 3 : 4;
+  const colIdxEvidence = colIdxVt + (ct.vtEnrichment ? 1 : 0);
   const firstPinnedColIndex = firstScrollColIndex - pinnedH.length;
 
   return (
@@ -81,12 +81,14 @@ function GridRowInner({ ctx, row, ai, sel, bm, tabIndex }) {
           <CheckboxIcon checked={sel} />
         </button>
       </div>
-      {/* Tags cell — sticky */}
-      <div role="gridcell" aria-colindex={3} style={{ display: "flex", alignItems: "center", gap: 2, width: tagColWidth, minWidth: tagColWidth, boxSizing: "border-box", padding: "0 4px", overflow: "hidden", borderRight: `1px solid ${th.cellBorder}`, position: "sticky", left: isGrouped ? 42 + CHECKBOX_COL_WIDTH : (BKMK_COL_WIDTH + CHECKBOX_COL_WIDTH), zIndex: 2, background: stickyBase, boxShadow: stickyOverlay }}>
-        {rTags.map((tag) => (
-          <span key={tag} style={{ padding: "0 4px", borderRadius: 3, fontSize: 11, background: ((ct.tagColors || {})[tag] || th.textMuted) + "33", color: (ct.tagColors || {})[tag] || th.textDim, whiteSpace: "nowrap", lineHeight: "18px" }}>{tag}</span>
-        ))}
-      </div>
+      {/* Tags cell — sticky; absent while the Tags column is hidden */}
+      {!tagsHidden && (
+        <div role="gridcell" aria-colindex={3} style={{ display: "flex", alignItems: "center", gap: 2, width: tagColWidth, minWidth: tagColWidth, boxSizing: "border-box", padding: "0 4px", overflow: "hidden", borderRight: `1px solid ${th.cellBorder}`, position: "sticky", left: isGrouped ? 42 + CHECKBOX_COL_WIDTH : (BKMK_COL_WIDTH + CHECKBOX_COL_WIDTH), zIndex: 2, background: stickyBase, boxShadow: stickyOverlay }}>
+          {rTags.map((tag) => (
+            <span key={tag} style={{ padding: "0 4px", borderRadius: 3, fontSize: 11, background: ((ct.tagColors || {})[tag] || th.textMuted) + "33", color: (ct.tagColors || {})[tag] || th.textDim, whiteSpace: "nowrap", lineHeight: "18px" }}>{tag}</span>
+          ))}
+        </div>
+      )}
       {/* VT verdict cell — sticky, after tags */}
       {ct.vtEnrichment && (() => {
         const vte = ct.vtEnrichment;

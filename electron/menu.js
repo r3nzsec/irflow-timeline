@@ -254,6 +254,15 @@ function buildMenu(deps) {
           click: () => mainWindow?.webContents.send("trigger-color-rules"),
         },
         { type: "separator" },
+        {
+          label: "Freeze First Column",
+          click: () => mainWindow?.webContents.send("trigger-first-column", "freeze"),
+        },
+        {
+          label: "Unfreeze First Column",
+          click: () => mainWindow?.webContents.send("trigger-first-column", "unfreeze"),
+        },
+        { type: "separator" },
         { role: "togglefullscreen" },
         { type: "separator" },
         { role: "zoomIn" }, { role: "zoomOut" }, { role: "resetZoom" },

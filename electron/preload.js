@@ -298,6 +298,7 @@ contextBridge.exposeInMainWorld("tle", {
   onSetTimezone: (cb) => onIpc("set-timezone", cb, (_event, tz) => tz),
   onSetFontSize: (cb) => onIpc("set-font-size", cb, (_event, val) => val),
   onTriggerResetColumns: (cb) => onIpcNoArgs("trigger-reset-columns", cb),
+  onTriggerFirstColumn: (cb) => onIpc("trigger-first-column", cb, (_event, action) => action),
   onSetTheme: (cb) => onIpc("set-theme", cb, (_event, name) => name),
   onTriggerHistogram: (cb) => onIpcNoArgs("trigger-histogram", cb),
   onTriggerVtSettings: (cb) => onIpcNoArgs("trigger-vt-settings", cb),
