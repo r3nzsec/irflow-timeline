@@ -584,6 +584,7 @@ async function parseCSVStream(filePath, tabId, db, onProgress) {
         rowCount: result.rowCount,
         tsColumns: result.tsColumns,
         numericColumns: result.numericColumns,
+        dayFirstColumns: result.dayFirstColumns || [],
       });
     });
 

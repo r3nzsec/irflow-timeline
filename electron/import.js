@@ -273,6 +273,7 @@ async function startImport(filePath, tabId, fileName, sheetName, preFileSize, de
       rowCount: result.rowCount,
       tsColumns: result.tsColumns,
       numericColumns: result.numericColumns || [],
+      dayFirstColumns: result.dayFirstColumns || [],
       initialRows: initialData.rows,
       totalFiltered: initialData.totalFiltered,
       emptyColumns,

@@ -1,18 +1,19 @@
 /**
  * format-templates.js — Known CSV output formats whose timestamp columns are declared, not guessed.
  *
- * Templates for every Juntei CSV output (electron/juntei-templates.json). When a file's header
- * row is a template's columns, the template's timestampColumns are the tab's timestamp columns,
- * exactly: no other column is formatted, converted, sorted or filtered as a date, whatever its
- * name or values look like.
+ * Templates for every Juntei CSV output (electron/juntei-templates.json) and every Hayabusa CSV
+ * output (electron/hayabusa-templates.json). When a file's header row is a template's columns,
+ * the template's timestampColumns are the tab's timestamp columns, exactly: no other column is
+ * formatted, converted, sorted or filtered as a date, whatever its name or values look like.
  *
  * The renderer reads the same JSON (src/utils/dataset-detect.js) and must pick the same
  * template; tests/juntei-templates.test.js checks both.
  */
 
 const JUNTEI = require("./juntei-templates.json");
+const HAYABUSA = require("./hayabusa-templates.json");
 
-const TEMPLATES = JUNTEI.templates;
+const TEMPLATES = [...JUNTEI.templates, ...HAYABUSA.templates];
 
 /**
  * Whether `headers` is the output a template describes: every one of its columns is there, and

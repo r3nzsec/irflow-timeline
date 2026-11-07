@@ -27,6 +27,67 @@ const { registerRuntimeFunctions } = require("./db/runtime-functions");
 const { safeRegexTester } = require("./utils/safe-regex");
 const { detectFormatTemplate } = require("./format-templates");
 
+// Timestamp columns whose numeric dates are day first ("31-08-2017", such as Hayabusa's
+// --european-time), kept in the tab's own database so every connection that opens the tab reads
+// them the same way.
+const DAY_FIRST_TABLE = "day_first_columns";
+const NUMERIC_DATE = /^\s*\d{1,2}[/.-]\d{1,2}[/.-]\d{4}/;
+const DMY_ONLY = /^\s*(1[3-9]|2[0-9]|3[01])[/.-](0?[1-9]|1[0-2])[/.-][0-9]{4}/;
+const MDY_ONLY = /^\s*(0?[1-9]|1[0-2])[/.-](1[3-9]|2[0-9]|3[01])[/.-][0-9]{4}/;
+
+function dayFirstColsFromTable(db) {
+  try {
+    return db.prepare(`SELECT col FROM ${DAY_FIRST_TABLE}`).all().map((r) => r.col);
+  } catch {
+    return [];
+  }
+}
+
+// A timestamp column is day first when some of its dates can only be read day first (first
+// number over 12) and none can only be read month first. Ambiguous columns stay month first.
+function detectDayFirstColumns(meta) {
+  const found = new Set();
+  for (const col of meta.safeCols) {
+    if (!meta.tsColumns.has(col.original)) continue;
+    try {
+      const first = meta.db.prepare(
+        `SELECT ${col.safe} AS v FROM data WHERE TRIM(COALESCE(${col.safe}, '')) != '' LIMIT 1`
+      ).get();
+      if (!first || !NUMERIC_DATE.test(String(first.v))) continue;
+      let dmy = false;
+      let mdy = false;
+      for (const { v } of meta.db.prepare(`SELECT ${col.safe} AS v FROM data`).iterate()) {
+        if (v == null) continue;
+        const text = String(v);
+        if (MDY_ONLY.test(text)) { mdy = true; break; }
+        if (!dmy && DMY_ONLY.test(text)) dmy = true;
+      }
+      if (dmy && !mdy) found.add(col.original);
+    } catch (e) { dbg("DB", `day-first check skipped for ${col.original}`, { error: e.message }); }
+  }
+  return found;
+}
+
+// Day-first columns are read with the *_dmy variants of the date functions. Every statement
+// prepared or run on the tab's connection has sort_datetime(cN), extract_date(cN) and
+// extract_datetime_minute(cN) of such a column rewritten — the CREATE INDEX of its sort index
+// included, so the index matches the queries that sort by it.
+const DATE_FN_RE = /\b(sort_datetime|extract_date|extract_datetime_minute)\(\s*((?:[A-Za-z_][A-Za-z0-9_]*\.)?)(c\d+)\s*\)/g;
+
+function readDayFirstColumns(meta, columns) {
+  meta.dayFirstCols = new Set(columns);
+  const safe = new Set(meta.safeCols.filter((c) => meta.dayFirstCols.has(c.original)).map((c) => c.safe));
+  if (safe.size === 0 || meta.db.dayFirstRewrite) return;
+  const rewrite = (sql) => (typeof sql === "string"
+    ? sql.replace(DATE_FN_RE, (whole, fn, qual, col) => (safe.has(col) ? `${fn}_dmy(${qual}${col})` : whole))
+    : sql);
+  const prepare = meta.db.prepare.bind(meta.db);
+  const exec = meta.db.exec.bind(meta.db);
+  meta.db.prepare = (sql) => prepare(rewrite(sql));
+  meta.db.exec = (sql) => { exec(rewrite(sql)); return meta.db; };
+  meta.db.dayFirstRewrite = true;
+}
+
 /**
  * Attach the tab's write statements to `meta` as memoized lazy properties.
  *
@@ -236,6 +297,7 @@ class TimelineDB {
       safeCols,
       tsColumns,
       formatTemplate: template ? template.name : null,
+      dayFirstCols: new Set(),
       numericColumns: new Set(),
       indexedCols: new Set(),
       rowCount: 0,
@@ -383,6 +445,17 @@ class TimelineDB {
       } catch (e) { dbg("DB", `ts validation skipped for ${col.original}`, { error: e.message }); }
     }
 
+    // Day-first (European) dates: decided over the whole column, recorded in the tab's database,
+    // and read day first by every query of the tab from now on.
+    const dayFirst = detectDayFirstColumns(meta);
+    if (dayFirst.size) {
+      db.exec(`CREATE TABLE IF NOT EXISTS ${DAY_FIRST_TABLE} (col TEXT)`);
+      const add = db.prepare(`INSERT INTO ${DAY_FIRST_TABLE} VALUES (?)`);
+      for (const c of dayFirst) add.run(c);
+      dbg("DB", `day-first timestamp columns`, { tabId, columns: [...dayFirst] });
+    }
+    readDayFirstColumns(meta, dayFirst);
+
     meta.numericColumns = new Set();
     meta.safeCols.forEach((col) => {
       // Skip columns already detected as timestamps — parseFloat("2026-01-17 01:26:27")
@@ -416,6 +489,7 @@ class TimelineDB {
       headers: meta.headers,
       tsColumns: [...meta.tsColumns],
       numericColumns: [...meta.numericColumns],
+      dayFirstColumns: [...meta.dayFirstCols],
     };
   }
 
@@ -483,6 +557,8 @@ class TimelineDB {
       colMap: Object.fromEntries(safeCols.map((c) => [c.original, c.safe])),
       reverseColMap: Object.fromEntries(safeCols.map((c) => [c.safe, c.original])),
     };
+    // Day-first columns are read from the file, which the import recorded them in.
+    readDayFirstColumns(meta, dayFirstColsFromTable(db));
 
     // Write statements are prepared on first use, not on adopt. Adoption is not only the
     // main process taking over an imported tab — every scroll-window query spawns a

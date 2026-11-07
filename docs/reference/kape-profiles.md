@@ -167,6 +167,8 @@ Complete list of auto-detected KAPE / EZ Tool profiles with their column configu
 
 ## Security Tool Profiles
 
+Hayabusa's own profiles and outputs are recognized by their [Hayabusa Templates](/reference/hayabusa-templates). The two Hayabusa profiles below cover CSVs from custom Hayabusa profiles, and color rows by level the same way.
+
 ### Hayabusa (Standard)
 
 **Detection:** Columns include `Timestamp`, `RuleTitle`, `Level`, `Computer`
@@ -175,7 +177,7 @@ Complete list of auto-detected KAPE / EZ Tool profiles with their column configu
 |----------|---------|
 | **Pinned** | Timestamp, RuleTitle, Level |
 | **Prioritized** | Computer, Channel, RuleFile |
-| **Auto-color** | Level |
+| **Level colors** | Level, as in [Hayabusa Templates](/reference/hayabusa-templates#level-colors) |
 
 ### Hayabusa (Verbose)
 
@@ -185,7 +187,7 @@ Complete list of auto-detected KAPE / EZ Tool profiles with their column configu
 |----------|---------|
 | **Pinned** | Timestamp, RuleTitle, Level |
 | **Prioritized** | Details, ExtraFieldInfo, Computer |
-| **Auto-color** | Level |
+| **Level colors** | Level, as in [Hayabusa Templates](/reference/hayabusa-templates#level-colors) |
 
 ### Chainsaw (Logons)
 

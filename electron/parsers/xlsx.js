@@ -331,6 +331,7 @@ async function parseXLSXStream(filePath, tabId, db, onProgress, sheetName) {
         rowCount: result.rowCount,
         tsColumns: result.tsColumns,
         numericColumns: result.numericColumns,
+        dayFirstColumns: result.dayFirstColumns || [],
       });
     });
 
@@ -417,6 +418,7 @@ function parseXLSFile(filePath, tabId, db, onProgress, sheetName) {
     rowCount: result.rowCount,
     tsColumns: result.tsColumns,
     numericColumns: result.numericColumns,
+    dayFirstColumns: result.dayFirstColumns || [],
   };
 }
 

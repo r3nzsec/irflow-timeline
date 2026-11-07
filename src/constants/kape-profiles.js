@@ -80,12 +80,12 @@ export const KAPE_PROFILES = {
   "Hayabusa (Standard)": {
     detect: ["Timestamp", "RuleTitle", "Level", "Channel", "EventId", "RecordId", "Details"],
     columnOrder: ["Timestamp", "RuleTitle", "Level", "Computer", "Channel", "EventId", "RecordId", "Details", "ExtraFieldInfo"],
-    autoColorColumn: "Level",
+    levelColorColumn: "Level",
   },
   "Hayabusa (Verbose)": {
     detect: ["Timestamp", "RuleTitle", "Level", "MitreTactics", "MitreTags", "OtherTags"],
     columnOrder: ["Timestamp", "RuleTitle", "Level", "Computer", "Channel", "EventId", "MitreTactics", "MitreTags", "OtherTags", "RecordId", "Details", "ExtraFieldInfo", "RuleFile", "EvtxFile"],
-    autoColorColumn: "Level",
+    levelColorColumn: "Level",
   },
   "Chainsaw (Logons)": {
     detect: ["system_time", "id", "workstation_name", "target_username", "source_ip", "logon_type"],

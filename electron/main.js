@@ -387,6 +387,7 @@ async function runImportJob(filePath, tabId, sheetName, fileSize) {
       rowCount: result.rowCount,
       tsColumns: result.tsColumns,
       numericColumns: result.numericColumns || [],
+      dayFirstColumns: result.dayFirstColumns || [],
     });
     return result;
   } catch (err) {

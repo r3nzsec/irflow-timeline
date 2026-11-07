@@ -1,5 +1,11 @@
 import { KAPE_PROFILES } from "../constants/kape-profiles.js";
 import JUNTEI_TEMPLATES from "../../electron/juntei-templates.json" with { type: "json" };
+import HAYABUSA_TEMPLATES from "../../electron/hayabusa-templates.json" with { type: "json" };
+
+const FORMAT_TEMPLATES = [...JUNTEI_TEMPLATES.templates, ...HAYABUSA_TEMPLATES.templates];
+
+/** Row colors by Hayabusa rule level: [{ level, values, background, text }]. */
+export const HAYABUSA_LEVEL_COLORS = HAYABUSA_TEMPLATES.levelColors.levels;
 
 /**
  * The format template that matches `headers`: all of its columns, and no other column except its
@@ -10,7 +16,7 @@ import JUNTEI_TEMPLATES from "../../electron/juntei-templates.json" with { type:
 export function detectFormatTemplate(headers) {
   const present = new Set(headers || []);
   let best = null;
-  for (const t of JUNTEI_TEMPLATES.templates) {
+  for (const t of FORMAT_TEMPLATES) {
     if (!t.columns.every((c) => present.has(c))) continue;
     if (!t.allowExtraColumns) {
       const known = new Set([...t.columns, ...(t.optionalColumns || [])]);
@@ -23,8 +29,8 @@ export function detectFormatTemplate(headers) {
 
 export function detectKapeProfile(headers) {
   const template = detectFormatTemplate(headers);
-  // Juntei already writes its columns in order, so the file order is kept.
-  if (template) return { name: template.name, detect: template.columns };
+  // Juntei and Hayabusa write their columns in order, so the file order is kept.
+  if (template) return { name: template.name, detect: template.columns, levelColorColumn: template.levelColorColumn };
   const headerSet = new Set((headers || []).map((h) => String(h).toLowerCase()));
   for (const [name, profile] of Object.entries(KAPE_PROFILES)) {
     if (profile.detect.every((col) => headerSet.has(String(col).toLowerCase()))) return { name, ...profile };

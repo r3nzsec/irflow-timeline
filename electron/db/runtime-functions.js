@@ -1,4 +1,4 @@
-const { registerForensicUDFs, normalizeTimestamp, isUnsetWindowsTimestamp } = require("../utils/forensic-normalize");
+const { registerForensicUDFs, normalizeTimestamp, isUnsetWindowsTimestamp, parseNumericDate, numericDateIso } = require("../utils/forensic-normalize");
 const { compileSafeRegex, MAX_VALUE_LEN, MAX_PATTERN_LEN } = require("../utils/safe-regex");
 
 // Canonical, lexicographically-sortable UTC form ("YYYY-MM-DD HH:MM:SS.fff") for a value
@@ -102,7 +102,7 @@ function registerRuntimeFunctions(db) {
     return hits / grams.length >= threshold ? 1 : 0;
   });
 
-  db.function("extract_date", { deterministic: true }, (val) => {
+  const extractDate = (val, dayFirst = false) => {
     if (val == null) return null;
     const s = String(val).trim();
     if (s.length >= 10 && s.charCodeAt(4) === 45 && s.charCodeAt(7) === 45 && s.charCodeAt(0) >= 48 && s.charCodeAt(0) <= 57) {
@@ -114,8 +114,19 @@ function registerRuntimeFunctions(db) {
       }
       return rejectUnsetWindowsTs(s.substring(0, 10));
     }
+    const nd = parseNumericDate(s, dayFirst);
+    if (nd) {
+      if (nd.zone) {
+        const canonical = zonedToCanonicalUtc(numericDateIso(nd));
+        if (canonical) return rejectUnsetWindowsTs(canonical.slice(0, 10));
+      }
+      return rejectUnsetWindowsTs(`${nd.year}-${nd.month}-${nd.day}`);
+    }
     let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-    if (m) return `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`;
+    if (m) {
+      const [mo, dd] = dayFirst || (+m[1] > 12 && +m[2] <= 12) ? [m[2], m[1]] : [m[1], m[2]];
+      return `${m[3]}-${mo.padStart(2, "0")}-${dd.padStart(2, "0")}`;
+    }
     m = s.match(/^([A-Za-z]+)\s+(\d{1,2})\w*[\s,]+(\d{4})/);
     if (m) {
       const mo = MONTH_MAP[m[1].substring(0, 3).toLowerCase()];
@@ -146,9 +157,11 @@ function registerRuntimeFunctions(db) {
     const t = looseParseUtcMs(s);
     if (Number.isFinite(t)) return new Date(t).toISOString().substring(0, 10);
     return null;
-  });
+  };
+  db.function("extract_date", { deterministic: true }, (val) => extractDate(val));
+  db.function("extract_date_dmy", { deterministic: true }, (val) => extractDate(val, true));
 
-  db.function("extract_datetime_minute", { deterministic: true }, (val) => {
+  const extractDatetimeMinute = (val, dayFirst = false) => {
     if (val == null) return null;
     const s = String(val).trim();
     if (s.length >= 16 && s.charCodeAt(4) === 45 && s.charCodeAt(7) === 45 && s.charCodeAt(0) >= 48 && s.charCodeAt(0) <= 57) {
@@ -173,6 +186,18 @@ function registerRuntimeFunctions(db) {
       if (!day) return null;
       return `${day} ${m[2]}`;
     }
+    const nd = parseNumericDate(s, dayFirst);
+    if (nd) {
+      if (nd.zone) {
+        const canonical = zonedToCanonicalUtc(numericDateIso(nd));
+        if (canonical) {
+          const day = rejectUnsetWindowsTs(canonical.slice(0, 10));
+          return day ? `${day} ${canonical.slice(11, 16)}` : null;
+        }
+      }
+      const day = rejectUnsetWindowsTs(`${nd.year}-${nd.month}-${nd.day}`);
+      return day ? `${day} ${nd.hour}:${nd.minute}` : null;
+    }
     m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?/i);
     if (m) {
       let hh = parseInt(m[4], 10);
@@ -181,7 +206,8 @@ function registerRuntimeFunctions(db) {
         if (ap === "PM" && hh < 12) hh += 12;
         if (ap === "AM" && hh === 12) hh = 0;
       }
-      return `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")} ${String(hh).padStart(2, "0")}:${m[5]}`;
+      const [mo, dd] = dayFirst || (+m[1] > 12 && +m[2] <= 12) ? [m[2], m[1]] : [m[1], m[2]];
+      return `${m[3]}-${mo.padStart(2, "0")}-${dd.padStart(2, "0")} ${String(hh).padStart(2, "0")}:${m[5]}`;
     }
     m = s.match(/^([A-Za-z]+)\s+(\d{1,2})\w*[\s,]+(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?/i);
     if (m) {
@@ -235,9 +261,11 @@ function registerRuntimeFunctions(db) {
       return `${iso.substring(0, 10)} ${iso.substring(11, 16)}`;
     }
     return null;
-  });
+  };
+  db.function("extract_datetime_minute", { deterministic: true }, (val) => extractDatetimeMinute(val));
+  db.function("extract_datetime_minute_dmy", { deterministic: true }, (val) => extractDatetimeMinute(val, true));
 
-  db.function("sort_datetime", { deterministic: true }, (val) => {
+  const sortDatetime = (val, dayFirst = false) => {
     if (val == null || val === "") return null;
     const s = String(val).trim();
     if (isUnsetWindowsTimestamp(s)) return null;
@@ -253,8 +281,17 @@ function registerRuntimeFunctions(db) {
       return s.replace("T", " ");
     }
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s + " 00:00:00";
+    const nd = parseNumericDate(s, dayFirst);
+    if (nd) {
+      if (nd.zone) {
+        const canonical = zonedToCanonicalUtc(numericDateIso(nd));
+        if (canonical) return canonical;
+      }
+      return `${nd.year}-${nd.month}-${nd.day} ${nd.hour}:${nd.minute}:${nd.second}${nd.fraction ? "." + nd.fraction : ""}`;
+    }
     let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\s*(.*)/);
     if (m) {
+      if (dayFirst || (+m[1] > 12 && +m[2] <= 12)) [m[1], m[2]] = [m[2], m[1]];
       let timePart = m[4] || "00:00:00";
       const ampm = timePart.match(/\s*([AP]M)\s*$/i);
       timePart = timePart.replace(/\s*[AP]M\s*$/i, "").trim();
@@ -290,7 +327,9 @@ function registerRuntimeFunctions(db) {
       return new Date(t).toISOString().replace("T", " ").replace("Z", "");
     }
     return s;
-  });
+  };
+  db.function("sort_datetime", { deterministic: true }, (val) => sortDatetime(val));
+  db.function("sort_datetime_dmy", { deterministic: true }, (val) => sortDatetime(val, true));
 
   registerForensicUDFs(db);
 }
