@@ -135,7 +135,7 @@ export default function EditFilterModal() {
               type="text"
               value={c.value}
               onChange={(e) => updateCondition(c.id, "value", e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleApply(); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleApply(); } }}
               placeholder="Value..."
               style={{ flex: 1, minWidth: 80 }}
             />

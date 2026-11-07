@@ -13,7 +13,8 @@ import { useEffect, useRef } from "react";
  *    inside the container, so keyboard users cannot escape the modal.
  *
  * On deactivation:
- *  - Restores focus to the element that was active before the trap opened.
+ *  - Restores focus to the element that was active before the trap opened, after the
+ *    closing event and only if focus is not elsewhere by then.
  *
  * Pair with role="dialog" + aria-modal="true" + aria-labelledby on the
  * container itself so screen readers announce the modal correctly.
@@ -80,11 +81,16 @@ export default function useFocusTrap(active) {
     return () => {
       cancelAnimationFrame(handle);
       window.removeEventListener("keydown", onKey, true);
-      // Restore focus to where it was before the modal opened
+      // Restore focus to where it was before the modal opened, once the event that closed the
+      // modal is over, and only if nothing else took focus meanwhile. Restoring it at once let
+      // an Enter that closed a modal also press the button that opened it (Edit Filter in the
+      // status bar), which opened the modal again.
       const prev = previousActive.current;
-      if (prev instanceof HTMLElement && document.contains(prev)) {
-        prev.focus();
-      }
+      setTimeout(() => {
+        const now = document.activeElement;
+        const focusLost = !now || now === document.body || now === document.documentElement;
+        if (focusLost && prev instanceof HTMLElement && document.contains(prev)) prev.focus();
+      }, 0);
     };
   }, [active]);
 
