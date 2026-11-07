@@ -264,7 +264,10 @@ test("app root: roster names transcripts; local-tool-permission and automation e
   assert.ok(rows.some((r) => r.RecordType === "feedback"));
 
   const replica = rows.find((r) => r.RecordType === "transcript_replica");
-  assert.match(replica.Summary, /Transcript replica for agent "Triage Helper" — 14 entries, persisted 2026-09-07 05:20:00; oldest retained 2026-09-07 05:13:20/);
+  // The replica summary appends "persistedAt exceeds the 7-day restore TTL" once the fixture's
+  // persistedAt is more than a week in the past (it compares against the wall clock), so the
+  // clause is optional here — the test must not expire with the calendar.
+  assert.match(replica.Summary, /Transcript replica for agent "Triage Helper" — 14 entries, persisted 2026-09-07 05:20:00(?: — persistedAt exceeds the 7-day restore TTL)?; oldest retained 2026-09-07 05:13:20/);
   assert.ok(!/CAP/.test(replica.Summary), "14 entries is under the app's cap");
   assert.match(replica.FullText, /"atEntryCap": false/);
   assert.match(replica.FullText, /"maxEntries": 200/);
@@ -312,7 +315,8 @@ test("a replica at Grok Bot's 200-entry boundary reports uncertainty without inv
     )), JSON.stringify({ schemaVersion: 1, value: { entries, epochHint: null, acceptedSequenceHint: null, persistedAt: 1788758400000 } }));
     const rows = await extractGrokBotDir(app, {});
     const replica = rows.find((r) => r.RecordType === "transcript_replica");
-    assert.match(replica.Summary, /200 entries, persisted 2026-09-07 05:20:00 — AT THE 200-ENTRY RETENTION LIMIT; earlier history availability unknown; oldest retained 2026-09-07 05:13:20/);
+    // Same wall-clock-dependent TTL clause as the roster test above.
+    assert.match(replica.Summary, /200 entries, persisted 2026-09-07 05:20:00 — AT THE 200-ENTRY RETENTION LIMIT; earlier history availability unknown(?: — persistedAt exceeds the 7-day restore TTL)?; oldest retained 2026-09-07 05:13:20/);
     assert.doesNotMatch(replica.Summary, /dropped|deleted/i);
     assert.match(replica.FullText, /"atEntryCap": true/);
     assert.match(replica.FullText, /"historicalDeletionProven": false/);
