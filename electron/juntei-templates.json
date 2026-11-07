@@ -1,0 +1,2131 @@
+{
+  "description": "Column templates for every CSV output of Juntei (https://github.com/Yamato-Security/juntei). A CSV whose header row holds every column of a template, and no column outside columns + optionalColumns unless allowExtraColumns, is that output. timestampColumns are its timestamp columns, exactly; every other column is never treated as a timestamp.",
+  "junteiVersion": "1.0.0",
+  "templates": [
+    {
+      "name": "Juntei MFT",
+      "producedBy": [
+        "auto-parse: FileSystem/MFT.csv",
+        "parse-ntfs mft"
+      ],
+      "columns": [
+        "EntryNum",
+        "SN",
+        "InUse",
+        "ParentEntryNum",
+        "ParentSN",
+        "ParentPath",
+        "File",
+        "Ext",
+        "Size",
+        "RefCnt",
+        "ReparseTarget",
+        "Dir",
+        "HasADS",
+        "IsADS",
+        "SI<FN",
+        "uSecZeros",
+        "Copied",
+        "SI-Flags",
+        "Type",
+        "DataModified (SI)",
+        "DataModified (FN)",
+        "Accessed (SI)",
+        "Accessed (FN)",
+        "MetadataChanged (SI)",
+        "MetadataChanged (FN)",
+        "Created (SI)",
+        "Created (FN)",
+        "USN",
+        "LogfileSN",
+        "SID",
+        "ObjectID-FileDroid",
+        "LoggedUtilStream",
+        "ZoneID-Contents",
+        "SourceFile",
+        "ParseErrors"
+      ],
+      "optionalColumns": [
+        "ResidentDataBase64",
+        "ResidentDataHex",
+        "ResidentDataASCII",
+        "FromSlack",
+        "SlackRecord",
+        "SlackOffset",
+        "CopyOfEntryInUse"
+      ],
+      "timestampColumns": [
+        "DataModified (SI)",
+        "DataModified (FN)",
+        "Accessed (SI)",
+        "Accessed (FN)",
+        "MetadataChanged (SI)",
+        "MetadataChanged (FN)",
+        "Created (SI)",
+        "Created (FN)"
+      ]
+    },
+    {
+      "name": "Juntei MFT (ys-ntfs-parser CSV)",
+      "producedBy": [
+        "parse-ntfs mft -t ys-ntfs-parser-csv"
+      ],
+      "columns": [
+        "Signature",
+        "EntryID",
+        "Sequence",
+        "BaseEntryID",
+        "BaseEntrySequence",
+        "HardLinkCount",
+        "Flags",
+        "UsedEntrySize",
+        "TotalEntrySize",
+        "FileSize",
+        "IsADirectory",
+        "IsDeleted",
+        "HasAlternateDataStreams",
+        "StandardInfoFlags",
+        "StandardInfoLastModified",
+        "StandardInfoLastAccess",
+        "StandardInfoCreated",
+        "FileNameFlags",
+        "FileNameLastModified",
+        "FileNameLastAccess",
+        "FileNameCreated",
+        "FullPath",
+        "StandardInfoLastMFT-Modified",
+        "FileNameLastMFT-Modified"
+      ],
+      "timestampColumns": [
+        "StandardInfoLastModified",
+        "StandardInfoLastAccess",
+        "StandardInfoCreated",
+        "FileNameLastModified",
+        "FileNameLastAccess",
+        "FileNameCreated",
+        "StandardInfoLastMFT-Modified",
+        "FileNameLastMFT-Modified"
+      ]
+    },
+    {
+      "name": "Juntei USN Journal",
+      "producedBy": [
+        "auto-parse: FileSystem/UsnJournal.csv",
+        "parse-ntfs usn-journal"
+      ],
+      "columns": [
+        "Name",
+        "Extension",
+        "EntryNumber",
+        "SequenceNumber",
+        "ParentEntryNumber",
+        "ParentSequenceNumber",
+        "ParentPath",
+        "UpdateSequenceNumber",
+        "UpdateTimestamp",
+        "UpdateReasons",
+        "FileAttributes",
+        "OffsetToData",
+        "SourceFile",
+        "SourceInfo",
+        "SecurityID",
+        "Version"
+      ],
+      "timestampColumns": [
+        "UpdateTimestamp"
+      ]
+    },
+    {
+      "name": "Juntei $LogFile",
+      "producedBy": [
+        "auto-parse: FileSystem/LogFile.csv",
+        "parse-ntfs logfile"
+      ],
+      "columns": [
+        "LSN",
+        "TransactionID",
+        "TransactionFirstLSN",
+        "RedoOperation",
+        "UndoOperation",
+        "TargetEntryNumber",
+        "TargetSequenceNumber",
+        "TargetAttributeType",
+        "TargetAttributeName",
+        "TargetPath",
+        "EntryNumber",
+        "SequenceNumber",
+        "Filename",
+        "ParentEntryNumber",
+        "ParentSequenceNumber",
+        "ParentPath",
+        "CreatedOn",
+        "ContentModifiedOn",
+        "RecordModifiedOn",
+        "LastAccessedOn",
+        "FileSize",
+        "FileAttributes",
+        "AttrType",
+        "PreviousLSN",
+        "UndoNextLSN",
+        "RecordType",
+        "TargetAttribute",
+        "TargetInferred",
+        "TargetVCN",
+        "Lcns",
+        "RecordOffset",
+        "AttributeOffset",
+        "ClusterBlockOffset",
+        "TargetBlockSize",
+        "OffsetInTarget",
+        "RedoLength",
+        "UndoLength",
+        "RedoBytesAvailable",
+        "UndoBytesAvailable",
+        "Truncated",
+        "FileOffset",
+        "SourceFile",
+        "MetadataSide",
+        "ClientIndex",
+        "ClientSequence",
+        "Flags",
+        "SpansPages",
+        "ClusterSize",
+        "ClusterSizeSource",
+        "LogVersion",
+        "MFT-Source",
+        "RedoFileNames",
+        "UndoFileNames",
+        "RedoTimes",
+        "UndoTimes",
+        "RedoDecoded",
+        "UndoDecoded",
+        "JournalWriteOffset",
+        "JournalWriteLength",
+        "Checkpoint",
+        "OtherRecordType",
+        "RedoData",
+        "UndoData",
+        "OtherData",
+        "OpenAttributeEntryNumber",
+        "OpenAttributeSequenceNumber",
+        "OpenAttributePath"
+      ],
+      "timestampColumns": [
+        "CreatedOn",
+        "ContentModifiedOn",
+        "RecordModifiedOn",
+        "LastAccessedOn"
+      ]
+    },
+    {
+      "name": "Juntei $I30",
+      "producedBy": [
+        "auto-parse: FileSystem/I30.csv",
+        "parse-ntfs i30"
+      ],
+      "columns": [
+        "SourcePath",
+        "RecordOffset",
+        "RecordVCN",
+        "RecordLSN",
+        "EntryOffset",
+        "FromSlack",
+        "CopyOfEntryInUse",
+        "Filename",
+        "Namespace",
+        "FileEntry",
+        "FileSequence",
+        "ParentEntry",
+        "ParentSequence",
+        "CreatedUTC",
+        "ModifiedUTC",
+        "MFT-ModifiedUTC",
+        "AccessedUTC",
+        "AllocatedSize",
+        "RealSize",
+        "FileAttributes",
+        "ReparseValue",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "CreatedUTC",
+        "ModifiedUTC",
+        "MFT-ModifiedUTC",
+        "AccessedUTC"
+      ]
+    },
+    {
+      "name": "Juntei $Boot",
+      "producedBy": [
+        "auto-parse: FileSystem/Boot.csv",
+        "parse-ntfs boot"
+      ],
+      "columns": [
+        "SourcePath",
+        "VolumeSerialNumber",
+        "VolumeSerialNumber64",
+        "OEM-ID",
+        "BytesPerSector",
+        "SectorsPerCluster",
+        "ClusterSize",
+        "TotalSectors",
+        "VolumeSize",
+        "HiddenSectors",
+        "MFT-Cluster",
+        "MFT-Offset",
+        "MFT-MirrorCluster",
+        "MFT-MirrorOffset",
+        "FileRecordSize",
+        "IndexRecordSize",
+        "MediaDescriptor",
+        "JumpInstruction",
+        "EndSignature",
+        "BootCodeSHA256",
+        "Problems"
+      ],
+      "timestampColumns": []
+    },
+    {
+      "name": "Juntei $Secure:$SDS",
+      "producedBy": [
+        "auto-parse: FileSystem/SecureSDS.csv",
+        "parse-ntfs secure-sds"
+      ],
+      "columns": [
+        "SourcePath",
+        "SecurityID",
+        "Hash",
+        "EntryOffset",
+        "FromMirror",
+        "Size",
+        "Owner",
+        "OwnerName",
+        "Group",
+        "GroupName",
+        "Control",
+        "DACL-ACE-Count",
+        "DACL",
+        "SACL-ACE-Count",
+        "SACL",
+        "SDDL",
+        "Problems"
+      ],
+      "timestampColumns": []
+    },
+    {
+      "name": "Juntei Prefetch",
+      "producedBy": [
+        "auto-parse: ProcessExecution/Prefetch.csv",
+        "parse-file prefetch"
+      ],
+      "columns": [
+        "SourceFile",
+        "ExecutableName",
+        "ExecutablePath",
+        "PrefetchHash",
+        "FormatVersion",
+        "RunCount",
+        "LastRun",
+        "PreviousRun1",
+        "PreviousRun2",
+        "PreviousRun3",
+        "PreviousRun4",
+        "PreviousRun5",
+        "PreviousRun6",
+        "PreviousRun7",
+        "VolumeCount",
+        "VolumeDevicePaths",
+        "VolumeSerialNumbers",
+        "VolumeCreated",
+        "DirectoryCount",
+        "FileCount",
+        "Findings",
+        "Files",
+        "Dir"
+      ],
+      "timestampColumns": [
+        "LastRun",
+        "PreviousRun1",
+        "PreviousRun2",
+        "PreviousRun3",
+        "PreviousRun4",
+        "PreviousRun5",
+        "PreviousRun6",
+        "PreviousRun7",
+        "VolumeCreated"
+      ]
+    },
+    {
+      "name": "Juntei Prefetch Timeline",
+      "producedBy": [
+        "auto-parse: ProcessExecution/PrefetchTimeline.csv",
+        "parse-file prefetch -T"
+      ],
+      "columns": [
+        "RunTime",
+        "ExecutableName",
+        "ExecutablePath",
+        "PrefetchHash",
+        "RunCount",
+        "SourceFile"
+      ],
+      "timestampColumns": [
+        "RunTime"
+      ]
+    },
+    {
+      "name": "Juntei LNK",
+      "producedBy": [
+        "auto-parse: FileAndFolderOpening/LNK.csv",
+        "parse-file lnk"
+      ],
+      "columns": [
+        "SourceFile",
+        "SourceCreated",
+        "SourceModified",
+        "SourceAccessed",
+        "TargetCreated",
+        "TargetModified",
+        "TargetAccessed",
+        "FileSize",
+        "RelativePath",
+        "WorkingDirectory",
+        "FileAttributes",
+        "HeaderFlags",
+        "DriveType",
+        "VolumeSerialNumber",
+        "VolumeLabel",
+        "LocalPath",
+        "NetworkPath",
+        "CommonPath",
+        "Args",
+        "TargetID-AbsolutePath",
+        "TargetMFT-EntryNumber",
+        "TargetMFT-SequenceNumber",
+        "MachineID",
+        "MachineMAC-Address",
+        "TrackerCreatedOn",
+        "ExtraBlocksPresent",
+        "Name",
+        "IconLocation",
+        "ShowWindow",
+        "EnvironmentVariables",
+        "VolumeDroid",
+        "FileDroid",
+        "VolumeDroidBirth",
+        "FileDroidBirth",
+        "Problems",
+        "IconIndex",
+        "HotKey",
+        "IconEnvironment",
+        "KnownFolder",
+        "SpecialFolder",
+        "DarwinID",
+        "ShimLayer",
+        "NetworkDevice",
+        "NetworkProvider",
+        "ConsoleCodePage",
+        "AppendedBytes"
+      ],
+      "timestampColumns": [
+        "SourceCreated",
+        "SourceModified",
+        "SourceAccessed",
+        "TargetCreated",
+        "TargetModified",
+        "TargetAccessed",
+        "TrackerCreatedOn"
+      ]
+    },
+    {
+      "name": "Juntei Jump Lists (Automatic)",
+      "producedBy": [
+        "auto-parse: FileAndFolderOpening/JumpLists-AutomaticDestinations.csv",
+        "parse-file jump-lists: AutomaticDestinations.csv"
+      ],
+      "columns": [
+        "SourceFile",
+        "SourceCreated",
+        "SourceModified",
+        "SourceAccessed",
+        "AppID",
+        "AppID-Description",
+        "HasSps",
+        "DestListVersion",
+        "LastUsedEntryNumber",
+        "MRU",
+        "EntryNumber",
+        "CreationTime",
+        "LastModified",
+        "Hostname",
+        "MAC-Address",
+        "Path",
+        "InteractionCount",
+        "PinStatus",
+        "FileBirthDroid",
+        "FileDroid",
+        "VolumeBirthDroid",
+        "VolumeDroid",
+        "TargetCreated",
+        "TargetModified",
+        "TargetAccessed",
+        "FileSize",
+        "RelativePath",
+        "WorkingDirectory",
+        "FileAttributes",
+        "HeaderFlags",
+        "DriveType",
+        "VolumeSerialNumber",
+        "VolumeLabel",
+        "LocalPath",
+        "CommonPath",
+        "TargetID-AbsolutePath",
+        "TargetMFT-EntryNumber",
+        "TargetMFT-SequenceNumber",
+        "MachineID",
+        "MachineMAC-Address",
+        "TrackerCreatedOn",
+        "ExtraBlocksPresent",
+        "Args",
+        "Notes",
+        "DisplayPath",
+        "PinPosition",
+        "NetworkPath",
+        "Name",
+        "IconLocation",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "SourceCreated",
+        "SourceModified",
+        "SourceAccessed",
+        "CreationTime",
+        "LastModified",
+        "TargetCreated",
+        "TargetModified",
+        "TargetAccessed",
+        "TrackerCreatedOn"
+      ]
+    },
+    {
+      "name": "Juntei Jump Lists (Custom)",
+      "producedBy": [
+        "auto-parse: FileAndFolderOpening/JumpLists-CustomDestinations.csv",
+        "parse-file jump-lists: CustomDestinations.csv"
+      ],
+      "columns": [
+        "SourceFile",
+        "SourceCreated",
+        "SourceModified",
+        "SourceAccessed",
+        "AppID",
+        "AppID-Description",
+        "EntryName",
+        "TargetCreated",
+        "TargetModified",
+        "TargetAccessed",
+        "FileSize",
+        "RelativePath",
+        "WorkingDirectory",
+        "FileAttributes",
+        "HeaderFlags",
+        "DriveType",
+        "VolumeSerialNumber",
+        "VolumeLabel",
+        "LocalPath",
+        "CommonPath",
+        "TargetID-AbsolutePath",
+        "TargetMFT-EntryNumber",
+        "TargetMFT-SequenceNumber",
+        "MachineID",
+        "MachineMAC-Address",
+        "TrackerCreatedOn",
+        "ExtraBlocksPresent",
+        "Args",
+        "Notes",
+        "NetworkPath",
+        "Name",
+        "IconLocation",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "SourceCreated",
+        "SourceModified",
+        "SourceAccessed",
+        "TargetCreated",
+        "TargetModified",
+        "TargetAccessed",
+        "TrackerCreatedOn"
+      ]
+    },
+    {
+      "name": "Juntei Defender Quarantine",
+      "producedBy": [
+        "auto-parse: SecurityProducts/DefenderQuarantine.csv",
+        "parse-file defender-quarantine"
+      ],
+      "columns": [
+        "Record",
+        "QuarantineTime",
+        "ThreatName",
+        "ThreatID",
+        "ResourceType",
+        "Path",
+        "PhysicalPath",
+        "FileSize",
+        "CreationTime",
+        "LastAccessTime",
+        "LastWriteTime",
+        "Attr",
+        "Owner",
+        "ZoneID",
+        "ReferrerURL",
+        "HostURL",
+        "ContentSize",
+        "MD5",
+        "SHA1",
+        "SHA256",
+        "Streams",
+        "ResourceID",
+        "EntryID",
+        "ScanID",
+        "QuarantineFolder",
+        "EntryFile",
+        "ContentFile",
+        "ResourceRecordFile",
+        "ExtractedFile",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "QuarantineTime",
+        "CreationTime",
+        "LastAccessTime",
+        "LastWriteTime"
+      ]
+    },
+    {
+      "name": "Juntei SRUM AppResourceUseInfo",
+      "producedBy": [
+        "auto-parse: ProcessExecution/SRUM-AppResourceUseInfo.csv",
+        "parse-ese srum"
+      ],
+      "columns": [
+        "ID",
+        "Timestamp",
+        "EXE-Info",
+        "EXE-InfoDescription",
+        "EXE-Timestamp",
+        "AppType",
+        "SID",
+        "User",
+        "UserID",
+        "AppID",
+        "ForegroundCycleTime",
+        "BackgroundCycleTime",
+        "FaceTime",
+        "ForegroundContextSwitches",
+        "BackgroundContextSwitches",
+        "ForegroundBytesRead",
+        "ForegroundBytesWritten",
+        "ForegroundNumReadOperations",
+        "ForegroundNumWriteOperations",
+        "ForegroundNumberOfFlushes",
+        "BackgroundBytesRead",
+        "BackgroundBytesWritten",
+        "BackgroundNumReadOperations",
+        "BackgroundNumWriteOperations",
+        "BackgroundNumberOfFlushes"
+      ],
+      "timestampColumns": [
+        "Timestamp",
+        "EXE-Timestamp"
+      ]
+    },
+    {
+      "name": "Juntei SRUM AppTimelineProvider",
+      "producedBy": [
+        "auto-parse: ProcessExecution/SRUM-AppTimelineProvider.csv",
+        "parse-ese srum"
+      ],
+      "columns": [
+        "ID",
+        "Timestamp",
+        "EXE-Info",
+        "EXE-InfoDescription",
+        "EXE-Timestamp",
+        "AppType",
+        "SID",
+        "User",
+        "UserID",
+        "AppID",
+        "Flags",
+        "EndTime",
+        "DurationMS",
+        "SpanMS",
+        "TimelineEnd",
+        "InFocusTimeline",
+        "UserInputTimeline",
+        "CompRenderedTimeline",
+        "CompDirtiedTimeline",
+        "CompPropagatedTimeline",
+        "AudioInTimeline",
+        "AudioOutTimeline",
+        "CPU-Timeline",
+        "DiskTimeline",
+        "NetworkTimeline",
+        "MBB-Timeline",
+        "InFocusS",
+        "PSM-ForegroundS",
+        "UserInputS",
+        "CompRenderedS",
+        "CompDirtiedS",
+        "CompPropagatedS",
+        "AudioInS",
+        "AudioOutS",
+        "Cycles",
+        "CyclesBreakdown",
+        "CyclesAttr",
+        "CyclesAttrBreakdown",
+        "CyclesWOB",
+        "CyclesWOB-Breakdown",
+        "DiskRaw",
+        "NetworkTailRaw",
+        "NetworkBytesRaw",
+        "MBB-TailRaw",
+        "MBB-BytesRaw",
+        "DisplayRequiredS",
+        "DisplayRequiredTimeline",
+        "KeyboardInputTimeline",
+        "KeyboardInputS",
+        "MouseInputS"
+      ],
+      "timestampColumns": [
+        "Timestamp",
+        "EXE-Timestamp",
+        "EndTime"
+      ]
+    },
+    {
+      "name": "Juntei SRUM EnergyUsage",
+      "producedBy": [
+        "auto-parse: SystemInformation/SRUM-EnergyUsage.csv",
+        "parse-ese srum"
+      ],
+      "columns": [
+        "ID",
+        "Timestamp",
+        "EXE-Info",
+        "EXE-InfoDescription",
+        "EXE-Timestamp",
+        "AppType",
+        "SID",
+        "User",
+        "UserID",
+        "AppID",
+        "IsLt",
+        "ActiveAcTime",
+        "CsAcTime",
+        "ActiveDcTime",
+        "CsDcTime",
+        "ActiveDischargeTime",
+        "CsDischargeTime",
+        "ActiveEnergy",
+        "CsEnergy",
+        "DesignedCapacity",
+        "FullChargedCapacity",
+        "CycleCount",
+        "ConfigurationHash"
+      ],
+      "optionalColumns": [
+        "EventTimestamp",
+        "StateTransition",
+        "ChargeLevel",
+        "BatteryCount",
+        "BatteryChargeLimited"
+      ],
+      "timestampColumns": [
+        "Timestamp",
+        "EXE-Timestamp",
+        "EventTimestamp"
+      ]
+    },
+    {
+      "name": "Juntei SRUM IdentityMap",
+      "producedBy": [
+        "auto-parse: SystemInformation/SRUM-IdentityMap.csv",
+        "parse-ese srum"
+      ],
+      "columns": [
+        "ID-Index",
+        "ID-Type",
+        "ID-Blob"
+      ],
+      "timestampColumns": []
+    },
+    {
+      "name": "Juntei SRUM NetworkConnections",
+      "producedBy": [
+        "auto-parse: NetworkActivity/SRUM-NetworkConnections.csv",
+        "parse-ese srum"
+      ],
+      "columns": [
+        "ID",
+        "Timestamp",
+        "EXE-Info",
+        "EXE-InfoDescription",
+        "EXE-Timestamp",
+        "AppType",
+        "SID",
+        "User",
+        "UserID",
+        "AppID",
+        "InterfaceLUID",
+        "InterfaceType",
+        "L2ProfileID",
+        "ProfileName",
+        "ConnectedTime",
+        "ConnectStartTime",
+        "L2ProfileFlags"
+      ],
+      "timestampColumns": [
+        "Timestamp",
+        "EXE-Timestamp",
+        "ConnectStartTime"
+      ]
+    },
+    {
+      "name": "Juntei SRUM NetworkUsages",
+      "producedBy": [
+        "auto-parse: NetworkActivity/SRUM-NetworkUsages.csv",
+        "parse-ese srum"
+      ],
+      "columns": [
+        "ID",
+        "Timestamp",
+        "EXE-Info",
+        "EXE-InfoDescription",
+        "EXE-Timestamp",
+        "AppType",
+        "SID",
+        "User",
+        "UserID",
+        "AppID",
+        "InterfaceLUID",
+        "InterfaceType",
+        "L2ProfileID",
+        "ProfileName",
+        "L2ProfileFlags",
+        "BytesSent",
+        "BytesReceived"
+      ],
+      "timestampColumns": [
+        "Timestamp",
+        "EXE-Timestamp"
+      ]
+    },
+    {
+      "name": "Juntei SRUM PushNotifications",
+      "producedBy": [
+        "auto-parse: NetworkActivity/SRUM-PushNotifications.csv",
+        "parse-ese srum"
+      ],
+      "columns": [
+        "ID",
+        "Timestamp",
+        "EXE-Info",
+        "EXE-InfoDescription",
+        "EXE-Timestamp",
+        "AppType",
+        "SID",
+        "User",
+        "UserID",
+        "AppID",
+        "NotificationType",
+        "PayloadSize",
+        "NetworkType"
+      ],
+      "timestampColumns": [
+        "Timestamp",
+        "EXE-Timestamp"
+      ]
+    },
+    {
+      "name": "Juntei SRUM VfuProvider",
+      "producedBy": [
+        "auto-parse: SystemInformation/SRUM-VfuProvider.csv",
+        "parse-ese srum"
+      ],
+      "columns": [
+        "ID",
+        "Timestamp",
+        "EXE-Info",
+        "EXE-InfoDescription",
+        "EXE-Timestamp",
+        "AppType",
+        "SID",
+        "User",
+        "UserID",
+        "AppID",
+        "Flags",
+        "StartTime",
+        "EndTime",
+        "Usage"
+      ],
+      "timestampColumns": [
+        "Timestamp",
+        "EXE-Timestamp",
+        "StartTime",
+        "EndTime"
+      ]
+    },
+    {
+      "name": "Juntei SRUM (other tables)",
+      "producedBy": [
+        "auto-parse: <category>/SRUM-<table>.csv for tables without a specific parser",
+        "parse-ese srum: SRUM-<table>.csv for tables without a specific parser"
+      ],
+      "columns": [
+        "ID",
+        "Timestamp",
+        "EXE-Info",
+        "EXE-InfoDescription",
+        "EXE-Timestamp",
+        "AppType",
+        "SID",
+        "User",
+        "UserID",
+        "AppID"
+      ],
+      "allowExtraColumns": true,
+      "timestampColumns": [
+        "Timestamp",
+        "EXE-Timestamp"
+      ]
+    },
+    {
+      "name": "Juntei Registry Amcache Files",
+      "producedBy": [
+        "auto-parse: FileExistence/Registry-Amcache-Files.csv",
+        "parse-registry amcache"
+      ],
+      "columns": [
+        "RecordType",
+        "Source",
+        "AmcacheSchema",
+        "KeyName",
+        "SourceKeyPath",
+        "SourceVolumeKeyLastWrittenUTC",
+        "SourceVolumeKeyLastWrittenFiletime",
+        "KeyLastWrittenUTC",
+        "KeyLastWrittenFiletime",
+        "FileID",
+        "SHA1",
+        "SHA256",
+        "Name",
+        "OriginalFileName",
+        "Description",
+        "FullPath",
+        "LongPathHash",
+        "ProgramID",
+        "Publisher",
+        "Version",
+        "BinFileVersion",
+        "ProductName",
+        "ProductVersion",
+        "BinProductVersion",
+        "BinaryType",
+        "LinkDate",
+        "APPX-PackageFullName",
+        "APPX-PackageRelativeID",
+        "Size",
+        "Language",
+        "IsPE-File",
+        "IsOS-Component",
+        "USN",
+        "RegistryValuesJSON"
+      ],
+      "timestampColumns": [
+        "SourceVolumeKeyLastWrittenUTC",
+        "KeyLastWrittenUTC",
+        "LinkDate"
+      ]
+    },
+    {
+      "name": "Juntei Registry Amcache Devices",
+      "producedBy": [
+        "auto-parse: FileExistence/Registry-Amcache-Devices.csv",
+        "parse-registry amcache"
+      ],
+      "columns": [
+        "RecordType",
+        "Source",
+        "AmcacheSchema",
+        "KeyName",
+        "SourceKeyPath",
+        "KeyLastWrittenUTC",
+        "KeyLastWrittenFiletime",
+        "Description",
+        "BusDescription",
+        "HWID-JSON",
+        "CompID-JSON",
+        "Manufacturer",
+        "Model",
+        "Class",
+        "ClassGUID",
+        "ContainerID",
+        "DeviceInterfaceClassesJSON",
+        "DeviceState",
+        "DriverID",
+        "DriverName",
+        "DriverPackageStrongName",
+        "DriverVerDate",
+        "DriverVerVersion",
+        "Enumerator",
+        "ExtendedInfsJSON",
+        "FirstInstallDate",
+        "INF",
+        "InstallDate",
+        "InstallState",
+        "LowerClassFiltersJSON",
+        "LowerFiltersJSON",
+        "MatchingID",
+        "ParentID",
+        "ProblemCode",
+        "Provider",
+        "Service",
+        "StackID-JSON",
+        "UpperClassFiltersJSON",
+        "UpperFiltersJSON",
+        "LocationPathsJSON",
+        "RegistryValuesJSON"
+      ],
+      "timestampColumns": [
+        "KeyLastWrittenUTC",
+        "DriverVerDate",
+        "FirstInstallDate",
+        "InstallDate"
+      ]
+    },
+    {
+      "name": "Juntei Registry Amcache Findings",
+      "producedBy": [
+        "auto-parse: FileExistence/Registry-Amcache-Findings.csv",
+        "parse-registry amcache"
+      ],
+      "columns": [
+        "RecordType",
+        "Source",
+        "Variant",
+        "Code",
+        "Severity",
+        "Category",
+        "MitreTagsJSON",
+        "Name",
+        "Path",
+        "SHA1",
+        "Note",
+        "SubjectsJSON"
+      ],
+      "timestampColumns": []
+    },
+    {
+      "name": "Juntei Registry Amcache Summary",
+      "producedBy": [
+        "auto-parse: FileExistence/Registry-Amcache-Summary.csv",
+        "parse-registry amcache"
+      ],
+      "columns": [
+        "RecordType",
+        "OutputSchemaVersion",
+        "ToolName",
+        "ToolVersion",
+        "Source",
+        "AmcacheSchema",
+        "FileCount",
+        "DeviceCount",
+        "FindingCount",
+        "FilesIncluded",
+        "DevicesIncluded"
+      ],
+      "timestampColumns": []
+    },
+    {
+      "name": "Juntei Registry AppCompat",
+      "producedBy": [
+        "auto-parse: ProcessExecution/Registry-AppCompat.csv",
+        "parse-registry app-compat"
+      ],
+      "columns": [
+        "Host",
+        "SourcePath",
+        "HiveType",
+        "User",
+        "UserSID",
+        "Source",
+        "Scope",
+        "Path",
+        "Layers",
+        "LastSeenUTC",
+        "SdbGUID",
+        "SdbPath",
+        "SdbInstalledUTC",
+        "Details",
+        "KeyPath",
+        "KeyLastWrittenUTC",
+        "ValueName",
+        "WOW64",
+        "DataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "LastSeenUTC",
+        "SdbInstalledUTC",
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry AppHistory",
+      "producedBy": [
+        "auto-parse: Applications/Registry-AppHistory.csv",
+        "parse-registry app-history"
+      ],
+      "columns": [
+        "Host",
+        "SourcePath",
+        "User",
+        "UserSID",
+        "App",
+        "Item",
+        "MRU-Position",
+        "Path",
+        "Value",
+        "FirstUsedUTC",
+        "Details",
+        "KeyPath",
+        "KeyLastWrittenUTC",
+        "ValueName",
+        "DataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "FirstUsedUTC",
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry Audit Policy",
+      "producedBy": [
+        "auto-parse: SystemInformation/Registry-AuditPolicy.csv",
+        "parse-registry auditpol"
+      ],
+      "columns": [
+        "Host",
+        "SourcePath",
+        "Layout",
+        "Category",
+        "Subcategory",
+        "SubcategoryGUID",
+        "SubcategoryID",
+        "Setting",
+        "Success",
+        "Failure",
+        "AuditingEnabled",
+        "Events",
+        "KeyLastWrittenUTC",
+        "DataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry BAM",
+      "producedBy": [
+        "auto-parse: ProcessExecution/Registry-BAM.csv",
+        "parse-registry bam"
+      ],
+      "columns": [
+        "Host",
+        "SourcePath",
+        "ControlSet",
+        "IsCurrentControlSet",
+        "Moderator",
+        "UserSID",
+        "User",
+        "UserSource",
+        "Program",
+        "DevicePath",
+        "Path",
+        "LastRunUTC",
+        "KeyPath",
+        "KeyLastWrittenUTC",
+        "DataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "LastRunUTC",
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry BCD",
+      "producedBy": [
+        "auto-parse: Persistence/Registry-BCD.csv",
+        "parse-registry bcd"
+      ],
+      "columns": [
+        "Host",
+        "SourcePath",
+        "HiveType",
+        "ObjectGUID",
+        "ObjectType",
+        "ObjectTypeName",
+        "Description",
+        "IsDefault",
+        "DisplayOrder",
+        "Device",
+        "Path",
+        "RecoveryEnabled",
+        "TestSigning",
+        "NoIntegrityChecks",
+        "SafeBoot",
+        "BootStatusPolicy",
+        "Inherited",
+        "Elements",
+        "KeyLastWrittenUTC",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry FeatureUsage",
+      "producedBy": [
+        "auto-parse: ProcessExecution/Registry-FeatureUsage.csv",
+        "parse-registry feature-usage"
+      ],
+      "columns": [
+        "Host",
+        "User",
+        "UserSID",
+        "SourcePath",
+        "Source",
+        "App",
+        "AppPath",
+        "Count",
+        "LastAccessedUTC",
+        "ItemPath",
+        "DisplayName",
+        "PinType",
+        "Index",
+        "ValueName",
+        "KeyPath",
+        "KeyLastWrittenUTC",
+        "DataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "LastAccessedUTC",
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry Installed Programs",
+      "producedBy": [
+        "auto-parse: Applications/Registry-InstalledPrograms.csv",
+        "parse-registry installed-programs"
+      ],
+      "columns": [
+        "Host",
+        "SourcePath",
+        "HiveType",
+        "User",
+        "UserSID",
+        "Source",
+        "Scope",
+        "Name",
+        "Version",
+        "Publisher",
+        "InstallDate",
+        "InstallDateRaw",
+        "KeyLastWrittenUTC",
+        "InstallLocation",
+        "InstallSource",
+        "Program",
+        "UninstallCommand",
+        "QuietUninstallCommand",
+        "SizeKB",
+        "SystemComponent",
+        "WindowsInstaller",
+        "ProductCode",
+        "Architecture",
+        "WOW64",
+        "Details",
+        "KeyPath",
+        "DataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "InstallDate",
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry LSA Secrets",
+      "producedBy": [
+        "auto-parse: Accounts/Registry-LsaSecrets.csv",
+        "parse-registry lsa-secrets"
+      ],
+      "columns": [
+        "Host",
+        "SourcePath",
+        "Secret",
+        "Kind",
+        "ServiceName",
+        "UserSID",
+        "CurrentSetUTC",
+        "OldSetUTC",
+        "HasCurrentValue",
+        "HasOldValue",
+        "CurrentValueLastWrittenUTC",
+        "OldValueLastWrittenUTC",
+        "KeyLastWrittenUTC",
+        "CachedLogons",
+        "CachedLogonsInUse",
+        "CachedLogonsKept",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "CurrentSetUTC",
+        "OldSetUTC",
+        "CurrentValueLastWrittenUTC",
+        "OldValueLastWrittenUTC",
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry MRU",
+      "producedBy": [
+        "auto-parse: FileAndFolderOpening/Registry-MRU.csv",
+        "parse-registry mru"
+      ],
+      "columns": [
+        "Host",
+        "User",
+        "UserSID",
+        "SourcePath",
+        "List",
+        "Subkey",
+        "MRU-Position",
+        "IsMostRecent",
+        "ValueName",
+        "Value",
+        "TypedTimeUTC",
+        "LastUsedUTC",
+        "KeyPath",
+        "KeyLastWrittenUTC",
+        "DataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "TypedTimeUTC",
+        "LastUsedUTC",
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry MuiCache",
+      "producedBy": [
+        "auto-parse: ProcessExecution/Registry-MuiCache.csv",
+        "parse-registry muicache"
+      ],
+      "columns": [
+        "Host",
+        "User",
+        "UserSID",
+        "SourcePath",
+        "HiveType",
+        "Path",
+        "FriendlyAppName",
+        "AppCompany",
+        "KeyPath",
+        "KeyLastWrittenUTC",
+        "FriendlyAppNameRaw",
+        "AppCompanyRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry Networks",
+      "producedBy": [
+        "auto-parse: NetworkActivity/Registry-Networks.csv",
+        "parse-registry networks"
+      ],
+      "columns": [
+        "Host",
+        "SourcePath",
+        "ControlSet",
+        "IsCurrentControlSet",
+        "Source",
+        "ProfileName",
+        "Category",
+        "ConnectionType",
+        "FirstConnectedUTC",
+        "LastConnectedUTC",
+        "FirstConnectedLocal",
+        "LastConnectedLocal",
+        "TimeZone",
+        "GatewayMAC",
+        "DNS-Suffix",
+        "InterfaceGUID",
+        "IP-Address",
+        "DhcpServer",
+        "LeaseObtainedUTC",
+        "LeaseExpiresUTC",
+        "ShareName",
+        "SharePath",
+        "ListenAddress",
+        "ListenPort",
+        "ConnectAddress",
+        "ConnectPort",
+        "Route",
+        "Details",
+        "KeyPath",
+        "ValueName",
+        "KeyLastWrittenUTC",
+        "DataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "FirstConnectedUTC",
+        "LastConnectedUTC",
+        "LeaseObtainedUTC",
+        "LeaseExpiresUTC",
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry Office",
+      "producedBy": [
+        "auto-parse: FileAndFolderOpening/Registry-Office.csv",
+        "parse-registry office"
+      ],
+      "columns": [
+        "Host",
+        "User",
+        "UserSID",
+        "SourcePath",
+        "OfficeVersion",
+        "App",
+        "List",
+        "Account",
+        "Policy",
+        "MRU-Position",
+        "IsMostRecent",
+        "Path",
+        "LastOpenedUTC",
+        "TrustedAtUTC",
+        "MacrosEnabled",
+        "TrustFlags",
+        "Setting",
+        "Value",
+        "KeyPath",
+        "KeyLastWrittenUTC",
+        "DataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "LastOpenedUTC",
+        "TrustedAtUTC",
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry OpenSaveMRU",
+      "producedBy": [
+        "auto-parse: FileAndFolderOpening/Registry-OpenSaveMRU.csv",
+        "parse-registry open-save-mru"
+      ],
+      "columns": [
+        "Host",
+        "User",
+        "UserSID",
+        "SourcePath",
+        "List",
+        "Extension",
+        "MRU-Position",
+        "IsMostRecent",
+        "ValueName",
+        "Program",
+        "Path",
+        "ItemType",
+        "ItemModifiedUTC",
+        "ItemCreatedUTC",
+        "ItemAccessedUTC",
+        "MFT-Entry",
+        "MFT-Sequence",
+        "LastUsedUTC",
+        "KeyPath",
+        "KeyLastWrittenUTC",
+        "DataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "LastUsedUTC",
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry Persistence",
+      "producedBy": [
+        "auto-parse: Persistence/Registry-Persistence.csv",
+        "parse-registry persistence"
+      ],
+      "columns": [
+        "Host",
+        "SourcePath",
+        "HiveType",
+        "User",
+        "UserSID",
+        "Mechanism",
+        "AttackTechnique",
+        "KeyPath",
+        "ValueName",
+        "Data",
+        "ImagePath",
+        "Args",
+        "Enabled",
+        "DisabledAtUTC",
+        "Details",
+        "OverridesMachineRegistration",
+        "WOW64",
+        "KeyLastWrittenUTC",
+        "DataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "DisabledAtUTC",
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry RecentDocs",
+      "producedBy": [
+        "auto-parse: FileAndFolderOpening/Registry-RecentDocs.csv",
+        "parse-registry recent-docs"
+      ],
+      "columns": [
+        "Host",
+        "User",
+        "SourcePath",
+        "Extension",
+        "MRU-Position",
+        "ValueIndex",
+        "Filename",
+        "LinkName",
+        "KeyLastWrittenUTC",
+        "LastOpenedUTC",
+        "ValueDataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "KeyLastWrittenUTC",
+        "LastOpenedUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry Remote Access",
+      "producedBy": [
+        "auto-parse: LateralMovement/Registry-RemoteAccess.csv",
+        "parse-registry remote-access"
+      ],
+      "columns": [
+        "Host",
+        "User",
+        "UserSID",
+        "SourcePath",
+        "Client",
+        "Kind",
+        "Target",
+        "Port",
+        "RemoteUsername",
+        "Protocol",
+        "MRU-Position",
+        "SessionName",
+        "HostKeyType",
+        "HostKeyFingerprint",
+        "HostKey",
+        "DriveLetter",
+        "PasswordStored",
+        "Details",
+        "KeyPath",
+        "ValueName",
+        "KeyLastWrittenUTC",
+        "DataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry SAM",
+      "producedBy": [
+        "auto-parse: Accounts/Registry-SAM.csv",
+        "parse-registry sam"
+      ],
+      "columns": [
+        "Host",
+        "SourcePath",
+        "RID",
+        "User",
+        "FullName",
+        "Comment",
+        "UserComment",
+        "AccountFlags",
+        "AccountFlagsValue",
+        "CountryCode",
+        "CodePage",
+        "LastLogonUTC",
+        "LastLogonWholeSecondsUTC",
+        "PasswordLastSetUTC",
+        "AccountExpirationUTC",
+        "LastFailedLogonUTC",
+        "FailedLogonCount",
+        "LogonCount",
+        "PasswordHint",
+        "InternetUserName",
+        "HiddenFromLogonUI",
+        "HomeDirectory",
+        "HomeDrive",
+        "ProfilePath",
+        "LogonScript",
+        "KeyLastWrittenUTC",
+        "NamesKeyLastWrittenUTC",
+        "LastLogonFiletime",
+        "PasswordLastSetFiletime",
+        "AccountExpirationFiletime",
+        "LastFailedLogonFiletime",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "LastLogonUTC",
+        "LastLogonWholeSecondsUTC",
+        "PasswordLastSetUTC",
+        "AccountExpirationUTC",
+        "LastFailedLogonUTC",
+        "KeyLastWrittenUTC",
+        "NamesKeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry Security Settings",
+      "producedBy": [
+        "auto-parse: SecurityProducts/Registry-SecuritySettings.csv",
+        "parse-registry security-settings"
+      ],
+      "columns": [
+        "Host",
+        "SourcePath",
+        "HiveType",
+        "ControlSet",
+        "IsCurrentControlSet",
+        "User",
+        "UserSID",
+        "Area",
+        "Setting",
+        "Value",
+        "Meaning",
+        "WeakensDefault",
+        "Policy",
+        "KeyPath",
+        "ValueName",
+        "KeyLastWrittenUTC",
+        "DataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry Services",
+      "producedBy": [
+        "auto-parse: Persistence/Registry-Services.csv",
+        "parse-registry services"
+      ],
+      "columns": [
+        "Host",
+        "SourcePath",
+        "ControlSet",
+        "IsCurrentControlSet",
+        "ServiceName",
+        "DisplayName",
+        "Description",
+        "ImagePath",
+        "ServiceDLL",
+        "StartType",
+        "StartValue",
+        "DelayedAutostart",
+        "ServiceType",
+        "TypeValue",
+        "ErrorControl",
+        "ObjectName",
+        "Group",
+        "FailureResetPeriod",
+        "FailureCommand",
+        "FailureActions",
+        "FailureActionType",
+        "FailureActionDelayMs",
+        "FailureActionsRaw",
+        "KeyLastWrittenUTC",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry ShellBags",
+      "producedBy": [
+        "auto-parse: FileAndFolderOpening/Registry-ShellBags.csv",
+        "parse-registry shell-bags"
+      ],
+      "columns": [
+        "Host",
+        "User",
+        "UserSID",
+        "SourcePath",
+        "HiveType",
+        "BagKey",
+        "MRU-Position",
+        "IsMostRecentInParent",
+        "NodeSlot",
+        "Path",
+        "ItemType",
+        "ItemClass",
+        "ItemName",
+        "GUID",
+        "ItemModifiedUTC",
+        "ItemCreatedUTC",
+        "ItemAccessedUTC",
+        "MFT-Entry",
+        "MFT-Sequence",
+        "ExtensionBlocks",
+        "KeyLastWrittenUTC",
+        "ParentKeyLastWrittenUTC",
+        "DataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "KeyLastWrittenUTC",
+        "ParentKeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry ShimCache",
+      "producedBy": [
+        "auto-parse: FileExistence/Registry-ShimCache.csv",
+        "parse-registry shimcache"
+      ],
+      "columns": [
+        "ControlSet",
+        "CacheEntryPosition",
+        "Path",
+        "LastModifiedTimeUTC",
+        "Executed",
+        "Duplicate",
+        "SourceFile",
+        "FromSlack",
+        "CacheFormat",
+        "CacheLastWrittenUTC",
+        "InsertFlags",
+        "ShimFlags",
+        "DataSize",
+        "Machine",
+        "FileSize",
+        "LastUpdateTimeUTC",
+        "PackageName",
+        "PackageVersion",
+        "PackagePublisherID",
+        "Findings",
+        "RegistryPath",
+        "RegistryValueName",
+        "CacheValueSize",
+        "IsCurrent",
+        "SelectCurrent",
+        "SelectDefault",
+        "SelectLastKnownGood",
+        "SelectFailed"
+      ],
+      "timestampColumns": [
+        "LastModifiedTimeUTC",
+        "CacheLastWrittenUTC",
+        "LastUpdateTimeUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry System Info",
+      "producedBy": [
+        "auto-parse: SystemInformation/Registry-SystemInfo.csv",
+        "parse-registry system-info"
+      ],
+      "columns": [
+        "Host",
+        "SourcePath",
+        "SoftwarePath",
+        "SamPath",
+        "SecurityPath",
+        "CompName",
+        "Hostname",
+        "Domain",
+        "PrimaryDomain",
+        "DNS-Domain",
+        "ProductName",
+        "Edition",
+        "DisplayVersion",
+        "Version",
+        "Build",
+        "Ubr",
+        "ServicePack",
+        "InstallationType",
+        "InstallDateUTC",
+        "InstallTimeUTC",
+        "RegisteredOwner",
+        "RegisteredOrganization",
+        "SystemRoot",
+        "TimeZone",
+        "TimeZoneDescription",
+        "UTC-Offset",
+        "DaylightUTC-Offset",
+        "BiasMinutes",
+        "ActiveBiasMinutes",
+        "StandardBiasMinutes",
+        "DaylightBiasMinutes",
+        "StandardName",
+        "DaylightName",
+        "StandardStart",
+        "DaylightStart",
+        "DynamicDaylightTimeDisabled",
+        "RealTimeIsUniversal",
+        "TimeZoneLastWrittenUTC",
+        "LastShutdownUTC",
+        "CurrentControlSet",
+        "ProcessorArchitecture",
+        "AnsiCodePage",
+        "OemCodePage",
+        "LastLoggedOnUser",
+        "LastLoggedOnSamUser",
+        "LastLoggedOnUserSID",
+        "LastLoggedOnDisplayName",
+        "LogonUiLastWrittenUTC",
+        "MachineSID",
+        "DomainSID",
+        "MachineAccountSID",
+        "CompNameLastWrittenUTC",
+        "PrimaryDomainLastWrittenUTC",
+        "VersionLastWrittenUTC",
+        "PreviousVersions",
+        "Profiles",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "InstallDateUTC",
+        "InstallTimeUTC",
+        "TimeZoneLastWrittenUTC",
+        "LastShutdownUTC",
+        "LogonUiLastWrittenUTC",
+        "CompNameLastWrittenUTC",
+        "PrimaryDomainLastWrittenUTC",
+        "VersionLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry TaskCache",
+      "producedBy": [
+        "auto-parse: Persistence/Registry-TaskCache.csv",
+        "parse-registry taskcache"
+      ],
+      "columns": [
+        "Host",
+        "SourcePath",
+        "TaskName",
+        "TaskGUID",
+        "TaskIndex",
+        "TaskLists",
+        "Hidden",
+        "InTree",
+        "InTasks",
+        "HasSecurityDescriptor",
+        "TreeKeyLastWrittenUTC",
+        "TaskKeyLastWrittenUTC",
+        "ActionIndex",
+        "ActionType",
+        "Executable",
+        "Args",
+        "WorkingDirectory",
+        "COM-ClassID",
+        "ActionData",
+        "Context",
+        "Author",
+        "URI",
+        "Description",
+        "LastRegisteredUTC",
+        "LastRunUTC",
+        "LastSuccessfulRunUTC",
+        "LastResult",
+        "ActionsRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "TreeKeyLastWrittenUTC",
+        "TaskKeyLastWrittenUTC",
+        "LastRegisteredUTC",
+        "LastRunUTC",
+        "LastSuccessfulRunUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry USB",
+      "producedBy": [
+        "auto-parse: ExternalDevices/Registry-USB.csv",
+        "parse-registry usb"
+      ],
+      "columns": [
+        "Host",
+        "DeviceClass",
+        "ControlSet",
+        "Vendor",
+        "Product",
+        "Revision",
+        "Vid",
+        "PID",
+        "Serial",
+        "Instance",
+        "FriendlyName",
+        "DeviceDesc",
+        "Service",
+        "ContainerID",
+        "DeviceFirstInstallUTC",
+        "DriverLastInstalledUTC",
+        "LastArrivalUTC",
+        "LastRemovalUTC",
+        "DriveLetters",
+        "VolumeGUID",
+        "VolumeData",
+        "VolumeNames",
+        "VolumeSerials",
+        "User",
+        "FoundIn",
+        "SourceKeys",
+        "KeyPath",
+        "KeyLastWrittenUTC",
+        "SourcePath",
+        "SoftwarePath",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "DeviceFirstInstallUTC",
+        "DriverLastInstalledUTC",
+        "LastArrivalUTC",
+        "LastRemovalUTC",
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry UserAssist",
+      "producedBy": [
+        "auto-parse: ProcessExecution/Registry-UserAssist.csv",
+        "parse-registry user-assist"
+      ],
+      "columns": [
+        "Host",
+        "User",
+        "UserSID",
+        "SourcePath",
+        "GUID",
+        "Kind",
+        "NameRot13",
+        "Name",
+        "Path",
+        "RunCount",
+        "FocusCount",
+        "FocusTimeMs",
+        "LastRunUTC",
+        "Format",
+        "SessionID",
+        "KeyLastWrittenUTC",
+        "DataRaw",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "LastRunUTC",
+        "KeyLastWrittenUTC"
+      ]
+    },
+    {
+      "name": "Juntei Registry Dump",
+      "producedBy": [
+        "auto-parse: Registry/Registry-Dump.csv",
+        "parse-registry read"
+      ],
+      "columns": [
+        "Host",
+        "HiveType",
+        "SourcePath",
+        "RecordType",
+        "KeyPath",
+        "KeyLastWrittenUTC",
+        "ValueName",
+        "ValueType",
+        "ValueData",
+        "DataSize",
+        "ValueDataRaw",
+        "ValueU64",
+        "ValueFiletimeUTC",
+        "AllocationStatus",
+        "RecoveredFrom",
+        "TransactionLogStatus",
+        "LogsApplied",
+        "Problems"
+      ],
+      "timestampColumns": [
+        "KeyLastWrittenUTC",
+        "ValueFiletimeUTC"
+      ]
+    },
+    {
+      "name": "Juntei Persistence Hunter",
+      "producedBy": [
+        "auto-parse: Persistence/PersistenceHunter.csv",
+        "persistence-hunter"
+      ],
+      "columns": [
+        "Comp",
+        "CheckID",
+        "Technique",
+        "MitreID",
+        "Path",
+        "Value",
+        "Description",
+        "AccessGained",
+        "Severity",
+        "PolicyReason",
+        "SourceFile",
+        "RecordStatus",
+        "KeyLastWrite",
+        "LastChange",
+        "ChangeSource",
+        "ChangeEvidence",
+        "ResolvedPath",
+        "ResolutionStatus",
+        "Exists",
+        "SHA256",
+        "Signer",
+        "SignerStatus",
+        "IsLOLBIN",
+        "IsBuiltin",
+        "IsInOS-Directory",
+        "Launcher",
+        "References"
+      ],
+      "timestampColumns": [
+        "KeyLastWrite",
+        "LastChange"
+      ]
+    },
+    {
+      "name": "Juntei Persistence Hunter Coverage",
+      "producedBy": [
+        "persistence-hunter --coverage"
+      ],
+      "columns": [
+        "Comp",
+        "CheckID",
+        "Status",
+        "Detail"
+      ],
+      "timestampColumns": []
+    },
+    {
+      "name": "Juntei auto-parse Manifest",
+      "producedBy": [
+        "auto-parse: manifest.csv"
+      ],
+      "columns": [
+        "Comp",
+        "Hostname",
+        "FQDN",
+        "HostnameSource",
+        "EvidenceRoot",
+        "Artifact",
+        "Category",
+        "OutputType",
+        "OutputTimeZone",
+        "Purpose",
+        "Status",
+        "DurationMs",
+        "ExitCode",
+        "Output",
+        "OutputFiles",
+        "Log",
+        "Error",
+        "Command"
+      ],
+      "timestampColumns": []
+    }
+  ]
+}
