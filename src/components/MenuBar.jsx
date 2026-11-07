@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import useUIStore from "../store/useUIStore.js";
 import useTabStore from "../store/useTabStore.js";
 import { toast } from "../store/useToastStore.js";
@@ -59,6 +60,48 @@ import {
   openAiSecretsModal,
   updateModal,
 } from "../modals/modalRegistry.js";
+
+/**
+ * Closes an open toolbar menu when the user clicks anywhere outside it.
+ *
+ * The overlay is rendered into <body>. Inside the menu bar it covered only the bar: the bar's
+ * backdrop-filter makes it the containing block for position:fixed descendants, so a click on
+ * the grid never reached it and the menu stayed open until its button was clicked again.
+ * The overlay sits just under the bar (z-index 100), so the open dropdown stays above it. It
+ * swallows the click, as a native menu does, and is no-drag, so while a menu is open a click on
+ * the bar's empty, window-dragging area reaches the page. A click on the bar itself (another
+ * menu, the search box) closes the menu on mousedown and goes through; a click inside the menu's
+ * own button and dropdown is left to them.
+ */
+function MenuDismissLayer({ onClose }) {
+  const anchorRef = useRef(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const onMouseDown = (e) => {
+      const menuRoot = anchorRef.current?.parentElement; // the menu's button and dropdown
+      if (menuRoot?.contains(e.target)) return;
+      if (e.target?.dataset?.menuDismissLayer) return; // the overlay closes on its own click
+      closeRef.current();
+    };
+    document.addEventListener("mousedown", onMouseDown, true);
+    return () => document.removeEventListener("mousedown", onMouseDown, true);
+  }, []);
+  const stop = (e) => e.stopPropagation(); // portal events still bubble through the React tree
+  return (
+    <>
+      <span ref={anchorRef} hidden />
+      {createPortal(
+        <div data-menu-dismiss-layer="1" aria-hidden="true"
+          onMouseDown={stop}
+          onClick={(e) => { stop(e); closeRef.current(); }}
+          onContextMenu={(e) => { e.preventDefault(); stop(e); closeRef.current(); }}
+          style={{ position: "fixed", inset: 0, zIndex: 99, WebkitAppRegion: "no-drag" }} />,
+        document.body,
+      )}
+    </>
+  );
+}
 
 /**
  * MenuBar — File/View/Tools/Actions/Help menus + settings capsule.
@@ -275,7 +318,7 @@ export default function MenuBar({
   // Menu panels are OPAQUE (th.modalBg, no alpha suffix) — a dropdown must be readable, never let the
   // bright grid text behind it bleed through. The blur+border keep the elevated-surface look.
   const ddStyle = { position: "absolute", top: "100%", left: 0, marginTop: 4, background: th.modalBg, backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)", border: `1px solid ${th.glassBorder}`, borderRadius: 10, padding: "6px 0", zIndex: 150, boxShadow: `0 12px 40px rgba(0,0,0,0.4), 0 0 0 1px ${th.glassBorder}`, minWidth: 220, whiteSpace: "nowrap", animation: "tle-modal-in var(--m-fast) var(--ease-out)" };
-  const backdrop = (closeFn) => <div onClick={closeFn} style={{ position: "fixed", inset: 0, zIndex: 149 }} />;
+  const backdrop = (closeFn) => <MenuDismissLayer onClose={closeFn} />;
 
   // ── Keyboard navigation for open dropdown menus (WAI-ARIA menu pattern) ──
   const closeAllMenus = () => {
