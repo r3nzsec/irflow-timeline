@@ -8,13 +8,22 @@
  *  - Tag names are normalized (whitespace-collapsed, trimmed, length-capped) at
  *    EVERY write boundary, so "Suspicious", " Suspicious" and "Suspicious  "
  *    are the same tag instead of three look-alike entries in the palette.
- *  - Writes are NOT gated on the deferred index/FTS build. Those builds run on
- *    this same connection on the main thread, chunked between event-loop turns,
- *    and they only touch `data`/`data_fts`. Refusing tag writes while they ran
- *    silently dropped everything an analyst tagged in the minutes after a large
- *    import while the UI happily showed the tag.
+ *  - Writes are NOT gated on the deferred background build. It only touches
+ *    `data`. Refusing tag writes while it ran silently dropped everything an
+ *    analyst tagged in the minutes after a large import while the UI happily
+ *    showed the tag.
+ *
  */
 const { dbg } = require("../logger");
+
+// Rows per multi-row statement in the bulk writers below. Selections up to SMALL_BATCH rows
+// reuse the tab's cached single-row statements instead (no statement to compile per click).
+const WRITE_BATCH = 2000;
+const SMALL_BATCH = 32;
+
+function placeholders(n, group = "(?)") {
+  return Array(n).fill(group).join(",");
+}
 
 // Long enough for "IOC: <sha256>" and Sigma rule titles, short enough that a
 // pasted blob can't become a tag.
@@ -96,12 +105,22 @@ class TagStoreMethods {
     if (!meta) return null;
     const ids = normalizeRowIdList(rowIds);
     if (ids.length === 0) return { requested: 0, changed: 0 };
-    const stmt = add ? meta.bmInsertStmt : meta.bmDeleteStmt;
     let changed = 0;
-    const tx = meta.db.transaction((batch) => {
-      for (const id of batch) changed += stmt.run(id).changes || 0;
+    const tx = meta.db.transaction(() => {
+      for (let i = 0; i < ids.length; i += WRITE_BATCH) {
+        const batch = ids.slice(i, i + WRITE_BATCH);
+        if (batch.length <= SMALL_BATCH) {
+          const stmt = add ? meta.bmInsertStmt : meta.bmDeleteStmt;
+          for (const id of batch) changed += stmt.run(id).changes || 0;
+          continue;
+        }
+        const sql = add
+          ? `INSERT OR IGNORE INTO bookmarks (rowid) VALUES ${placeholders(batch.length)}`
+          : `DELETE FROM bookmarks WHERE rowid IN (${placeholders(batch.length, "?")})`;
+        changed += meta.db.prepare(sql).run(...batch).changes || 0;
+      }
     });
-    for (let i = 0; i < ids.length; i += 5000) tx(ids.slice(i, i + 5000));
+    tx();
     this._invalidateCountCache(tabId);
     return { requested: ids.length, changed };
   }
@@ -122,7 +141,7 @@ class TagStoreMethods {
     const meta = this.databases.get(tabId);
     if (!meta) return [];
     return meta.db
-      .prepare("SELECT rowid FROM bookmarks")
+      .prepare("SELECT rowid FROM bookmarks ORDER BY rowid")
       .all()
       .map((r) => r.rowid);
   }
@@ -158,15 +177,23 @@ class TagStoreMethods {
     const ids = normalizeRowIdList(rowIds);
     if (ids.length === 0) return { ok: true, tag: name, requested: 0, changed: 0 };
 
-    const stmt = add ? meta.tagInsertStmt : meta.tagDeleteStmt;
     let changed = 0;
     try {
-      const tx = meta.db.transaction((batch) => {
-        for (const id of batch) {
-          changed += (add ? stmt.run(id, name) : stmt.run(id, name)).changes || 0;
+      const tx = meta.db.transaction(() => {
+        for (let i = 0; i < ids.length; i += WRITE_BATCH) {
+          const batch = ids.slice(i, i + WRITE_BATCH);
+          if (batch.length <= SMALL_BATCH) {
+            const stmt = add ? meta.tagInsertStmt : meta.tagDeleteStmt;
+            for (const id of batch) changed += stmt.run(id, name).changes || 0;
+            continue;
+          }
+          const sql = add
+            ? `INSERT OR IGNORE INTO tags (rowid, tag) SELECT v.r, ? FROM (VALUES ${placeholders(batch.length)}) v(r)`
+            : `DELETE FROM tags WHERE tag = ? AND rowid IN (${placeholders(batch.length, "?")})`;
+          changed += meta.db.prepare(sql).run(name, ...batch).changes || 0;
         }
       });
-      for (let i = 0; i < ids.length; i += 5000) tx(ids.slice(i, i + 5000));
+      tx();
     } catch (e) {
       dbg("DB", `setTagOnRows error`, { tabId, tag: name, add, error: e.message });
       return { ok: false, tag: name, requested: ids.length, changed, error: e.message };
@@ -182,7 +209,7 @@ class TagStoreMethods {
     for (let i = 0; i < rowIds.length; i += 500) {
       const batch = rowIds.slice(i, i + 500);
       const placeholders = batch.map(() => "?").join(",");
-      const rows = meta.db.prepare(`SELECT rowid, tag FROM tags WHERE rowid IN (${placeholders})`).all(...batch);
+      const rows = meta.db.prepare(`SELECT rowid, tag FROM tags WHERE rowid IN (${placeholders}) ORDER BY rowid, tag`).all(...batch);
       for (const r of rows) {
         if (!result[r.rowid]) result[r.rowid] = [];
         result[r.rowid].push(r.tag);
@@ -194,13 +221,13 @@ class TagStoreMethods {
   getAllTags(tabId) {
     const meta = this.databases.get(tabId);
     if (!meta) return [];
-    return meta.db.prepare("SELECT tag, COUNT(*) as cnt FROM tags GROUP BY tag ORDER BY cnt DESC").all();
+    return meta.db.prepare("SELECT tag, COUNT(*) as cnt FROM tags GROUP BY tag ORDER BY cnt DESC, tag").all();
   }
 
   getAllTagData(tabId) {
     const meta = this.databases.get(tabId);
     if (!meta) return [];
-    return meta.db.prepare("SELECT rowid, tag FROM tags").all();
+    return meta.db.prepare("SELECT rowid, tag FROM tags ORDER BY rowid, tag").all();
   }
 
   /**
@@ -221,10 +248,11 @@ class TagStoreMethods {
       let merged = 0;
       const tx = db.transaction(() => {
         // Rows that already carry the destination tag would violate PRIMARY KEY(rowid, tag).
-        // UPDATE OR IGNORE skips them; the leftover source rows are then dropped, which is
-        // exactly "merge into the destination".
-        renamed = db.prepare("UPDATE OR IGNORE tags SET tag = ? WHERE tag = ?").run(to, from).changes || 0;
-        merged = db.prepare("DELETE FROM tags WHERE tag = ?").run(from).changes || 0;
+        // Copy the source tag under the new name, skipping those rows, then drop the source:
+        // the skipped rows are exactly the ones that merge into the destination.
+        renamed = db.prepare("INSERT OR IGNORE INTO tags (rowid, tag) SELECT rowid, ? FROM tags WHERE tag = ?").run(to, from).changes || 0;
+        const removed = db.prepare("DELETE FROM tags WHERE tag = ?").run(from).changes || 0;
+        merged = removed - renamed;
       });
       tx();
       this._invalidateCountCache(tabId);
@@ -340,7 +368,7 @@ class TagStoreMethods {
 
       // Tags: unique tags with counts
       const tagSummary = d.prepare(
-        "SELECT tag, COUNT(*) as cnt FROM tags GROUP BY tag ORDER BY cnt DESC"
+        "SELECT tag, COUNT(*) as cnt FROM tags GROUP BY tag ORDER BY cnt DESC, tag"
       ).all();
 
       // Tagged rows grouped by tag (single JOIN query instead of per-tag N+1, capped)
@@ -407,16 +435,22 @@ class TagStoreMethods {
   bulkAddTags(tabId, tagMap) {
     const meta = this.databases.get(tabId);
     if (!meta) return null;
+    const pairs = new Map(); // "rowid\0tag" -> [rowid, tag], de-duplicated
+    for (const [rowId, tags] of Object.entries(tagMap || {})) {
+      const id = Number(rowId);
+      if (!Number.isSafeInteger(id) || id <= 0) continue;
+      for (const tag of tags || []) {
+        const name = normalizeTagName(tag);
+        if (name) pairs.set(`${id}\0${name}`, [id, name]);
+      }
+    }
+    const list = [...pairs.values()];
     let changed = 0;
     const tx = meta.db.transaction(() => {
-      for (const [rowId, tags] of Object.entries(tagMap || {})) {
-        const id = Number(rowId);
-        if (!Number.isSafeInteger(id) || id <= 0) continue;
-        for (const tag of tags || []) {
-          const name = normalizeTagName(tag);
-          if (!name) continue;
-          changed += meta.tagInsertStmt.run(id, name).changes || 0;
-        }
+      for (let i = 0; i < list.length; i += WRITE_BATCH) {
+        const batch = list.slice(i, i + WRITE_BATCH);
+        changed += meta.db.prepare(`INSERT OR IGNORE INTO tags (rowid, tag) VALUES ${placeholders(batch.length, "(?, ?)")}`)
+          .run(...batch.flat()).changes || 0;
       }
     });
     tx();

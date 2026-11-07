@@ -9,14 +9,13 @@
 // asserts it ranks #1 with exact enrichment counts — the only way to catch regressions in the
 // string-built SQL (BETWEEN bounds, risky-ext IN-placeholders, LOWER() normalization, notDir).
 //
-// Needs a live SQLite binding; skipped under a Node runtime without the native module built
-// (CI rebuilds it). Run after `npm rebuild better-sqlite3`.
+// Needs the DuckDB binding; skipped when it is not installed for this runtime.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
 let Database = null;
-try { Database = require("better-sqlite3"); } catch { /* native module not built */ }
+try { ({ Database } = require("./helpers/duckdb-data-table")); } catch { /* DuckDB binding not installed */ }
 const HAVE_SQLITE = (() => {
   if (!Database) return false;
   try { const d = new Database(":memory:"); d.close(); return true; } catch { return false; }
@@ -25,6 +24,7 @@ const skip = HAVE_SQLITE ? false : "better-sqlite3 native module not built for t
 
 const { getFileActivityHeatmap } = require("../electron/analyzers/file-activity");
 const { registerRuntimeFunctions } = require("../electron/db/runtime-functions");
+const { createTestDataTable } = require("./helpers/duckdb-data-table");
 
 // Full MFT column→safe-column map mirroring how db.js sanitizes headers to c0..cN.
 const MFT_COLMAP = {
@@ -37,11 +37,8 @@ const NCOLS = 6;
 function makeMeta(rows, { colMap = MFT_COLMAP, ncols = NCOLS } = {}) {
   const db = new Database(":memory:");
   registerRuntimeFunctions(db); // faithful to prod; the analyzer no longer calls sort_datetime
-  const cols = Array.from({ length: ncols }, (_, i) => `c${i} TEXT`).join(", ");
-  db.exec(`CREATE TABLE data (${cols})`);
+  const ins = createTestDataTable(db, Array.from({ length: ncols }, (_, i) => `c${i}`).join(", "));
   if (rows.length) {
-    const ph = Array.from({ length: ncols }, () => "?").join(",");
-    const ins = db.prepare(`INSERT INTO data VALUES (${ph})`);
     const tx = db.transaction((rs) => { for (const r of rs) ins.run(...r); });
     tx(rows);
   }

@@ -130,7 +130,7 @@ class TimelineAnalyticsMethods {
     const whereClause = `WHERE ${whereConditions.join(" AND ")}`;
 
     try {
-      const sql = `SELECT ${safeSourceCol} as source, COUNT(*) as cnt, MIN(${safeTsCol}) as earliest, MAX(${safeTsCol}) as latest FROM data ${whereClause} GROUP BY ${safeSourceCol} ORDER BY cnt DESC`;
+      const sql = `SELECT ${safeSourceCol} as source, COUNT(*) as cnt, MIN(${safeTsCol}) as earliest, MAX(${safeTsCol}) as latest FROM data ${whereClause} GROUP BY ${safeSourceCol} ORDER BY cnt DESC, source`;
       const sources = db.prepare(sql).all(...params);
 
       if (sources.length === 0) {

@@ -44,10 +44,11 @@ function cleanupDb(db, tabId) {
   try { db.closeAll(); } catch { /* ignore */ }
 }
 
-/** Remove the worker's temp SQLite file (+ WAL/SHM) on paths the main process will not adopt. */
+/** Remove the worker's temp database file (+ its write-ahead log) on paths the main process will not adopt. */
 function unlinkTempDb(dbPath) {
   if (!dbPath) return;
-  for (const suffix of ["", "-wal", "-shm"]) {
+  // ".wal" is DuckDB's log; "-wal"/"-shm" were SQLite's.
+  for (const suffix of ["", ".wal", "-wal", "-shm"]) {
     try { fs.rmSync(`${dbPath}${suffix}`, { force: true }); } catch { /* ignore */ }
   }
 }

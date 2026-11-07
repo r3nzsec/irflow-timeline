@@ -159,7 +159,7 @@ function queryTabRows(meta, shape, options, ctx, maxRows) {
   }
 
   const orderCol = columns.ts ? meta.colMap[columns.ts] : null;
-  const orderClause = orderCol ? `ORDER BY ${orderCol} ASC` : "ORDER BY data.rowid ASC";
+  const orderClause = orderCol ? `ORDER BY ${orderCol} ASC, data.rowid ASC` : "ORDER BY data.rowid ASC";
 
   try {
     if (columns.eventId) ctx.ensureIndex?.(meta.tabId, columns.eventId);

@@ -1,16 +1,17 @@
 /**
  * sigma/kape-output-scanner.js — direct Sigma scan for validated EvtxECmd CSV/XLS/XLSX output.
  *
- * This builds a temporary SQLite `data` table using the existing import parsers,
+ * This builds a temporary `data` table using the existing import parsers,
  * scans it with the JS Sigma compatibility engine, then persists detections in
  * the normal SigmaResultStore format.
+ *
  */
 
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
-const Database = require("better-sqlite3");
+const Database = require("../../db/duckdb");
 
 const { parseCSVLine, parseCSVStream, detectDelimiter } = require("../../parsers/csv");
 const { parseXLSFile, parseXLSXStream } = require("../../parsers/xlsx");
@@ -226,38 +227,23 @@ function collectKapeOutputFiles(paths = []) {
 class TempScanDb {
   constructor() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tle-kape-scan-source-"));
-    this.dbPath = path.join(dir, "source.sqlite");
+    this.dbPath = path.join(dir, "source.duckdb");
     this.db = new Database(this.dbPath);
     this.databases = new Map();
-    this.db.pragma("journal_mode = OFF");
-    this.db.pragma("synchronous = OFF");
-    this.db.pragma("temp_store = FILE");
-    this.db.pragma("cache_size = -262144");
   }
 
   createTab(tabId, headers) {
     const safeHeaders = (headers || []).map((h, i) => String(h || `Column_${i + 1}`).trim() || `Column_${i + 1}`);
     const safeCols = safeHeaders.map((h, i) => ({ original: h, safe: `c${i}` }));
-    const colDefs = safeCols.map((col) => `${col.safe} TEXT`).join(", ");
+    const colDefs = safeCols.map((col) => `${col.safe} VARCHAR`).join(", ");
     this.db.exec("DROP TABLE IF EXISTS data");
-    this.db.exec(`CREATE TABLE data (rowid INTEGER PRIMARY KEY, ${colDefs})`);
-    const colList = safeCols.map((c) => c.safe).join(", ");
-    const placeholders = safeCols.map(() => "?").join(", ");
-    const insertStmt = this.db.prepare(`INSERT INTO data (${colList}) VALUES (${placeholders})`);
-    const multiRowCount = Math.max(1, Math.floor(32766 / Math.max(1, safeCols.length)));
-    const multiInsertStmt = multiRowCount > 1
-      ? this.db.prepare(`INSERT INTO data (${colList}) VALUES ${Array(multiRowCount).fill(`(${placeholders})`).join(",")}`)
-      : null;
+    this.db.exec(`CREATE TABLE data (rowid BIGINT${colDefs ? ", " + colDefs : ""})`);
     const meta = {
       tabId,
       db: this.db,
       headers: safeHeaders,
       safeCols,
       rowCount: 0,
-      insertStmt,
-      multiInsertStmt,
-      multiRowCount,
-      insertFlat: multiInsertStmt ? new Array(multiRowCount * safeCols.length) : null,
       colMap: Object.fromEntries(safeCols.map((c) => [c.original, c.safe])),
       reverseColMap: Object.fromEntries(safeCols.map((c) => [c.safe, c.original])),
     };
@@ -270,27 +256,17 @@ class TempScanDb {
     const meta = this.databases.get(tabId);
     if (!meta) throw new Error(`Temp scan tab ${tabId} not found`);
     const colCount = meta.headers.length;
-    const tx = meta.db.transaction((batch) => {
-      let i = 0;
-      while (i < batch.length) {
-        const remaining = batch.length - i;
-        if (meta.multiInsertStmt && remaining >= meta.multiRowCount) {
-          let p = 0;
-          for (let r = 0; r < meta.multiRowCount; r++) {
-            const row = batch[i + r] || [];
-            for (let c = 0; c < colCount; c++) meta.insertFlat[p++] = row[c] ?? "";
-          }
-          meta.multiInsertStmt.run(meta.insertFlat);
-          i += meta.multiRowCount;
-          continue;
-        }
-        const row = batch[i] || [];
-        meta.insertStmt.run(row.slice(0, colCount).concat(Array(Math.max(0, colCount - row.length)).fill("")));
-        i++;
-      }
-    });
-    tx(rows || []);
-    meta.rowCount += (rows || []).length;
+    const batch = rows || [];
+    const out = new Array(batch.length);
+    for (let i = 0; i < batch.length; i++) {
+      const row = batch[i] || [];
+      const values = new Array(colCount + 1);
+      values[0] = meta.rowCount + i + 1;
+      for (let c = 0; c < colCount; c++) values[c + 1] = row[c] ?? "";
+      out[i] = values;
+    }
+    meta.db.appendRows("data", out);
+    meta.rowCount += batch.length;
     return meta.rowCount;
   }
 
@@ -310,7 +286,7 @@ class TempScanDb {
 
   close() {
     try { this.db.close(); } catch {}
-    for (const suffix of ["", "-wal", "-shm"]) {
+    for (const suffix of ["", ".wal"]) {
       try { if (fs.existsSync(`${this.dbPath}${suffix}`)) fs.unlinkSync(`${this.dbPath}${suffix}`); } catch {}
     }
     try { fs.rmdirSync(path.dirname(this.dbPath)); } catch {}

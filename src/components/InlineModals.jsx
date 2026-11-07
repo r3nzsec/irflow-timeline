@@ -287,7 +287,7 @@ export function ImportProgress({ th, info }) {
   const phaseLabel = info?.statusDetail
     ? info.statusDetail
     : phase === "finalizing"
-      ? "Finalizing SQLite timeline..."
+      ? "Finalizing DuckDB timeline..."
       : phase === "extracting"
         ? "Extracting AI history sources..."
         : phase === "loading"

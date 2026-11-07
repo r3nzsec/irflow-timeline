@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 let Database = null;
-try { Database = require("better-sqlite3"); } catch { /* native module not built */ }
+try { ({ Database } = require("./helpers/duckdb-data-table")); } catch { /* DuckDB binding not installed */ }
 const HAVE_SQLITE = (() => {
   if (!Database) return false;
   try { const d = new Database(":memory:"); d.close(); return true; } catch { return false; }
@@ -11,7 +11,7 @@ const HAVE_SQLITE = (() => {
 const TimelineDB = require("../electron/db");
 
 test("getColumnValues follows grid sortCol/sortDir, not import rowid order",
-  { skip: HAVE_SQLITE ? false : "better-sqlite3 native module not built for this runtime" },
+  { skip: HAVE_SQLITE ? false : "DuckDB binding not available for this runtime" },
   (t) => {
     const db = new TimelineDB();
     t.after(() => db.closeAll());
@@ -51,7 +51,7 @@ test("getColumnValues follows grid sortCol/sortDir, not import rowid order",
   });
 
 test("getColumnValues distinct collapses timestamp format variants to one value",
-  { skip: HAVE_SQLITE ? false : "better-sqlite3 native module not built for this runtime" },
+  { skip: HAVE_SQLITE ? false : "DuckDB binding not available for this runtime" },
   (t) => {
     const db = new TimelineDB();
     t.after(() => db.closeAll());

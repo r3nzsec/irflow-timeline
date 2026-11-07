@@ -387,8 +387,8 @@ function getFileActivityHeatmap(meta, opts) {
       // rate divided by 1440 made the daily branch unreachable). baseScore is the primary gate.
       const HIGH_VOLUME_FILES = bucketSize === "daily" ? 2000 : 480;
       if (maxCount < MIN_WINDOW_FILES) return [];
-      const dirStmt = pp ? db.prepare(`SELECT ${pp} as path, COUNT(*) as count FROM data WHERE ${tsSafe} BETWEEN ? AND ? ${notDir} GROUP BY ${pp} ORDER BY count DESC LIMIT 3`) : null;
-      const extStmt = ext ? db.prepare(`SELECT COALESCE(NULLIF(${ext}, ''), '(no extension)') as ext, COUNT(*) as count FROM data WHERE ${tsSafe} BETWEEN ? AND ? ${notDir} GROUP BY COALESCE(NULLIF(${ext}, ''), '(no extension)') ORDER BY count DESC LIMIT 5`) : null;
+      const dirStmt = pp ? db.prepare(`SELECT ${pp} as path, COUNT(*) as count FROM data WHERE ${tsSafe} BETWEEN ? AND ? ${notDir} GROUP BY ${pp} ORDER BY count DESC, path LIMIT 3`) : null;
+      const extStmt = ext ? db.prepare(`SELECT COALESCE(NULLIF(${ext}, ''), '(no extension)') as ext, COUNT(*) as count FROM data WHERE ${tsSafe} BETWEEN ? AND ? ${notDir} GROUP BY COALESCE(NULLIF(${ext}, ''), '(no extension)') ORDER BY count DESC, ext LIMIT 5`) : null;
       const riskyStmt = ext ? db.prepare(`SELECT COUNT(*) as cnt FROM data WHERE ${tsSafe} BETWEEN ? AND ? AND LOWER(COALESCE(${ext}, '')) IN (${riskyExtPlaceholders}) ${notDir}`) : null;
       const deletedStmt = inUse ? db.prepare(`SELECT COUNT(*) as cnt FROM data WHERE ${tsSafe} BETWEEN ? AND ? AND ${inUse} = 'False' ${notDir}`) : null;
       // Tier 5: $SI-vs-$FN tamper signal — the precomputed SI<FN / uSecZeros flags reveal whether the
@@ -573,7 +573,7 @@ function getFileActivityHeatmap(meta, opts) {
             `SELECT COUNT(*) AS cnt FROM data WHERE CAST(${evtxCtx.eid} AS TEXT) IN ('1','4688')${chanClause} AND sort_datetime(${evtxCtx.ts}) BETWEEN sort_datetime(?) AND sort_datetime(?)`
           );
           evtxSampleStmt = evtxCtx.db.prepare(
-            `SELECT SUBSTR(${blob}, 1, 200) AS text FROM data WHERE CAST(${evtxCtx.eid} AS TEXT) IN ('1','4688')${chanClause} AND sort_datetime(${evtxCtx.ts}) BETWEEN sort_datetime(?) AND sort_datetime(?) ORDER BY sort_datetime(${evtxCtx.ts}) ASC LIMIT 5`
+            `SELECT SUBSTR(${blob}, 1, 200) AS text FROM data WHERE CAST(${evtxCtx.eid} AS TEXT) IN ('1','4688')${chanClause} AND sort_datetime(${evtxCtx.ts}) BETWEEN sort_datetime(?) AND sort_datetime(?) ORDER BY sort_datetime(${evtxCtx.ts}) ASC, rowid LIMIT 5`
           );
         } catch { evtxWindowStmt = null; evtxSampleStmt = null; }
       }
@@ -623,7 +623,7 @@ function getFileActivityHeatmap(meta, opts) {
           const delRows = usnCtx.db.prepare(
             `SELECT SUBSTR(${usnCtx.ts}, 1, ${subLen}) AS bucket, COUNT(*) AS count
              FROM data WHERE ${usnCtx.reasons} LIKE '%FileDelete%' AND ${usnCtx.ts} IS NOT NULL AND ${usnCtx.ts} != '' ${srcGate} ${dirGate}
-             GROUP BY bucket HAVING bucket IS NOT NULL ORDER BY count DESC LIMIT 8`
+             GROUP BY bucket HAVING bucket IS NOT NULL ORDER BY count DESC, bucket LIMIT 8`
           ).all();
           usnDeletionWindows = delRows
             .map((r) => { const range = bucketToRange(r.bucket); return { bucket: r.bucket, from: range.from, to: range.to, count: r.count, userDriven: !!usnCtx.srcInfo }; })

@@ -34,7 +34,7 @@ export default function QuickHelpModal() {
       bodyPadding="20px 24px"
     >
       <div style={{ fontSize: 13, color: th.text, lineHeight: 1.7 }}>
-        <P>IRFlow Timeline can open CSV, TSV, TXT, LOG, XLSX, XLS, EVTX, Plaso, raw $MFT, and $J ($UsnJrnl) files and display them in a high-performance SQLite-backed grid. Files stream into a temporary SQLite database rather than loading fully into memory, so there is no row limit — tested with 30GB+ files and 150M+ rows.</P>
+        <P>IRFlow Timeline can open CSV, TSV, TXT, LOG, XLSX, XLS, EVTX, Plaso, raw $MFT, and $J ($UsnJrnl) files and display them in a high-performance DuckDB-backed grid. Files stream into a temporary DuckDB database rather than loading fully into memory, so there is no row limit — tested with 30GB+ files and 150M+ rows.</P>
 
         <S>Supported Formats</S>
         <Li><b>CSV / TSV / TXT / LOG</b> — Auto-delimiter detection, streaming import. Handles multi-GB files.</Li>

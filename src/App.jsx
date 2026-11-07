@@ -3597,7 +3597,7 @@ export default function App() {
           <div style={{ position: "relative", zIndex: 1, flex: 1, overflowY: "auto", padding: "52px 52px 40px" }}>
             <div style={{ WebkitAppRegion: "no-drag", maxWidth: 980 }}>
               <h1 style={{ fontSize: 27, fontWeight: 700, color: th.text, margin: 0, fontFamily: "-apple-system, 'SF Pro Display', sans-serif", letterSpacing: "-0.015em" }}>Start an investigation</h1>
-              <p style={{ fontSize: 13, color: th.textDim, margin: "9px 0 0", fontFamily: "-apple-system, sans-serif", maxWidth: 620, lineHeight: 1.55 }}>Drop a timeline anywhere in this window, or launch a capability below. SQLite-backed · built for 30–50GB+ files · CSV / TSV / XLSX / EVTX / Plaso / $MFT / $J.</p>
+              <p style={{ fontSize: 13, color: th.textDim, margin: "9px 0 0", fontFamily: "-apple-system, sans-serif", maxWidth: 620, lineHeight: 1.55 }}>Drop a timeline anywhere in this window, or launch a capability below. DuckDB-backed · built for 30–50GB+ files · CSV / TSV / XLSX / EVTX / Plaso / $MFT / $J.</p>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14, marginTop: 26 }}>
                 {homeTiles.map((t, i) => (
                   <button key={i} onClick={t.onClick}

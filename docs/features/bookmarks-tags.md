@@ -18,7 +18,7 @@ Bookmarks let you flag individual rows as important for later review and reporti
 
 - Click the **star icon** on any row to toggle its bookmark
 - `Cmd+Click` a row and select **Bookmark**
-- Bookmarks are stored per-tab in the SQLite database
+- Bookmarks are stored per-tab in the tab's database
 
 ### Bulk Bookmarking
 
@@ -87,7 +87,7 @@ Open **Actions → Bulk Tag / Bookmark**, or click **Tag / bookmark** in the sel
 | **Filtered view** | Every row matching the current filters |
 | **Entire tab** | Every row in the file |
 
-Counts are resolved in SQLite against the exact query the write will use, so the number shown is the number affected. If nothing narrows the scope — no selection and no active filter — the dialog warns you and asks for confirmation before writing to the whole tab.
+Counts are resolved in the database against the exact query the write will use, so the number shown is the number affected. If nothing narrows the scope — no selection and no active filter — the dialog warns you and asks for confirmation before writing to the whole tab.
 
 **Bulk Tagging:**
 

@@ -13,7 +13,7 @@ The settings capsule to the right of **File / View / Actions / Tools / Help** pr
 | Control | What it does |
 |---------|----------------|
 | **Datetime format** dropdown | How timestamp columns render in the grid (raw or formatted) |
-| **Timezone** dropdown | Display timezone for timestamps (data in SQLite stays unchanged) |
+| **Timezone** dropdown | Display timezone for timestamps (stored data stays unchanged) |
 | **☀ / 🌙** button | Toggle **Dark** and **Light** theme |
 | **A − / +** | Decrease or increase grid font size (9–18px) |
 | **Histogram** icon | Show or hide the timeline histogram panel |
@@ -101,7 +101,7 @@ Both themes apply consistently across the grid, modals, histogram, analytics pan
 
 ## Temp storage folder
 
-Large imports build a per-tab SQLite database plus column indexes and FTS5 on disk. By default that work uses the macOS system temp directory (often on your boot volume). For 10–50GB+ timelines, redirect temp storage to a folder on a volume with plenty of free space.
+Large imports build a per-tab DuckDB database on disk, and DuckDB writes overflow files there for sorts and aggregations larger than its memory limit. By default that work uses the macOS system temp directory (often on your boot volume). For 10–50GB+ timelines, redirect temp storage to a folder on a volume with plenty of free space.
 
 | Menu item | Description |
 |-----------|-------------|

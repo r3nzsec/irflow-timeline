@@ -61,7 +61,7 @@ Click any node in the graph to highlight its connections.
 
 ## Ready for the Real Thing?
 
-The full app handles **30–50 GB+** forensic timelines with 847,000+ rows, SQLite-backed virtual scrolling, process trees, lateral movement graphs, and 342 detection rules.
+The full app handles **30–50 GB+** forensic timelines with 847,000+ rows, DuckDB-backed virtual scrolling, process trees, lateral movement graphs, and 342 detection rules.
 
 <div style="margin-top: 16px;">
   <a href="/irflow-timeline/getting-started/installation" style="display: inline-block; background: #E8613A; color: white; padding: 10px 24px; border-radius: 8px; text-decoration: none; font-weight: 600;">Install IRFlow Timeline</a>

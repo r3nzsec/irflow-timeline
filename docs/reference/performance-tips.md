@@ -18,7 +18,7 @@ Files are imported in streaming chunks — the full file is never loaded into me
 | **XLSX** | Streaming (ExcelJS) | Adaptive (up to 100,000 rows) |
 | **XLS** | Full file (SheetJS) | Adaptive (up to 100,000 rows) |
 | **EVTX** | Full file (binary) | Adaptive (up to 100,000 rows) |
-| **Plaso** | Single SQLite query | All rows |
+| **Plaso** | Single query on the Plaso SQLite file | All rows |
 
 ### Expected Import Times
 
@@ -33,7 +33,7 @@ These are approximate times on an Apple Silicon Mac:
 
 ### Benchmarks
 
-The following benchmarks were measured on an **Apple M1 Pro (16 GB RAM, NVMe SSD)** using EvtxECmd CSV output. Times may vary based on column count, data complexity, and system load.
+The following benchmarks were measured on an **Apple M1 Pro (16 GB RAM, NVMe SSD)** using EvtxECmd CSV output, with the earlier SQLite engine. Times may vary based on column count, data complexity, and system load. The DuckDB engine needs no column-index or full-text-index build, so the last two build columns no longer apply.
 
 #### Import + Indexing
 
@@ -77,11 +77,11 @@ Analytics tools run against the currently filtered dataset. Applying date range 
 
 - **Restart IRFlow** before importing multi-GB files if the app has been open for hours — a high main-process memory footprint before import is a common crash trigger
 - **Close unused tabs** before importing large files to free memory
-- **Wait for "indexes ready"** before opening column filter dropdowns on files over 5 GB (filter value lists may be sampled until indexes finish). Large imports index timestamps plus EventID/Channel for Sigma pre-filters, not every column.
+- **Wait for the background build** ("indexes ready") before opening column filter dropdowns on files over 5 GB: until it finishes, filter value lists on those files are sampled.
 - **Use CSV over XLSX** for very large datasets — CSV streaming is faster than Excel parsing
 - **Pre-filter with external tools** if you only need a subset of the data
 
-Files over **5 GB** skip the trigram FTS index (search uses LIKE). You need roughly **2–3× the file size** of free space on your temp volume for the SQLite database and indexes.
+DuckDB compresses each column, so a tab's database is usually **smaller than the source file** (a 41 MB Hayabusa CSV took 35 MB, a 29 MB MFT CSV 8 MB; with the SQLite engine they took 242 MB and 178 MB including indexes). Keep extra free space on the temp volume anyway: DuckDB writes overflow files there for sorts and aggregations larger than its memory limit.
 
 ## AI History Performance
 
@@ -98,22 +98,16 @@ Merged AI timelines stop at **3,000,000** rows and report truncation in the impo
 
 ## Search Performance
 
-### Background Indexing
+### No search index
 
-After import, two background build phases run automatically:
-
-1. **Column indexes** — one B-tree index per column, built sequentially (yields to event loop between each)
-2. **FTS5 search index** — full-text search index built in 200,000-row chunks
-
-Both phases run asynchronously so the UI remains interactive. A status indicator in the toolbar shows progress. If you search before the FTS index is ready, LIKE mode is used as a fallback.
+Search needs no index: the DuckDB engine checks each column with a case-insensitive substring match, in parallel, so complete results are available as soon as a tab opens. Regex search runs in DuckDB's own regex engine (RE2) and falls back to JavaScript only for patterns RE2 does not support (lookarounds, backreferences).
 
 ### Search Mode Performance
 
 | Mode | Speed | Best For |
 |------|-------|---------|
-| **FTS** | Fastest | Keyword searches |
 | **LIKE** | Fast | Substring matching |
-| **Mixed** | Fast | General use (runs both) |
+| **Mixed** | Fast | General use |
 | **Regex** | Moderate | Pattern matching |
 | **Fuzzy** | Slowest | Typo-tolerant search |
 
@@ -129,55 +123,33 @@ The grid maintains a window of ~10,000 rows:
 
 - Only visible rows (~50) are rendered in the DOM
 - 20-row overscan above and below for smooth scrolling
-- New data is fetched via SQLite `LIMIT`/`OFFSET` as you scroll
+- New data is fetched via `LIMIT`/`OFFSET` as you scroll
 
 ### Sorting
 
-Column indexes are built automatically in the background after import:
+DuckDB sorts without indexes. Timestamp columns sort chronologically through `sort_datetime()`, which converts zoned timestamps (for example Hayabusa's `+09:00`) to UTC:
 
-- Sorting is fast once background indexing completes
-- A status indicator shows indexing progress in the toolbar
-- All columns are indexed (not just timestamp columns)
+- Plain ISO timestamps are converted inside DuckDB
+- For other formats, a background step after import stores each timestamp column's sort key (the toolbar shows its progress); until it finishes, sorting those columns is slower
 
 ## Memory Management
 
-### SQLite Configuration
+### DuckDB Configuration
 
-IRFlow Timeline uses aggressive SQLite tuning for performance:
-
-SQLite pragmas are tuned per-phase for maximum throughput:
-
-**During import:**
+All tabs share one DuckDB instance on a dedicated worker thread:
 
 | Setting | Value | Purpose |
 |---------|-------|---------|
-| **Journal mode** | OFF | No journal overhead for temp databases |
-| **Synchronous** | OFF | Fast async writes |
-| **Cache size** | 1 GB | Keep entire B-tree in memory |
-| **MMAP size** | 0 | Disabled during writes |
-| **Page size** | 64 KB | Fewer B-tree nodes, faster bulk writes |
-| **Threads** | 4 | Parallel sort for internal operations |
+| **Memory limit** | Half of system memory | Leaves room for Electron, the renderer and the JavaScript analyzers |
+| **Threads** | All cores | Parallel scans, sorts and aggregations |
+| **Temp directory** | The temp storage folder | Overflow files for sorts and aggregations larger than the memory limit |
+| **Extensions** | Never downloaded | Only the built-in JSON, ICU and Parquet extensions are used |
 
-**During background index/FTS build:**
-
-| Setting | Value | Purpose |
-|---------|-------|---------|
-| **Journal mode** | OFF | No journal overhead |
-| **Cache size** | 1 GB | Keep data + index pages in memory |
-| **Threads** | 8 | Parallel sort/merge for CREATE INDEX |
-
-**During query mode:**
-
-| Setting | Value | Purpose |
-|---------|-------|---------|
-| **Journal mode** | WAL | Concurrent reads |
-| **Synchronous** | NORMAL | Safe for queries |
-| **Cache size** | 256 MB | Query cache |
-| **MMAP size** | 512 MB | Memory-mapped reads |
+`IRFLOW_DUCKDB_MEMORY_MB` and `IRFLOW_DUCKDB_THREADS` override the memory limit and thread count.
 
 ### Temp storage folder
 
-Each tab creates a temporary SQLite database plus column indexes and (after import) an FTS5 index. By default these files live under the macOS system temp directory. For large cases, point temp storage at an external or scratch volume so imports do not fill your boot disk.
+Each tab creates a temporary DuckDB database, and DuckDB writes overflow files for large sorts and aggregations to the same folder. By default these files live under the macOS system temp directory. For large cases, point temp storage at an external or scratch volume so imports do not fill your boot disk.
 
 **macOS menu bar → Tools → Set Temp Storage Folder…**
 
@@ -191,11 +163,7 @@ See [Preferences — Temp storage folder](/reference/preferences#temp-storage-fo
 
 #### Approximate on-disk size per tab
 
-| Dataset Size | Approximate DB + indexes |
-|-------------|-------------------------|
-| 1 GB CSV | ~1.5 GB |
-| 10 GB CSV | ~15 GB |
-| 30 GB+ CSV | ~45 GB+ |
+DuckDB compresses each column, so a tab's database is usually smaller than the source CSV; how much smaller depends on how repetitive the columns are (see the examples under [Tips for Faster Import](#tips-for-faster-import)).
 
 Temp databases are removed when you close the tab or quit the app.
 
@@ -205,15 +173,13 @@ The 4 most recent search queries per tab are cached in memory. This provides ins
 
 ## JS Sigma scan (imported tab / EvtxECmd CSV)
 
-The in-app **JS Sigma** engine scans rows already loaded into SQLite. On multi-million-row timelines it is CPU-heavy because each candidate row is checked against every rule in its logsource group.
+The in-app **JS Sigma** engine scans rows already loaded into the tab's database. On multi-million-row timelines it is CPU-heavy because each candidate row is checked against every rule in its logsource group.
 
 ### Faster JS scans
 
 1. **Use the “Fast high-confidence only” preset** — fewer rules (`core` set, critical/high, stable/test) cuts evaluation time sharply versus “Full hunt” (~3,800+ rules).
-2. **Wait for indexes ready** — large imports now build **EventID** and **Channel** indexes (with timestamps) so logsource SQL pre-filters use indexes instead of full table scans.
-3. **Prefer Hayabusa on raw EVTX** when you have `.evtx` folders — the bundled Hayabusa binary is optimized for EVTX and usually beats re-scanning a giant EvtxECmd CSV inside the app.
-4. **Narrow the timeline first** — apply a date range filter on the tab before scanning so fewer rows match broad channel queries.
-5. **First scan after import** — if EventID/Channel indexes were not built at import time, the scan may spend a few minutes building them once; later scans on the same tab are faster.
+2. **Prefer Hayabusa on raw EVTX** when you have `.evtx` folders — the bundled Hayabusa binary is optimized for EVTX and usually beats re-scanning a giant EvtxECmd CSV inside the app.
+3. **Narrow the timeline first** — apply a date range filter on the tab before scanning so fewer rows match broad channel queries.
 
 ::: warning
 An 8 GB EvtxECmd CSV (~6M rows) with **all** severity levels and **all** rules can take a long time even after these optimizations. Treat full-rule JS scans as batch jobs; use presets or Hayabusa for interactive triage.

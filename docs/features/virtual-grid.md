@@ -1,10 +1,10 @@
 ---
-description: Virtual scrolling data grid with SQLite pagination — view and interact with millions of timeline rows at native speed.
+description: Virtual scrolling data grid with DuckDB pagination — view and interact with millions of timeline rows at native speed.
 ---
 
 # Virtual Grid
 
-The data grid is the primary interface for viewing and interacting with timeline data. It uses virtual scrolling backed by SQLite pagination to handle millions of rows without performance degradation.
+The data grid is the primary interface for viewing and interacting with timeline data. It uses virtual scrolling backed by DuckDB pagination to handle millions of rows without performance degradation.
 
 ![Virtual Grid on the WKS2390 EvtxECmd sample timeline with 214,100 rows and the v1.0.13 File / View / Actions / Tools / Help toolbar](/dfir-tips/Virtual-Grid.png)
 
@@ -141,7 +141,7 @@ Temp storage for large imports is configured only on the macOS menu bar: **Tools
 
 ## How It Works
 
-Rather than loading all rows into memory, the grid maintains a sliding window of 10,000 rows centered on your scroll position. As you scroll, new rows are fetched from SQLite using `LIMIT`/`OFFSET` queries with a 2,000-row prefetch threshold. This means:
+Rather than loading all rows into memory, the grid maintains a sliding window of 10,000 rows centered on your scroll position. As you scroll, new rows are fetched from DuckDB using `LIMIT`/`OFFSET` queries with a 2,000-row prefetch threshold. This means:
 
 - **Memory usage stays constant** regardless of dataset size — only ~10K rows in the JS heap at any moment
 - **Scrolling is smooth** with 20-row overscan padding above and below the viewport and `requestAnimationFrame`-throttled scroll handling
@@ -255,7 +255,7 @@ Group rows by any column using the context menu or by dragging column headers to
 Groups display:
 
 - **Collapsible headers** showing the value and row count per group
-- **Multi-level nesting** — each expand fetches the next grouping level from SQLite
+- **Multi-level nesting** — each expand fetches the next grouping level from DuckDB
 - **Leaf-level data** — expanding the deepest group loads actual rows (batched at 100K) with a "Load More" button for large groups
 - **Clear button** to remove all grouping at once
 

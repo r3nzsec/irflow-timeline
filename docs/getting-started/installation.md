@@ -11,7 +11,7 @@ description: Install IRFlow Timeline on macOS — system requirements, download 
 | **OS** | macOS 12 (Monterey) or later |
 | **Architecture** | Intel (x86_64) or Apple Silicon (arm64) |
 | **RAM** | 8 GB (16 GB recommended for large files) |
-| **Disk** | 500 MB for app + space for temporary SQLite databases |
+| **Disk** | 500 MB for app + space for temporary DuckDB databases |
 
 ## Download
 

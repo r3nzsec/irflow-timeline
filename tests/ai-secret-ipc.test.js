@@ -3,7 +3,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const Database = require("better-sqlite3");
+const { Database, createTestDataTable } = require("./helpers/duckdb-data-table");
 const registerAnalysisHandlers = require("../electron/ipc/analysis-handlers");
 const { fingerprint } = require("../electron/analyzers/ai-history/validators");
 const {
@@ -20,8 +20,7 @@ test("AI Secret scan IPC returns a cancellable job, pages redacted results, and 
   const salt = "stable-test-salt";
   const secret = "ghp_Z9Y8X7W6V5U4T3S2R1Q0P9O8N7M6L5K4J3I2";
   const sourceDb = new Database(":memory:");
-  sourceDb.exec("CREATE TABLE data (c0 TEXT)");
-  sourceDb.prepare("INSERT INTO data (c0) VALUES (?)").run(secret);
+  createTestDataTable(sourceDb, "c0").run(secret);
   t.after(() => {
     try { sourceDb.close(); } catch {}
     try { removeStore(resultPathForJob(jobId)); } catch {}
