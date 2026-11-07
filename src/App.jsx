@@ -24,7 +24,7 @@ import {
 } from "./utils/ai-history-profile.js";
 import { handleOpenFileDialogResult } from "./utils/open-file-result.js";
 import { IOC_CATEGORY_PATTERNS } from "./utils/ioc-parsing.js";
-import { getColumnGeometry, getColumnWindow, getGridBodyViewportHeight, getGridContentWidth, getRowScrollTarget, getVisibleRowRange, getWindowSlice, planWindowFetch, rowWindowCovers } from "./utils/grid-layout.js";
+import { getColumnGeometry, getColumnWindow, getGridBodyViewportHeight, getGridContentWidth, getRowScrollTarget, getVisibleRowRange, getWindowSlice, planWindowFetch, rowWindowCovers, canReuseTabWindow } from "./utils/grid-layout.js";
 import { getSelectedRowCount, isRowSelected, selectRowIds, toggleRowSelection } from "./utils/row-selection.js";
 import { effectiveSearchTerm, isSearchTooShort } from "./utils/search.js";
 
@@ -894,7 +894,11 @@ export default function App() {
     return `${ct?.searchTerm}|${ct?.searchMode}|${cf ? Object.keys(cf).sort().map(k => `${k}=${cf[k]}`).join(",") : ""}`;
   }, [ct?.searchTerm, ct?.searchMode, ct?.columnFilters]);
   const prevDebouncedDeps = useRef(debouncedDeps);
-  const lastFilterTabId = useRef(null); // distinguishes in-tab filter changes from tab switches
+  // Active tab at the previous commit, and per tab the query signature committed while it was
+  // active. Both are recorded by the effect that follows the refetch effect, on every commit,
+  // so they tell an in-tab query change from a tab switch.
+  const lastFilterTabId = useRef(null);
+  const committedQuerySig = useRef({});
 
   // Immediate deps (discrete actions: sort, bookmark toggle, checkbox filters, grouping, date range, highlight)
   const immediateDeps = useMemo(() => {
@@ -915,18 +919,20 @@ export default function App() {
     if (!ct || !ct.dataReady) return;
     // A filter/search/sort change re-fetches with centerRow=0, resetting the window to
     // row 0. If the user had scrolled down and the result set shrinks, si/ei would point
-    // past the now-smaller dataset → blank grid. Snap the scroll to top — but only for an
-    // in-tab change, not a tab switch (TabBar restores per-tab scroll on switch).
-    const sameTab = lastFilterTabId.current === ct.id;
-    lastFilterTabId.current = ct.id;
+    // past the now-smaller dataset → blank grid. Snap the scroll to top whenever the tab's
+    // query changed — but not on a plain tab switch (TabBar restores per-tab scroll on switch).
+    const querySig = `${debouncedDeps}#${immediateDeps}`;
+    const queryChanged = committedQuerySig.current[ct.id] !== querySig;
     // Tab switch: this effect's signatures changed only because `ct` now points at a
     // different tab, not because that tab's query changed. Refetching at centerRow=0 here
     // discarded the window the tab already held and reset rowOffset to 0 while TabBar
     // restored the scroll deep into the dataset — so `visible` was empty for a full IPC
     // round-trip and the grid flashed skeletons on every reopen of a scrolled tab. Reuse
     // the loaded window when it still covers the restored viewport; otherwise fetch
-    // centered on where the user actually is, not on row 0.
-    if (!sameTab && !isGrouped) {
+    // centered on where the user actually is, not on row 0. Only a plain switch qualifies: a
+    // jump that also changes the target tab's search or filters (Find across tabs, AI Workspace
+    // correlate) holds rows for the old query and refetches like an in-tab change.
+    if (canReuseTabWindow({ tabId: ct.id, previousTabId: lastFilterTabId.current, querySignature: querySig, committedSignature: committedQuerySig.current[ct.id], grouped: isGrouped })) {
       prevDebouncedDeps.current = debouncedDeps;
       const scrollRow = Math.floor((scrollMapRef.current.logicalScrollTop || 0) / ROW_HEIGHT);
       const visibleRows = Math.max(60, Math.ceil((scrollRef.current?.clientHeight || 0) / ROW_HEIGHT) + OVERSCAN);
@@ -945,12 +951,23 @@ export default function App() {
       setSearchLoading(true);
       fetchData(ct);
     }
-    if (sameTab) {
+    if (queryChanged) {
       setScrollTop(0);
       scrollTopRef.current = 0;
       if (scrollRef.current) scrollRef.current.scrollTop = 0;
     }
   }, [debouncedDeps, immediateDeps]);
+
+  // Record the active tab and its query signature on every commit, after the refetch effect
+  // above has compared against them (effects run in declaration order). The refetch effect
+  // cannot do this itself: it skips tabs that are still importing, and it does not run at all
+  // when a tab finishes importing or when the user switches between tabs with identical
+  // signatures. Its record then still named the previous tab, so the next in-tab filter change
+  // looked like a tab switch and reused the unfiltered rows.
+  useEffect(() => {
+    lastFilterTabId.current = ct?.id ?? null;
+    if (ct) committedQuerySig.current[ct.id] = `${debouncedDeps}#${immediateDeps}`;
+  }, [ct?.id, debouncedDeps, immediateDeps]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Histogram data fetch (with per-tab cache for instant tab switching)
   const histogramTimer = useRef(null);
