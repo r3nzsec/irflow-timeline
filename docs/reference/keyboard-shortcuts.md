@@ -44,6 +44,8 @@ description: Keyboard shortcuts reference for IRFlow Timeline — file operation
 | `Cmd+Shift+C` | Column Manager |
 | `Cmd+Shift+L` | Conditional Formatting |
 | `Cmd+R` | Reset column widths |
+| `Cmd+Option+F` | Full-width cells: every column as wide as its widest entry |
+| `Cmd+Option+N` | Narrow-width cells: every column as wide as its widest entry, at most 30 characters |
 | `Cmd+Plus` / `Cmd+Minus` | Increase / decrease font size |
 | `Click` | Select row |
 | `Shift+Click` | Range select rows |

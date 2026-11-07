@@ -80,6 +80,7 @@ export default function MenuBar({
   handleInstallUpdate,
   closeTab,
   resetColumnWidths,
+  fitCellWidths,
   up,
   activeFilters,
   // Selection state
@@ -267,6 +268,7 @@ export default function MenuBar({
         style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "7px 14px 7px 12px", background: "none", border: "none", borderLeft: "2px solid transparent", color: item.disabled ? th.textMuted : th.text, fontSize: 13, cursor: item.disabled ? "default" : "pointer", textAlign: "left", fontFamily: "-apple-system, sans-serif", opacity: item.disabled ? 0.4 : 1, transition: "background var(--m-fast) var(--ease-out), border-color var(--m-fast) var(--ease-out)" }}>
         {item.icon}
         {item.label}
+        {item.shortcut && <span style={{ marginLeft: "auto", paddingLeft: 24, fontSize: 11, color: th.textMuted }}>{item.shortcut}</span>}
       </button>
     );
   };
@@ -513,6 +515,10 @@ export default function MenuBar({
   // ── Build View menu items ─────────────────────────────────────
   const buildViewItems = () => [
     { label: "Columns", icon: ic(<><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>), action: () => { setColMgrSearch(""); setModal(openSimpleModal("columns")); } },
+    { type: "separator" },
+    { label: "Full-width cells", shortcut: "⌥⌘F", icon: ic(<><path d="M21 12H3M21 12l-4-4M21 12l-4 4M3 12l4-4M3 12l4 4"/></>), action: () => fitCellWidths?.("full"), disabled: !ct?.dataReady },
+    { label: "Narrow-width cells", shortcut: "⌥⌘N", icon: ic(<><path d="M3 12h6M21 12h-6M9 12l-3-3M9 12l-3 3M15 12l3-3M15 12l3 3M12 5v14"/></>), action: () => fitCellWidths?.("narrow"), disabled: !ct?.dataReady },
+    { type: "separator" },
     { label: "Color Rules", icon: ic(<><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18" fill={th.accent} opacity="0.3"/></>), action: () => setModal(openSimpleModal("colors")) },
     { label: "Tags", icon: ic(<><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7" cy="7" r="1" fill={th.accent}/></>), action: () => setModal(openSimpleModal("tags")) },
     { label: "Filter Presets", icon: ic(<><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></>), action: () => setModal(openSimpleModal("presets")) },
