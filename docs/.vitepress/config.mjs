@@ -137,6 +137,7 @@ export default defineConfig({
           items: [
             { text: 'Keyboard Shortcuts', link: '/reference/keyboard-shortcuts' },
             { text: 'KAPE Profiles', link: '/reference/kape-profiles' },
+            { text: 'Juntei Templates', link: '/reference/juntei-templates' },
             { text: 'Preferences', link: '/reference/preferences' },
             { text: 'Performance Tips', link: '/reference/performance-tips' },
             { text: 'FAQ & Troubleshooting', link: '/reference/faq' }
