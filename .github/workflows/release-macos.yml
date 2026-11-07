@@ -25,9 +25,10 @@ concurrency:
 jobs:
   release:
     if: github.event_name == 'push'
-    # macos-14 (ARM64). Electron Builder 26 rebuilds better-sqlite3 13 for both
-    # x64 and arm64 sub-builds before merging the universal application.
-    runs-on: macos-14
+    # macos-15 (ARM64; GitHub retired the macos-14 image on 2026-11-02). Electron Builder 26
+    # rebuilds better-sqlite3 13 for both x64 and arm64 sub-builds before merging the universal
+    # application.
+    runs-on: macos-15
     env:
       IRFLOW_UPDATE_BASE_URL: ${{ vars.IRFLOW_UPDATE_BASE_URL }}
       IRFLOW_UPDATE_CHANNEL: ${{ vars.IRFLOW_UPDATE_CHANNEL }}
@@ -397,7 +398,7 @@ jobs:
 
   repair-blockmaps:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       IRFLOW_UPDATE_BUCKET: ${{ vars.IRFLOW_UPDATE_BUCKET }}
       IRFLOW_UPDATE_PREFIX: ${{ vars.IRFLOW_UPDATE_PREFIX }}
