@@ -69,7 +69,7 @@ description: Keyboard shortcuts reference for IRFlow Timeline — file operation
 |--------------------|--------|
 | Toolbar histogram icon | Toggle timeline histogram (no keyboard shortcut) |
 | `Cmd+Plus` / `Cmd+-` | Increase / decrease font size (macOS **Tools → Font Size**) |
-| Toolbar **☀ / 🌙** | Toggle dark / light theme |
+| Toolbar **color-scheme** dropdown | Switch the color scheme (Dark Mode, Light Mode and six seasonal schemes) |
 
 Analysis tools in the **in-app Tools** menu are grouped in four sections: **Analysis** (Stack Values, Gap Analysis, Log Sources, Burst Detection, **AI Artifacts**), **Detection** (Sigma Scan and **AI Secret Hunt**), **Platforms** (active Windows tools plus one collapsed **Coming soon** group for planned Linux, macOS, and cloud analyzers), and **Export** (AI history package, source manifest, Generate Report).
 

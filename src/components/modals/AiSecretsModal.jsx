@@ -303,12 +303,12 @@ export default function AiSecretsModal({ th }) {
   const sevColor = (s) => (s === "critical" ? sev.critical : s === "high" ? sev.high : s === "medium" ? sev.med : s === "low" ? sev.low : s === "info" ? sev.info : sev.clean);
   const glass = (extra = {}) => ({ background: th.glassBg, border: `1px solid ${th.glassBorder}`, borderRadius: 14, boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)", ...extra });
   const pill = (c, sm) => ({ display: "inline-flex", alignItems: "center", gap: 5, padding: sm ? "2px 8px" : "3px 10px", borderRadius: 999, fontSize: sm ? 9.5 : 10.5, fontWeight: 700, letterSpacing: "0.03em", color: c, background: `${c}1f`, border: `1px solid ${c}44`, textTransform: "uppercase", whiteSpace: "nowrap" });
-  const softBtn = (active) => ({ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: 9, fontSize: 11, fontWeight: 500, cursor: "pointer", color: active ? "#fff" : th.textDim, background: active ? th.accent : th.glassBg, border: `1px solid ${active ? th.accent : th.glassBorder}`, whiteSpace: "nowrap" });
+  const softBtn = (active) => ({ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: 9, fontSize: 11, fontWeight: 500, cursor: "pointer", color: active ? th.onAccent : th.textDim, background: active ? th.fillAccent : th.glassBg, border: `1px solid ${active ? th.accent : th.glassBorder}`, whiteSpace: "nowrap" });
   const tinyBtn = { display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 9px", borderRadius: 7, fontSize: 10.5, fontWeight: 500, cursor: "pointer", color: th.textDim, background: th.glassBg, border: `1px solid ${th.glassBorder}`, whiteSpace: "nowrap" };
-  const primaryBtn = { padding: "9px 20px", borderRadius: 11, fontSize: 12.5, fontWeight: 600, cursor: "pointer", color: "#fff", background: `linear-gradient(180deg, ${th.accentHover || th.accent}, ${th.accent})`, border: `1px solid ${th.accent}`, boxShadow: `0 4px 16px ${th.accent}40, inset 0 1px 0 rgba(255,255,255,0.22)` };
+  const primaryBtn = { padding: "9px 20px", borderRadius: 11, fontSize: 12.5, fontWeight: 600, cursor: "pointer", color: th.onAccent, background: `linear-gradient(180deg, ${th.fillAccentHover || th.fillAccent}, ${th.fillAccent})`, border: `1px solid ${th.accent}`, boxShadow: `0 4px 16px ${th.accent}40, inset 0 1px 0 rgba(255,255,255,0.22)` };
   const ghostBtn = { padding: "9px 16px", borderRadius: 11, fontSize: 12, fontWeight: 500, cursor: "pointer", color: th.textDim, background: "transparent", border: `1px solid ${th.glassBorder}` };
   const segWrap = { display: "inline-flex", padding: 3, gap: 2, ...glass({ borderRadius: 10 }) };
-  const segItem = (active) => ({ padding: "5px 11px", borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: "pointer", border: "1px solid transparent", color: active ? "#fff" : th.textMuted, background: active ? th.accent : "transparent", whiteSpace: "nowrap" });
+  const segItem = (active) => ({ padding: "5px 11px", borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: "pointer", border: "1px solid transparent", color: active ? th.onAccent : th.textMuted, background: active ? th.fillAccent : "transparent", whiteSpace: "nowrap" });
   const provMeta = (ruleId, category) => providerMeta(ruleId, category, th, sev);
   // Confidence chip — only surfaced when it changes triage: trust ("verified") or caution
   // ("heuristic"/"entropy"). The common distinctive-token case ("pattern") gets no chip.
@@ -950,7 +950,7 @@ code{font-family:"SF Mono",Menlo,monospace;font-size:10.5px;background:#f4f1ee;p
                     All tags <span style={{ opacity: 0.8 }}>{taggedIncidentCount}</span>
                   </button>
                   {filterOptions.tag.slice(0, 6).map((tag) => (
-                    <button key={tag} type="button" onClick={() => patch({ fTag: fTag === tag ? "all" : tag, groupBy: fTag === tag ? groupBy : "tag" })} style={{ ...softBtn(fTag === tag), color: fTag === tag ? "#fff" : th.accent, borderColor: fTag === tag ? th.accent : `${th.accent}55`, background: fTag === tag ? th.accent : `${th.accent}14` }}>
+                    <button key={tag} type="button" onClick={() => patch({ fTag: fTag === tag ? "all" : tag, groupBy: fTag === tag ? groupBy : "tag" })} style={{ ...softBtn(fTag === tag), color: fTag === tag ? th.onAccent : th.accent, borderColor: fTag === tag ? th.accent : `${th.accent}55`, background: fTag === tag ? th.fillAccent : `${th.accent}14` }}>
                       {tag} <span style={{ opacity: 0.8 }}>{tagCounts[tag]}/{tagFindingCounts[tag]}</span>
                     </button>
                   ))}

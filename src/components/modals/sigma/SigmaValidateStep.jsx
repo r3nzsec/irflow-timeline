@@ -251,7 +251,7 @@ export default function SigmaValidateStep() {
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
               <div style={{ display: "inline-flex", background: th.panelBg, borderRadius: 4, padding: 1, border: `1px solid ${th.border}33`, gap: 1 }}>
                 {[{ id: "keywords", label: "Keywords" }, { id: "regex", label: "Regex" }].map((m) => (
-                  <button key={m.id} onClick={() => setModal((p) => ({ ...p, searchMode: m.id }))} style={{ padding: "2px 8px", borderRadius: 3, fontSize: 9, border: "none", cursor: "pointer", fontFamily: "-apple-system,sans-serif", background: (modal.searchMode || "keywords") === m.id ? th.accent : "transparent", color: (modal.searchMode || "keywords") === m.id ? "#fff" : th.textMuted, fontWeight: (modal.searchMode || "keywords") === m.id ? 600 : 400 }}>{m.label}</button>
+                  <button key={m.id} onClick={() => setModal((p) => ({ ...p, searchMode: m.id }))} style={{ padding: "2px 8px", borderRadius: 3, fontSize: 9, border: "none", cursor: "pointer", fontFamily: "-apple-system,sans-serif", background: (modal.searchMode || "keywords") === m.id ? th.fillAccent : "transparent", color: (modal.searchMode || "keywords") === m.id ? th.onAccent : th.textMuted, fontWeight: (modal.searchMode || "keywords") === m.id ? 600 : 400 }}>{m.label}</button>
                 ))}
               </div>
               {(modal.searchMode || "keywords") === "keywords" && checkbox("AND logic (all keywords must match)", modal.searchAndLogic || false, () => setModal((p) => ({ ...p, searchAndLogic: !p.searchAndLogic })))}

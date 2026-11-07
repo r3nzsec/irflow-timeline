@@ -5,7 +5,7 @@ import { buttonStyles } from "./buttonStyles.js";
  * Themed button with consistent variants across the app.
  *
  * Variants:
- *   - primary    : solid accent bg, white text (default CTA)
+ *   - primary    : solid accent bg, contrasting theme text (default CTA)
  *   - secondary  : subtle btnBg, dim text (Close, Cancel)
  *   - ghost      : transparent, dim text (icon-only, ✕)
  *   - accentSoft : accent-tinted bg + accent border (e.g. "★ Bookmark All")

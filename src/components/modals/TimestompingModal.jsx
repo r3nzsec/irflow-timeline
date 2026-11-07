@@ -45,7 +45,7 @@ export default function TimestompingModal() {
 
   const cbStyle = (checked) => ({
     width: 14, height: 14, borderRadius: 4, flexShrink: 0, cursor: "pointer",
-    background: checked ? (th.accent) : "transparent",
+    background: checked ? (th.fillAccent) : "transparent",
     border: `1.5px solid ${checked ? th.accent : th.border}`,
     display: "flex", alignItems: "center", justifyContent: "center", transition: "all var(--m-base)",
   });
@@ -548,7 +548,7 @@ export default function TimestompingModal() {
             {modal.tsTagMsg && <span style={{ marginRight: "auto", fontSize: 11, color: /failed/i.test(modal.tsTagMsg) ? th.danger : th.success, fontFamily: "-apple-system, sans-serif" }}>{modal.tsTagMsg}</span>}
             {totalSelected > 0 && <button onClick={copySelected} style={{ ...ms.bs, position: "relative" }}>Copy Selected <span style={{ marginLeft: 4, fontSize: 9, padding: "1px 5px", borderRadius: 8, background: `${th.accent}33`, color: th.accent }}>{totalSelected}</span></button>}
             {data && (data.totalTimestomped > 0 || (data.confirmedStompsNoMftMatch || []).length > 0) && <button onClick={copyReport} style={ms.bs}>Copy Summary</button>}
-            {data && data.totalTimestomped > 0 && <button onClick={tagIndicators} style={{ ...ms.bp, background: th.warning }}>Tag Indicators</button>}
+            {data && data.totalTimestomped > 0 && <button onClick={tagIndicators} style={{ ...ms.bp, background: th.fillWarning, color: th.onAccent }}>Tag Indicators</button>}
             <button onClick={() => setModal(null)} style={ms.bp}>Done</button>
           </div>
         )}

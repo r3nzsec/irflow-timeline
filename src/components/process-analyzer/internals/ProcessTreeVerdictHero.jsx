@@ -194,7 +194,7 @@ export default function ProcessTreeVerdictHero({
             onClick={onRebuild}
             style={{
               fontSize: PI_TYPOGRAPHY.control, fontWeight: 700, padding: "4px 10px", borderRadius: 5, cursor: "pointer",
-              background: th.accent, color: "#fff", border: "none", fontFamily: "-apple-system, sans-serif",
+              background: th.fillAccent, color: th.onAccent, border: "none", fontFamily: "-apple-system, sans-serif",
             }}
           >
             Rebuild scoped

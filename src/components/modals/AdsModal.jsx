@@ -59,7 +59,7 @@ export default function AdsModal() {
 
   const cbStyle = (checked) => ({
     width: 14, height: 14, borderRadius: 4, flexShrink: 0, cursor: "pointer",
-    background: checked ? (th.accent) : "transparent",
+    background: checked ? (th.fillAccent) : "transparent",
     border: `1.5px solid ${checked ? th.accent : th.border}`,
     display: "flex", alignItems: "center", justifyContent: "center", transition: "all var(--m-base)",
   });
@@ -811,7 +811,7 @@ export default function AdsModal() {
             <div style={{ display: "flex", gap: 10 }}>
               {totalSelected > 0 && <button onClick={copySelected} style={{ ...ms.bs, position: "relative" }}>Copy Selected <span style={{ marginLeft: 4, fontSize: 9, padding: "1px 5px", borderRadius: 8, background: `${th.accent}33`, color: th.accent }}>{totalSelected}</span></button>}
               <button onClick={copyReport} style={ms.bs}>Copy Summary</button>
-              {(data.totalWithZoneId || 0) > 0 && <button onClick={tagDownloaded} style={{ ...ms.bp, background: th.danger }}>Tag Downloaded</button>}
+              {(data.totalWithZoneId || 0) > 0 && <button onClick={tagDownloaded} style={{ ...ms.bp, background: th.fillDanger, color: th.onAccent }}>Tag Downloaded</button>}
               <button onClick={() => setModal(null)} style={ms.bp}>Done</button>
             </div>
           </div>

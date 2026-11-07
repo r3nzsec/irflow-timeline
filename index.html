@@ -7,13 +7,14 @@
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
       html, body, #root { height: 100%; overflow: hidden; }
-      body { background: #0f1114; }
+      body { background: var(--tle-bg, #0f1114); }
       ::-webkit-scrollbar { width: 10px; height: 10px; }
-      ::-webkit-scrollbar-track { background: #0f1114; }
-      ::-webkit-scrollbar-thumb { background: #333639; border-radius: 5px; }
-      ::-webkit-scrollbar-thumb:hover { background: #5c5752; }
-      ::-webkit-scrollbar-corner { background: #0f1114; }
-      ::selection { background: rgba(232, 93, 42, 0.3); }
+      ::-webkit-scrollbar-track { background: var(--tle-bg, #0f1114); }
+      ::-webkit-scrollbar-thumb { background: var(--tle-scrollbar-thumb, #333639); border-radius: 5px; }
+      ::-webkit-scrollbar-thumb:hover { background: var(--tle-scrollbar-thumb-hover, #5c5752); }
+      ::-webkit-scrollbar-corner { background: var(--tle-bg, #0f1114); }
+      ::selection { background: var(--tle-selection, rgba(232, 93, 42, 0.3)); }
+      input::placeholder, textarea::placeholder { color: var(--tle-text-muted, #948e88); opacity: 1; }
       .pt-row:hover { background: rgba(110,118,129,0.06) !important; }
       .pt-row.pt-sel:hover { background: inherit !important; }
     </style>

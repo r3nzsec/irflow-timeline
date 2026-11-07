@@ -1,6 +1,7 @@
 /**
  * main.js — Electron main process for IRFlow Timeline
  *
+ *
  * Coordinates between the renderer (React UI) and the backend
  * (SQLite DB + streaming parser). All data operations happen here
  * in the main process, with results sent to renderer via IPC.
@@ -49,6 +50,20 @@ function _loadRecentFiles() {
 
 function _saveRecentFiles(files) {
   try { fs.writeFileSync(_recentFilesPath, JSON.stringify(files), "utf8"); } catch {}
+}
+
+// ── UI preferences: color scheme ──────────────
+const { createUiPrefsStore } = require("./ui-prefs");
+const { isThemeId, windowBackgroundFor } = require("./themes");
+const uiPrefs = createUiPrefsStore(path.join(app.getPath("userData"), "ui-prefs.json"));
+
+// Native menu path: remember the scheme, switch the renderer, refresh the menu check mark.
+function applyTheme(themeName) {
+  if (!isThemeId(themeName)) return uiPrefs.load();
+  const prefs = uiPrefs.save({ themeName });
+  safeSend("set-theme", prefs.themeName);
+  _rebuildMenu();
+  return prefs;
 }
 
 let _menuRebuildTimer = null;
@@ -110,6 +125,16 @@ safeHandle("debug-log", (_event, payload = {}) => {
   const message = typeof payload.message === "string" ? payload.message : "";
   dbg(scope, message, payload.data && typeof payload.data === "object" ? payload.data : undefined);
   return true;
+});
+
+safeHandle("get-ui-prefs", () => uiPrefs.load());
+
+// Toolbar path: the renderer has already switched itself, so only persist + refresh the menu.
+safeHandle("set-theme-preference", (_event, { themeName } = {}) => {
+  if (!isThemeId(themeName)) throw new Error(`Unknown color scheme: ${String(themeName)}`);
+  const prefs = uiPrefs.save({ themeName });
+  _rebuildMenu();
+  return prefs;
 });
 
 // Open an external link in the system browser, never in-app. Only http(s)/mailto are
@@ -444,7 +469,7 @@ function createWindow() {
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 16 },
     vibrancy: "under-window",
-    backgroundColor: "#0f1114",
+    backgroundColor: windowBackgroundFor(uiPrefs.load().themeName),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -607,6 +632,7 @@ function buildMenu() {
     mainWindow, loadRecentFiles: _loadRecentFiles, saveRecentFiles: _saveRecentFiles,
     enqueueImport, safeSend, activeWindow: _activeWindow, updateController,
     onTempDirChanged: _applyTempStorageEnv,
+    getCurrentTheme: () => uiPrefs.load().themeName, applyTheme,
   });
 }
 

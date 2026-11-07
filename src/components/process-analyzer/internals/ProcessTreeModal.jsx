@@ -1035,7 +1035,7 @@ return (
       <div onMouseDown={startDrag} style={{ padding: "14px 20px 10px", borderBottom: `1px solid ${th.border}66`, cursor: "move", flexShrink: 0, userSelect: "none", background: `linear-gradient(180deg, ${th.headerBg}ee 0%, ${th.modalBg}cc 100%)`, backdropFilter: "blur(20px) saturate(1.4)", WebkitBackdropFilter: "blur(20px) saturate(1.4)" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 32, height: 32, borderRadius: 8, background: `linear-gradient(135deg, ${th.accent} 0%, ${th.accentHover || th.accent} 100%)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: "#fff", boxShadow: `0 2px 8px ${th.accent}44`, flexShrink: 0 }}>{"\u25B3"}</div>
+            <div style={{ width: 32, height: 32, borderRadius: 8, background: `linear-gradient(135deg, ${th.fillAccent} 0%, ${th.fillAccentHover || th.fillAccent} 100%)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: th.onAccent, boxShadow: `0 2px 8px ${th.accent}44`, flexShrink: 0 }}>{"\u25B3"}</div>
             <div>
               <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: th.text, fontFamily: "-apple-system, sans-serif", letterSpacing: "-0.01em" }}>
                 <span style={{ color: th.accent }}>IRFlow</span> {"\u2014"} Process Inspector

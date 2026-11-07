@@ -91,7 +91,8 @@ test("sticky grid surfaces are opaque and structural cells use border-box sizing
     .map((f) => fs.readFileSync(path.join(__dirname, "..", "src", "components", f), "utf8"))
     .join("\n");
 
-  assert.match(source, /const stickyHeaderBg = th\.headerBg;/);
+  // The header row takes the top bars' colors (barTheme(th, "top")); every headerBg is opaque.
+  assert.match(source, /const stickyHeaderBg = headerTh\.headerBg;/);
   assert.match(source, /const stickyFilterBg = th\.bg;/);
   assert.doesNotMatch(source, /background: th\.headerBg \+ "cc"/);
   assert.doesNotMatch(source, /background: th\.bg \+ "cc"/);
