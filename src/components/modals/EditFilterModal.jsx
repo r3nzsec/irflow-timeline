@@ -1,4 +1,8 @@
 import { useCallback } from "react";
+import {
+  headerFilterRows, applyHeaderFilterRows, headerFilterColumnLabel as columnLabel,
+  FILTER_OPERATORS, NO_VALUE_OPERATORS, filterOperator,
+} from "../../utils/header-filters.js";
 import useUIStore from "../../store/useUIStore.js";
 import useTabStore from "../../store/useTabStore.js";
 import useCurrentTab from "../../hooks/useCurrentTab.js";
@@ -17,20 +21,8 @@ export default function EditFilterModal() {
 
   if (modal?.type !== "editFilter" || !ct) return null;
 
-  const OPERATORS = [
-    { value: "contains", label: "Contains" },
-    { value: "not_contains", label: "Does not contain" },
-    { value: "equals", label: "Equals" },
-    { value: "not_equals", label: "Does not equal" },
-    { value: "starts_with", label: "Starts with" },
-    { value: "ends_with", label: "Ends with" },
-    { value: "greater_than", label: "Greater than" },
-    { value: "less_than", label: "Less than" },
-    { value: "is_empty", label: "Is empty" },
-    { value: "is_not_empty", label: "Is not empty" },
-    { value: "regex", label: "Matches regex" },
-  ];
-  const noValueOps = new Set(["is_empty", "is_not_empty"]);
+  const OPERATORS = FILTER_OPERATORS;
+  const noValueOps = NO_VALUE_OPERATORS;
   const existing = ct.advancedFilters || [];
   const initConditions = existing.length > 0
     ? existing.map((f, i) => ({ ...f, id: i + 1 }))
@@ -38,6 +30,25 @@ export default function EditFilterModal() {
 
   const conditions = modal.conditions || initConditions;
   const nextId = modal.nextId || (initConditions.length > 0 ? Math.max(...initConditions.map(c => c.id)) + 1 : 2);
+
+  // Header filters as the dialog opened (to know what to clear) and as edited since.
+  const shownHeaderRows = modal.shownHeaderRows || headerFilterRows(ct);
+  const headerRows = modal.headerRows || shownHeaderRows;
+  const setHeaderRows = (rows) => setModal((p) => p?.type === "editFilter" ? { ...p, headerRows: rows, shownHeaderRows: p.shownHeaderRows || shownHeaderRows } : p);
+  const updateHeaderValue = (key, value) => setHeaderRows(headerRows.map((r) => (r.key === key ? { ...r, value } : r)));
+  const updateHeaderOp = (key, op) => setHeaderRows(headerRows.map((r) => (r.key === key ? { ...r, op } : r)));
+  const removeHeaderRow = (key) => setHeaderRows(headerRows.filter((r) => r.key !== key));
+  const headerRowText = (r) => {
+    if (r.kind === "text") {
+      const label = filterOperator(r.op).label.toUpperCase();
+      return NO_VALUE_OPERATORS.has(r.op) ? `${columnLabel(r.column)} ${label}` : `${columnLabel(r.column)} ${label} "${r.value}"`;
+    }
+    if (r.kind === "values") {
+      const shown = r.values.slice(0, 5).map((v) => (String(v ?? "").trim() === "" ? "(empty)" : `"${v}"`));
+      return `${columnLabel(r.column)} IS ONE OF (${shown.join(", ")}${r.values.length > 5 ? `, … ${r.values.length - 5} more` : ""})`;
+    }
+    return `${columnLabel(r.column)} BETWEEN ${r.from || "the start"} AND ${r.to || "the end"}`;
+  };
 
   const setConditions = (newConds) => setModal((p) => p?.type === "editFilter" ? { ...p, conditions: newConds } : p);
   const setNextId = (nid) => setModal((p) => p?.type === "editFilter" ? { ...p, nextId: nid } : p);
@@ -57,8 +68,16 @@ export default function EditFilterModal() {
   };
 
   const buildPreview = () => {
+    const header = headerRows.filter((r) => r.kind !== "text" || r.value || NO_VALUE_OPERATORS.has(r.op)).map(headerRowText);
+    const own = buildConditionsPreview();
+    if (!own) return header.length ? header.join(" AND ") : "No conditions defined";
+    if (!header.length) return own;
+    return `${header.join(" AND ")} AND ${/ OR /.test(own) ? `(${own})` : own}`;
+  };
+
+  const buildConditionsPreview = () => {
     const valid = conditions.filter((c) => c.column && c.operator && (noValueOps.has(c.operator) || c.value));
-    if (valid.length === 0) return "No conditions defined";
+    if (valid.length === 0) return null;
     const opLabel = (op) => OPERATORS.find(o => o.value === op)?.label || op;
     const groups = [];
     let currentGroup = [valid[0]];
@@ -80,18 +99,23 @@ export default function EditFilterModal() {
     }).join(" OR ");
   };
 
-  const handleApply = () => {
-    const valid = conditions.filter((c) => c.column && c.operator && (noValueOps.has(c.operator) || c.value));
-    up("advancedFilters", valid.map(({ id, ...rest }) => rest));
+  // One update for the conditions and the header filters, so the grid queries once.
+  const save = (conds, rows) => {
+    const valid = conds.filter((c) => c.column && c.operator && (noValueOps.has(c.operator) || c.value));
+    useTabStore.getState().updateActiveTab({
+      advancedFilters: valid.map(({ id, ...rest }) => rest),
+      ...applyHeaderFilterRows(ct, shownHeaderRows, rows),
+    });
     setModal(null);
   };
-
-  const handleClear = () => {
-    up("advancedFilters", []);
-    setModal(null);
-  };
+  const handleApply = () => save(conditions, headerRows);
+  // Clears everything the dialog lists: its conditions and the header filters.
+  const handleClear = () => save([], []);
 
   const selectStyle = { background: th.bgInput, color: th.text, border: `1px solid ${th.border}`, borderRadius: 4, padding: "5px 8px", fontSize: 12, fontFamily: "-apple-system, sans-serif", outline: "none" };
+  // A header filter's column and operator: shown like the selects, but fixed.
+  const staticStyle = { ...selectStyle, color: th.textDim, boxSizing: "border-box", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+  const captionStyle = { fontSize: 11, fontWeight: 600, color: th.textDim, margin: "0 0 8px 2px", fontFamily: "-apple-system, sans-serif" };
 
   const footer = (
     <>
@@ -110,9 +134,51 @@ export default function EditFilterModal() {
       bodyPadding="16px 20px"
       footer={footer}
     >
+      {headerRows.length > 0 && (
+        <div style={captionStyle}>Filters under the column headers</div>
+      )}
+      {headerRows.map((r, idx) => (
+        <div key={r.key} data-header-filter={r.column} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+          <span style={{ width: 56, fontSize: 11, color: th.textDim, textAlign: "center", flexShrink: 0 }}>{idx === 0 ? "Where" : "AND"}</span>
+          <div title={columnLabel(r.column)} style={{ ...staticStyle, width: 170, flexShrink: 0 }}>{columnLabel(r.column)}</div>
+          {r.kind === "text" ? (
+            <select value={r.op} aria-label={`Header filter operator ${columnLabel(r.column)}`} onChange={(e) => updateHeaderOp(r.key, e.target.value)} style={{ ...selectStyle, width: 140, flexShrink: 0 }}>
+              {OPERATORS.map((op) => <option key={op.value} value={op.value}>{op.label}</option>)}
+            </select>
+          ) : (
+            <div style={{ ...staticStyle, width: 140, flexShrink: 0 }}>{r.kind === "values" ? "Is one of" : "Between"}</div>
+          )}
+          {r.kind === "text" && NO_VALUE_OPERATORS.has(r.op) ? (
+            <div style={{ flex: 1, minWidth: 80 }} />
+          ) : r.kind === "text" ? (
+            <Input
+              type="text"
+              value={r.value}
+              aria-label={`Header filter ${columnLabel(r.column)}`}
+              onChange={(e) => updateHeaderValue(r.key, e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleApply(); } }}
+              placeholder="Value..."
+              style={{ flex: 1, minWidth: 80 }}
+            />
+          ) : (
+            <div title={headerRowText(r)} style={{ ...staticStyle, flex: 1, minWidth: 80 }}>
+              {r.kind === "values"
+                ? r.values.map((v) => (String(v ?? "").trim() === "" ? "(empty)" : v)).join(", ")
+                : `${r.from || "…"} → ${r.to || "…"}`}
+            </div>
+          )}
+          <button onClick={() => removeHeaderRow(r.key)} aria-label={`Remove the ${columnLabel(r.column)} header filter`} style={{ background: "none", border: "none", color: th.textDim, fontSize: 14, cursor: "pointer", padding: "2px 6px", flexShrink: 0 }} title="Remove this header filter">✕</button>
+        </div>
+      ))}
+      {headerRows.length > 0 && (
+        <div style={{ ...captionStyle, marginTop: 12 }}>Conditions (AND with the filters above)</div>
+      )}
+
       {conditions.map((c, idx) => (
         <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-          {idx === 0 ? (
+          {idx === 0 && headerRows.length > 0 ? (
+            <span style={{ width: 56, fontSize: 11, color: th.textDim, textAlign: "center", flexShrink: 0 }}>AND</span>
+          ) : idx === 0 ? (
             <span style={{ width: 56, fontSize: 11, color: th.textDim, textAlign: "center", flexShrink: 0 }}>Where</span>
           ) : (
             <select value={c.logic} onChange={(e) => updateCondition(c.id, "logic", e.target.value)} style={{ ...selectStyle, width: 56, flexShrink: 0, textAlign: "center" }}>
@@ -121,12 +187,12 @@ export default function EditFilterModal() {
             </select>
           )}
 
-          <select value={c.column} onChange={(e) => updateCondition(c.id, "column", e.target.value)} style={{ ...selectStyle, minWidth: 120, maxWidth: 180 }}>
+          <select value={c.column} onChange={(e) => updateCondition(c.id, "column", e.target.value)} style={{ ...selectStyle, width: 170, flexShrink: 0 }}>
             <option value="">-- Column --</option>
             {ct.headers.map((h) => <option key={h} value={h}>{h}</option>)}
           </select>
 
-          <select value={c.operator} onChange={(e) => updateCondition(c.id, "operator", e.target.value)} style={{ ...selectStyle, minWidth: 130 }}>
+          <select value={c.operator} onChange={(e) => updateCondition(c.id, "operator", e.target.value)} style={{ ...selectStyle, width: 140, flexShrink: 0 }}>
             {OPERATORS.map((op) => <option key={op.value} value={op.value}>{op.label}</option>)}
           </select>
 

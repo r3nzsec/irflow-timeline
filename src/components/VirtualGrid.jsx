@@ -1,4 +1,6 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
+import { FILTER_OPERATORS, NO_VALUE_OPERATORS, filterOperator, columnFilterParts, encodeColumnFilter, isActiveColumnFilter } from "../utils/header-filters.js";
 import { CheckboxIcon } from "./icons.jsx";
 import { formatNumber } from "../utils/format.js";
 import useUIStore from "../store/useUIStore.js";
@@ -136,8 +138,104 @@ export default function VirtualGrid({
     setCellPopup, setCellContextMenu, up, activateOnKey,
   ]);
 
+  // ── Header filter operators ─────────────────────────────────────────
+  // The button left of a filter box shows its operator; it, or a right-click on the box, opens
+  // the operator menu, which also turns the column's filter off and on.
+  const [opMenu, setOpMenu] = useState(null); // { col, x, y }
+  useEffect(() => {
+    if (!opMenu) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") setOpMenu(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [opMenu]);
+  const setColumnFilter = (h, op, value) => up("columnFilters", { ...ct.columnFilters, [h]: encodeColumnFilter(op, value) });
+  const focusFilterBox = (h) => setTimeout(() => {
+    const box = [...document.querySelectorAll("input[aria-label]")].find((el) => el.getAttribute("aria-label") === `Filter ${h}`);
+    if (box && !box.readOnly) box.focus();
+  }, 0);
+  const renderFilterText = (h, hasCbf, isDis) => {
+    const raw = ct.columnFilters[h];
+    const { op, value } = columnFilterParts(raw);
+    const opInfo = filterOperator(op);
+    const noValue = NO_VALUE_OPERATORS.has(op);
+    const showButton = isActiveColumnFilter(raw) || hasCbf || op !== "contains";
+    const openMenu = (x, y) => setOpMenu({ col: h, x, y });
+    return (
+      <>
+        {showButton && (
+          <button
+            onClick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); openMenu(r.left, r.bottom + 2); }}
+            aria-haspopup="menu"
+            aria-label={`Filter options for ${h}: ${opInfo.label}${isDis ? ", turned off" : ""}`}
+            title={`${opInfo.label}${isDis ? " (turned off)" : ""}: click for the filter options`}
+            style={{ minWidth: 24, height: 24, background: "none", border: "none", cursor: "pointer", padding: "0 2px", color: isDis ? th.danger : th.success, fontSize: 11, fontWeight: 700, fontFamily: "'SF Mono', Menlo, monospace", flexShrink: 0, lineHeight: 1, textDecoration: isDis ? "line-through" : "none" }}
+          >{opInfo.symbol}</button>
+        )}
+        <input aria-label={`Filter ${h}`} value={noValue ? "" : value} readOnly={noValue}
+          onChange={(e) => setColumnFilter(h, op, e.target.value)}
+          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); openMenu(e.clientX, e.clientY); }}
+          placeholder={noValue ? opInfo.label : op === "contains" ? "Filter..." : `${opInfo.label}...`}
+          title="Right-click for the filter options (contains, equals, greater than, …)"
+          style={{ flex: 1, background: th.bgInput, border: `1px solid ${hasCbf || op !== "contains" ? th.borderAccent : th.border}`, borderRadius: 3, color: th.text, fontSize: 11, padding: "3px 4px", outline: "none", fontFamily: "inherit", minWidth: 0, opacity: isDis ? 0.4 : 1, textDecoration: isDis ? "line-through" : "none" }} />
+      </>
+    );
+  };
+  const renderOperatorMenu = () => {
+    if (!opMenu || !ct) return null;
+    const h = opMenu.col;
+    const raw = ct.columnFilters[h];
+    const { op, value } = columnFilterParts(raw);
+    const hasCbf = ct.checkboxFilters?.[h]?.length > 0;
+    const hasFilter = isActiveColumnFilter(raw) || hasCbf;
+    const isDis = ct.disabledFilters?.has(h);
+    const isDark = th.base === "dark";
+    const width = 230;
+    const height = 46 + FILTER_OPERATORS.length * 28 + (hasFilter ? 40 : 0) + (raw !== undefined && raw !== "" ? 28 : 0);
+    const left = Math.max(8, Math.min(opMenu.x, window.innerWidth - width - 8));
+    const top = Math.max(8, Math.min(opMenu.y, window.innerHeight - height - 8));
+    const item = { display: "flex", alignItems: "center", gap: 10, width: "calc(100% - 8px)", padding: "5px 12px", background: "none", border: "none", color: th.text, fontSize: 12, cursor: "pointer", textAlign: "left", fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif", borderRadius: 6, margin: "0 4px" };
+    const hover = { onMouseEnter: (e) => { e.currentTarget.style.background = `${th.accent}22`; }, onMouseLeave: (e) => { e.currentTarget.style.background = "transparent"; } };
+    const close = () => setOpMenu(null);
+    const toggleOff = () => { const next = new Set(ct.disabledFilters || []); if (next.has(h)) next.delete(h); else next.add(h); up("disabledFilters", next); close(); };
+    const clear = () => { const next = { ...ct.columnFilters }; delete next[h]; up("columnFilters", next); close(); };
+    return createPortal(
+      <>
+        <div aria-hidden="true" onMouseDown={close} onContextMenu={(e) => { e.preventDefault(); close(); }} style={{ position: "fixed", inset: 0, zIndex: 99998, WebkitAppRegion: "no-drag" }} />
+        <div role="menu" aria-label={`Filter options for ${h}`} onContextMenu={(e) => e.preventDefault()}
+          style={{ position: "fixed", left, top, width, background: `${th.modalBg}f7`, backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", border: `1px solid ${th.modalBorder}`, borderRadius: 10, padding: "5px 0", zIndex: 99999, WebkitAppRegion: "no-drag", boxShadow: isDark ? "0 12px 40px rgba(0,0,0,0.55)" : "0 12px 40px rgba(0,0,0,0.18)", animation: "tle-modal-in var(--m-fast) var(--ease-out)" }}>
+          <div style={{ padding: "4px 14px 6px", fontSize: 11, fontWeight: 600, color: th.textDim, fontFamily: "-apple-system, sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Filter {h}</div>
+          {FILTER_OPERATORS.map((o) => (
+            <button key={o.value} role="menuitemradio" aria-checked={o.value === op} {...hover} style={item}
+              onClick={() => { setColumnFilter(h, o.value, value); close(); focusFilterBox(h); }}>
+              <span style={{ width: 12, color: th.accent, flexShrink: 0 }}>{o.value === op ? "✓" : ""}</span>
+              <span style={{ width: 22, fontFamily: "'SF Mono', Menlo, monospace", fontWeight: 700, color: th.textDim, flexShrink: 0 }}>{o.symbol}</span>
+              {o.label}
+            </button>
+          ))}
+          {(hasFilter || (raw !== undefined && raw !== "")) && <div style={{ height: 1, background: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)", margin: "4px 8px" }} />}
+          {hasFilter && (
+            <button role="menuitem" {...hover} style={item} onClick={toggleOff}>
+              <span style={{ width: 12, flexShrink: 0 }} />
+              <span style={{ width: 22, color: isDis ? th.success : th.danger, flexShrink: 0 }}>{isDis ? "⊙" : "⊘"}</span>
+              {isDis ? "Turn filter on" : "Turn filter off"}
+            </button>
+          )}
+          {raw !== undefined && raw !== "" && (
+            <button role="menuitem" {...hover} style={item} onClick={clear}>
+              <span style={{ width: 12, flexShrink: 0 }} />
+              <span style={{ width: 22, color: th.textDim, flexShrink: 0 }}>✕</span>
+              Clear filter
+            </button>
+          )}
+        </div>
+      </>,
+      document.body,
+    );
+  };
+
   return (
     <>
+      {renderOperatorMenu()}
       {/* Timeline Histogram — glass, brush-select, hourly toggle */}
       {histogramVisible && ct?.dataReady && ct?.tsColumns?.size > 0 && (() => {
         const effectiveHistCol = histogramCol && ct.tsColumns.has(histogramCol) ? histogramCol : [...ct.tsColumns][0];
@@ -611,15 +709,10 @@ export default function VirtualGrid({
                   const hasCbf = ct.checkboxFilters?.[h]?.length > 0;
                   const isTs = ct.tsColumns?.has(h);
                   const hasDr = ct.dateRangeFilters?.[h];
-                  const hasFilter = !!(ct.columnFilters[h] || hasCbf);
                   const isDis = ct.disabledFilters?.has(h);
                   return (
                     <div key={h} style={{ width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 2px", display: "flex", alignItems: "center", height: FILTER_HEIGHT, borderRight: h === pinnedH[pinnedH.length - 1] ? `2px solid ${th.borderAccent}` : `1px solid ${th.border}`, position: "sticky", left: pinnedOffsets.offsets[h], zIndex: 11, background: stickyFilterBg }}>
-                      {hasFilter && <button onClick={() => { const s = new Set(ct.disabledFilters || []); if (s.has(h)) s.delete(h); else s.add(h); up("disabledFilters", s); }}
-                        aria-label={`${isDis ? "Enable" : "Disable"} ${h} filter`}
-                        style={{ width: 24, height: 24, background: "none", border: "none", cursor: "pointer", padding: 0, color: isDis ? th.danger : th.success, fontSize: 11, flexShrink: 0, lineHeight: 1 }} title={isDis ? "Enable filter" : "Disable filter"}>{isDis ? "⊘" : "⊙"}</button>}
-                      <input aria-label={`Filter ${h}`} value={ct.columnFilters[h] || ""} onChange={(e) => up("columnFilters", { ...ct.columnFilters, [h]: e.target.value })} placeholder="Filter..."
-                        style={{ flex: 1, background: th.bgInput, border: `1px solid ${hasCbf ? th.borderAccent : th.border}`, borderRadius: 3, color: th.text, fontSize: 11, padding: "3px 4px", outline: "none", fontFamily: "inherit", minWidth: 0, opacity: isDis ? 0.4 : 1, textDecoration: isDis ? "line-through" : "none" }} />
+                      {renderFilterText(h, hasCbf, isDis)}
                       {isTs && <button onClick={(e) => { e.stopPropagation(); const rect = e.currentTarget.getBoundingClientRect(); setDateRangeDropdown(dateRangeDropdown?.colName === h ? null : { colName: h, x: rect.left, y: rect.bottom + 2, from: hasDr?.from || "", to: hasDr?.to || "" }); }}
                         aria-label={`Date range filter for ${h}`}
                         style={{ width: 24, height: 24, background: "none", border: "none", cursor: "pointer", padding: 0, color: hasDr ? th.warning : th.textMuted, fontSize: 11, flexShrink: 0, lineHeight: 1 }} title="Date range filter">⏱</button>}
@@ -634,15 +727,10 @@ export default function VirtualGrid({
                   const hasCbf = ct.checkboxFilters?.[h]?.length > 0;
                   const isTs = ct.tsColumns?.has(h);
                   const hasDr = ct.dateRangeFilters?.[h];
-                  const hasFilter = !!(ct.columnFilters[h] || hasCbf);
                   const isDis = ct.disabledFilters?.has(h);
                   return (
                     <div key={h} style={{ width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 2px", display: "flex", alignItems: "center", height: FILTER_HEIGHT, borderRight: `1px solid ${th.border}` }}>
-                      {hasFilter && <button onClick={() => { const s = new Set(ct.disabledFilters || []); if (s.has(h)) s.delete(h); else s.add(h); up("disabledFilters", s); }}
-                        aria-label={`${isDis ? "Enable" : "Disable"} ${h} filter`}
-                        style={{ width: 24, height: 24, background: "none", border: "none", cursor: "pointer", padding: 0, color: isDis ? th.danger : th.success, fontSize: 11, flexShrink: 0, lineHeight: 1 }} title={isDis ? "Enable filter" : "Disable filter"}>{isDis ? "⊘" : "⊙"}</button>}
-                      <input aria-label={`Filter ${h}`} value={ct.columnFilters[h] || ""} onChange={(e) => up("columnFilters", { ...ct.columnFilters, [h]: e.target.value })} placeholder="Filter..."
-                        style={{ flex: 1, background: th.bgInput, border: `1px solid ${hasCbf ? th.borderAccent : th.border}`, borderRadius: 3, color: th.text, fontSize: 11, padding: "3px 4px", outline: "none", fontFamily: "inherit", minWidth: 0, opacity: isDis ? 0.4 : 1, textDecoration: isDis ? "line-through" : "none" }} />
+                      {renderFilterText(h, hasCbf, isDis)}
                       {isTs && <button onClick={(e) => { e.stopPropagation(); const rect = e.currentTarget.getBoundingClientRect(); setDateRangeDropdown(dateRangeDropdown?.colName === h ? null : { colName: h, x: rect.left, y: rect.bottom + 2, from: hasDr?.from || "", to: hasDr?.to || "" }); }}
                         aria-label={`Date range filter for ${h}`}
                         style={{ width: 24, height: 24, background: "none", border: "none", cursor: "pointer", padding: 0, color: hasDr ? th.warning : th.textMuted, fontSize: 11, flexShrink: 0, lineHeight: 1 }} title="Date range filter">⏱</button>}
