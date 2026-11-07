@@ -9,11 +9,11 @@ import { TAG_PRESETS } from "./constants/presets.js";
 // ── Extracted utilities ──────────────────────────────────────────
 import { formatBytes, formatNumber } from "./utils/format.js";
 import { formatDateTime, UNSET_TIMESTAMP_LABEL, UNSET_TIMESTAMP_TITLE } from "./utils/datetime.js";
-import { isUnsetWindowsTimestamp } from "./utils/forensic-normalize.js";
+import { isUnsetWindowsTimestamp, normalizeTimestamp } from "./utils/forensic-normalize.js";
 import { isIpcCancelled, isIpcError, ipcErrorMessage } from "./utils/ipc-result";
-import { compileColorRules, applyColors, buildTimelineColorRules } from "./utils/color-rules.js";
+import { compileColorRules, applyColors, buildTimelineColorRules, buildLevelColorRules } from "./utils/color-rules.js";
 import { buildDiffColorRules, DIFF_COLUMN_ORDER } from "./utils/diff-tabs.js";
-import { detectKapeProfile, isChainsawDataset, isChainsawProcessDataset, isChainsawLogonDataset } from "./utils/dataset-detect.js";
+import { detectKapeProfile, isChainsawDataset, isChainsawProcessDataset, isChainsawLogonDataset, HAYABUSA_LEVEL_COLORS } from "./utils/dataset-detect.js";
 import {
   checkboxFilterActive,
   isAiHistorySourceFormat,
@@ -1224,7 +1224,7 @@ export default function App() {
         },
       }));
     });
-    listen(tle.onImportComplete, ({ tabId, fileName, headers, rowCount, tsColumns, numericColumns, initialRows, totalFiltered, emptyColumns, sourceFormat, evtxMessageMode, messagesDeferred, resolveStats, bookmarkedRowIds, rowTags, tagColors, importWarning, importNotice, aiHistoryImportMeta, aiHistoryFailures, aiHistoryRestore, aiHistoryPartial, sessionRestore, isLargeFile, initialRowsDeferred, diffMeta }) => {
+    listen(tle.onImportComplete, ({ tabId, fileName, headers, rowCount, tsColumns, numericColumns, dayFirstColumns, initialRows, totalFiltered, emptyColumns, sourceFormat, evtxMessageMode, messagesDeferred, resolveStats, bookmarkedRowIds, rowTags, tagColors, importWarning, importNotice, aiHistoryImportMeta, aiHistoryFailures, aiHistoryRestore, aiHistoryPartial, sessionRestore, isLargeFile, initialRowsDeferred, diffMeta }) => {
       delete importPathsRef.current[tabId];
       if (importWarning) {
         const warnTitle = isAiHistorySourceFormat(sourceFormat) ? "AI history import"
@@ -1246,6 +1246,7 @@ export default function App() {
         if (t.id !== tabId) return t;
         const base = { ...t, name: fileName, headers, rows: initialRows, rowOffset: 0, totalRows: rowCount, totalFiltered,
           tsColumns: new Set(tsColumns || []), numericColumns: new Set(numericColumns || []),
+          dayFirstColumns: new Set(dayFirstColumns || []),
           columnWidths: saved ? { ...columnWidths, ...saved.columnWidths } : columnWidths, importing: false, dataReady: true, isLargeFile: largeTab,
           bookmarkedSet: new Set(bookmarkedRowIds || []),
           rowTags: rowTags || {},
@@ -1294,9 +1295,12 @@ export default function App() {
           if (kp) {
             const order = (kp.columnOrder || []).filter((h) => headers.includes(h));
             const rest = headers.filter((h) => !order.includes(h));
-            const autoRules = kp.autoColorColumn && headers.includes(kp.autoColorColumn)
-              ? buildTimelineColorRules(initialRows, kp.autoColorColumn, true)
-              : [];
+            // Hayabusa outputs: rows colored by rule level, in Hayabusa's colors.
+            const autoRules = kp.levelColorColumn && headers.includes(kp.levelColorColumn)
+              ? buildLevelColorRules(kp.levelColorColumn, HAYABUSA_LEVEL_COLORS)
+              : kp.autoColorColumn && headers.includes(kp.autoColorColumn)
+                ? buildTimelineColorRules(initialRows, kp.autoColorColumn, true)
+                : [];
             if (!kp.showAllColumns) {
               const kpHidden = (kp.hiddenColumns || []).filter((h) => headers.includes(h));
               kpHidden.forEach((h) => autoHidden.add(h));
@@ -2625,9 +2629,11 @@ export default function App() {
   const fmtCell = useCallback(
     (h, val) => {
       if (ct?.tsColumns?.has(h) && isUnsetWindowsTimestamp(val)) return UNSET_TIMESTAMP_LABEL;
-      return (dateTimeFormat && ct?.tsColumns?.has(h)) ? formatDateTime(val, dateTimeFormat, timezone) : (val || "");
+      return (dateTimeFormat && ct?.tsColumns?.has(h))
+        ? formatDateTime(val, dateTimeFormat, timezone, { dayFirst: !!ct?.dayFirstColumns?.has(h) })
+        : (val || "");
     },
-    [dateTimeFormat, timezone, ct?.tsColumns],
+    [dateTimeFormat, timezone, ct?.tsColumns, ct?.dayFirstColumns],
   );
   const copyCell = useCallback((val, colName) => {
     const text = colName != null && colName !== "" ? fmtCell(colName, val) : (val || "");
@@ -3186,7 +3192,7 @@ export default function App() {
       const values = res?.values || [];
       if (values.length === 0) { toast.info("No values to copy in that column for the current view."); return; }
       let copyValues = (dateTimeFormat && ct.tsColumns?.has(colName))
-        ? values.map((v) => formatDateTime(v, dateTimeFormat, timezone))
+        ? values.map((v) => formatDateTime(v, dateTimeFormat, timezone, { dayFirst: !!ct.dayFirstColumns?.has(colName) }))
         : values;
       if (distinct) {
         const seen = new Set();
@@ -4365,7 +4371,9 @@ export default function App() {
         // Timestamp converter: detect if value is a valid date
         const cpVal = cellPopup.value || "";
         const cpUnset = Boolean(ct?.tsColumns?.has(cellPopup.column) && isUnsetWindowsTimestamp(cpVal));
-        const cpDate = cpVal ? new Date(cpVal) : null;
+        // Parsed like the grid (naive = UTC, offsets honored, day-first columns read day first).
+        const cpMs = cpVal ? normalizeTimestamp(cpVal, { dayFirst: !!ct?.dayFirstColumns?.has(cellPopup.column) }) : NaN;
+        const cpDate = Number.isFinite(cpMs) ? new Date(cpMs) : null;
         const cpIsTs = !cpUnset && cpDate && !isNaN(cpDate.getTime()) && ct?.tsColumns?.has(cellPopup.column);
         // PowerShell Base64 decoder: detect -enc/-EncodedCommand
         const cpEncMatch = cpVal.match(/(?:\s|^)(?:-e|-enc|-encodedcommand|-en|-ec)\s+([A-Za-z0-9+/=]{20,})/i);

@@ -41,3 +41,20 @@ export function buildTimelineColorRules(rows, colName, isDark) {
     return { column: colName, condition: "equals", value: val, bgColor: p.bg, fgColor: p.fg };
   });
 }
+
+// Row colors by rule level, in Hayabusa's colors.
+/**
+ * Color rules for a level column: one per level value ("crit" and "critical", ...), with the
+ * level's background and text colors. They are the same in every color scheme.
+ * @param {string} column
+ * @param {{ values: string[], background: string, text: string }[]} levels
+ */
+export function buildLevelColorRules(column, levels) {
+  const rules = [];
+  for (const level of levels) {
+    for (const value of level.values) {
+      rules.push({ column, condition: "equals", value, bgColor: level.background, fgColor: level.text });
+    }
+  }
+  return rules;
+}

@@ -1146,6 +1146,7 @@ class QueryStoreMethods {
       rowCount: meta.rowCount,
       tsColumns: [...meta.tsColumns],
       numericColumns: meta.numericColumns ? [...meta.numericColumns] : [],
+      dayFirstColumns: meta.dayFirstCols ? [...meta.dayFirstCols] : [],
     };
   }
 

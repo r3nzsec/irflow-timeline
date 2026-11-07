@@ -1,0 +1,481 @@
+{
+  "description": "Column templates for every CSV output of Hayabusa (https://github.com/Yamato-Security/hayabusa): each dfir-timeline profile and the search, logon-summary, metrics and extract-base64 outputs. Matching works as for juntei-templates.json. timestampColumns are the timestamp columns, exactly; levelColorColumn colors each row by its rule level with levelColors (background and text, the same in every color scheme).",
+  "hayabusaVersion": "4.3.1",
+  "levelColors": {
+    "source": "Hayabusa's level colors (config/level_color.txt) as row backgrounds, the same in every color scheme; informational is white",
+    "levels": [
+      {
+        "level": "emergency",
+        "values": [
+          "emer",
+          "emergency"
+        ],
+        "background": "#ff0000",
+        "text": "#000000"
+      },
+      {
+        "level": "critical",
+        "values": [
+          "crit",
+          "critical"
+        ],
+        "background": "#ff0000",
+        "text": "#000000"
+      },
+      {
+        "level": "high",
+        "values": [
+          "high"
+        ],
+        "background": "#ffc100",
+        "text": "#000000"
+      },
+      {
+        "level": "medium",
+        "values": [
+          "med",
+          "medium"
+        ],
+        "background": "#ffff00",
+        "text": "#000000"
+      },
+      {
+        "level": "low",
+        "values": [
+          "low"
+        ],
+        "background": "#00ff00",
+        "text": "#000000"
+      },
+      {
+        "level": "informational",
+        "values": [
+          "info",
+          "informational"
+        ],
+        "background": "#ffffff",
+        "text": "#000000"
+      }
+    ]
+  },
+  "templates": [
+    {
+      "name": "Hayabusa minimal",
+      "producedBy": [
+        "dfir-timeline -p minimal"
+      ],
+      "columns": [
+        "Timestamp",
+        "RuleTitle",
+        "Level",
+        "Computer",
+        "Channel",
+        "EventID",
+        "RecordID",
+        "Details"
+      ],
+      "optionalColumns": [
+        "SrcASN",
+        "SrcCountry",
+        "SrcCity",
+        "TgtASN",
+        "TgtCountry",
+        "TgtCity"
+      ],
+      "timestampColumns": [
+        "Timestamp"
+      ],
+      "levelColorColumn": "Level"
+    },
+    {
+      "name": "Hayabusa standard",
+      "producedBy": [
+        "dfir-timeline -p standard (the default profile)"
+      ],
+      "columns": [
+        "Timestamp",
+        "RuleTitle",
+        "Level",
+        "Computer",
+        "Channel",
+        "EventID",
+        "RecordID",
+        "Details",
+        "ExtraFieldInfo",
+        "RuleID"
+      ],
+      "optionalColumns": [
+        "SrcASN",
+        "SrcCountry",
+        "SrcCity",
+        "TgtASN",
+        "TgtCountry",
+        "TgtCity"
+      ],
+      "timestampColumns": [
+        "Timestamp"
+      ],
+      "levelColorColumn": "Level"
+    },
+    {
+      "name": "Hayabusa verbose",
+      "producedBy": [
+        "dfir-timeline -p verbose"
+      ],
+      "columns": [
+        "Timestamp",
+        "RuleTitle",
+        "Level",
+        "Computer",
+        "Channel",
+        "EventID",
+        "MitreTactics",
+        "MitreTags",
+        "OtherTags",
+        "RecordID",
+        "Details",
+        "ExtraFieldInfo",
+        "RuleFile",
+        "RuleID",
+        "EvtxFile"
+      ],
+      "optionalColumns": [
+        "SrcASN",
+        "SrcCountry",
+        "SrcCity",
+        "TgtASN",
+        "TgtCountry",
+        "TgtCity"
+      ],
+      "timestampColumns": [
+        "Timestamp"
+      ],
+      "levelColorColumn": "Level"
+    },
+    {
+      "name": "Hayabusa all-field-info",
+      "producedBy": [
+        "dfir-timeline -p all-field-info"
+      ],
+      "columns": [
+        "Timestamp",
+        "RuleTitle",
+        "Level",
+        "Computer",
+        "Channel",
+        "EventID",
+        "RecordID",
+        "AllFieldInfo",
+        "RuleFile",
+        "RuleID",
+        "EvtxFile"
+      ],
+      "optionalColumns": [
+        "SrcASN",
+        "SrcCountry",
+        "SrcCity",
+        "TgtASN",
+        "TgtCountry",
+        "TgtCity"
+      ],
+      "timestampColumns": [
+        "Timestamp"
+      ],
+      "levelColorColumn": "Level"
+    },
+    {
+      "name": "Hayabusa all-field-info-verbose",
+      "producedBy": [
+        "dfir-timeline -p all-field-info-verbose"
+      ],
+      "columns": [
+        "Timestamp",
+        "RuleTitle",
+        "Level",
+        "Computer",
+        "Channel",
+        "EventID",
+        "MitreTactics",
+        "MitreTags",
+        "OtherTags",
+        "RecordID",
+        "AllFieldInfo",
+        "RuleFile",
+        "RuleID",
+        "EvtxFile"
+      ],
+      "optionalColumns": [
+        "SrcASN",
+        "SrcCountry",
+        "SrcCity",
+        "TgtASN",
+        "TgtCountry",
+        "TgtCity"
+      ],
+      "timestampColumns": [
+        "Timestamp"
+      ],
+      "levelColorColumn": "Level"
+    },
+    {
+      "name": "Hayabusa super-verbose",
+      "producedBy": [
+        "dfir-timeline -p super-verbose"
+      ],
+      "columns": [
+        "Timestamp",
+        "RuleTitle",
+        "Level",
+        "Computer",
+        "Channel",
+        "EventID",
+        "RuleAuthor",
+        "RuleModifiedDate",
+        "Status",
+        "RecordID",
+        "Details",
+        "ExtraFieldInfo",
+        "MitreTactics",
+        "MitreTags",
+        "OtherTags",
+        "Provider",
+        "RuleCreationDate",
+        "RuleFile",
+        "RuleID",
+        "EvtxFile"
+      ],
+      "optionalColumns": [
+        "SrcASN",
+        "SrcCountry",
+        "SrcCity",
+        "TgtASN",
+        "TgtCountry",
+        "TgtCity"
+      ],
+      "timestampColumns": [
+        "Timestamp"
+      ],
+      "levelColorColumn": "Level"
+    },
+    {
+      "name": "Hayabusa timesketch-minimal",
+      "producedBy": [
+        "dfir-timeline -p timesketch-minimal"
+      ],
+      "columns": [
+        "datetime",
+        "timestamp_desc",
+        "message",
+        "Level",
+        "Computer",
+        "Channel",
+        "EventID",
+        "MitreTactics",
+        "MitreTags",
+        "OtherTags",
+        "RecordID",
+        "Details",
+        "RuleFile",
+        "RuleID",
+        "EvtxFile"
+      ],
+      "optionalColumns": [
+        "SrcASN",
+        "SrcCountry",
+        "SrcCity",
+        "TgtASN",
+        "TgtCountry",
+        "TgtCity"
+      ],
+      "timestampColumns": [
+        "datetime"
+      ],
+      "levelColorColumn": "Level"
+    },
+    {
+      "name": "Hayabusa timesketch-verbose",
+      "producedBy": [
+        "dfir-timeline -p timesketch-verbose"
+      ],
+      "columns": [
+        "datetime",
+        "timestamp_desc",
+        "message",
+        "Level",
+        "Computer",
+        "Channel",
+        "EventID",
+        "MitreTactics",
+        "MitreTags",
+        "OtherTags",
+        "RecordID",
+        "Details",
+        "ExtraFieldInfo",
+        "RuleFile",
+        "RuleID",
+        "EvtxFile"
+      ],
+      "optionalColumns": [
+        "SrcASN",
+        "SrcCountry",
+        "SrcCity",
+        "TgtASN",
+        "TgtCountry",
+        "TgtCity"
+      ],
+      "timestampColumns": [
+        "datetime"
+      ],
+      "levelColorColumn": "Level"
+    },
+    {
+      "name": "Hayabusa search",
+      "producedBy": [
+        "search -o"
+      ],
+      "columns": [
+        "Timestamp",
+        "EventTitle",
+        "Hostname",
+        "Channel",
+        "Event ID",
+        "Record ID",
+        "AllFieldInfo",
+        "EvtxFile"
+      ],
+      "timestampColumns": [
+        "Timestamp"
+      ]
+    },
+    {
+      "name": "Hayabusa logon-summary (successful)",
+      "producedBy": [
+        "logon-summary -o <prefix>: <prefix>-successful.csv"
+      ],
+      "columns": [
+        "Successful",
+        "First Logon",
+        "Last Logon",
+        "Event",
+        "Target Account",
+        "Target Domain",
+        "Target Computer",
+        "Logon Type",
+        "Source Account",
+        "Source Domain",
+        "Source Computer",
+        "Source IP Address"
+      ],
+      "optionalColumns": [
+        "Source ASN",
+        "Source Country",
+        "Source City"
+      ],
+      "timestampColumns": [
+        "First Logon",
+        "Last Logon"
+      ]
+    },
+    {
+      "name": "Hayabusa logon-summary (failed)",
+      "producedBy": [
+        "logon-summary -o <prefix>: <prefix>-failed.csv"
+      ],
+      "columns": [
+        "Failed",
+        "First Attempt",
+        "Last Attempt",
+        "Event",
+        "Target Account",
+        "Target Domain",
+        "Target Computer",
+        "Logon Type",
+        "Source Account",
+        "Source Domain",
+        "Source Computer",
+        "Source IP Address"
+      ],
+      "optionalColumns": [
+        "Source ASN",
+        "Source Country",
+        "Source City"
+      ],
+      "timestampColumns": [
+        "First Attempt",
+        "Last Attempt"
+      ]
+    },
+    {
+      "name": "Hayabusa eid-metrics",
+      "producedBy": [
+        "eid-metrics -o"
+      ],
+      "columns": [
+        "Total",
+        "%",
+        "Channel",
+        "ID",
+        "Event"
+      ],
+      "timestampColumns": []
+    },
+    {
+      "name": "Hayabusa computer-metrics",
+      "producedBy": [
+        "computer-metrics -o"
+      ],
+      "columns": [
+        "Computer",
+        "OS information",
+        "UpTime",
+        "Timezone",
+        "Events"
+      ],
+      "timestampColumns": []
+    },
+    {
+      "name": "Hayabusa log-metrics",
+      "producedBy": [
+        "log-metrics -o"
+      ],
+      "columns": [
+        "Filename",
+        "Computers",
+        "Events",
+        "First Timestamp",
+        "Last Timestamp",
+        "Channels",
+        "Providers",
+        "Size"
+      ],
+      "timestampColumns": [
+        "First Timestamp",
+        "Last Timestamp"
+      ]
+    },
+    {
+      "name": "Hayabusa extract-base64",
+      "producedBy": [
+        "extract-base64 -o"
+      ],
+      "columns": [
+        "Timestamp",
+        "Computer",
+        "Base64 String",
+        "Decoded String",
+        "Original Field",
+        "Length",
+        "Binary",
+        "Double Encoding",
+        "Encoding",
+        "File Type",
+        "Event",
+        "Record ID",
+        "File Name"
+      ],
+      "timestampColumns": [
+        "Timestamp"
+      ]
+    }
+  ]
+}
