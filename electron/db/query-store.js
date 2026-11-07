@@ -416,6 +416,7 @@ class QueryStoreMethods {
       const termConditions = terms.map((term) => {
         const colConds = meta.safeCols.map((c) => {
           if (searchCondition === "startswith") { params.push(`${term}%`); return `${c.safe} LIKE ?`; }
+          if (searchCondition === "endswith") { params.push(`%${term}`); return `${c.safe} LIKE ?`; }
           if (searchCondition === "like") { params.push(term); return `${c.safe} LIKE ?`; }
           if (searchCondition === "equals") { params.push(term); return `${c.safe} = ?`; }
           params.push(`%${term}%`); return `${c.safe} LIKE ?`;
