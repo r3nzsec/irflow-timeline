@@ -59,8 +59,8 @@ export default function SigmaTargetStep() {
                 return (
                   <div style={{ marginBottom: 10 }}>
                     <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
-                      <button onClick={handleSelectKapeOutput} style={{ ...ms.bp, flex: "none", background: color }}>
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" style={{ marginRight: 5, verticalAlign: "middle" }}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                      <button onClick={handleSelectKapeOutput} style={{ ...ms.bp, flex: "none", background: th.fillAccent, color: th.onAccent }}>
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ marginRight: 5, verticalAlign: "middle" }}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                         {info ? "Change Files" : "Select EvtxECmd Output Files"}
                       </button>
                       <button onClick={handleSelectKapeOutputFolder} style={{ ...ms.bsm, flex: "none" }}>
@@ -170,7 +170,7 @@ export default function SigmaTargetStep() {
                     {/* Directory picker */}
                     <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
                       <button onClick={handleSelectEvtxDir} style={{ ...ms.bp, flex: "none" }}>
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" style={{ marginRight: 5, verticalAlign: "middle" }}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ marginRight: 5, verticalAlign: "middle" }}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
                         {dirInfo ? "Change Directory" : "Select EVTX Directory"}
                       </button>
                       {dirInfo && (

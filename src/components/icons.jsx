@@ -14,13 +14,13 @@ export const CheckboxIcon = ({ checked, indeterminate }) => {
   return (
     <svg width="18" height="18" viewBox="0 0 16 16" style={{ verticalAlign: "middle" }}>
       <rect x="1" y="1" width="14" height="14" rx="2"
-        fill={checked || indeterminate ? th.accent : "none"}
+        fill={checked || indeterminate ? th.fillAccent : "none"}
         stroke={checked || indeterminate ? th.accent : th.textMuted} strokeWidth="1.5" />
       {checked && !indeterminate && (
-        <polyline points="4,8 7,11 12,5" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        <polyline points="4,8 7,11 12,5" fill="none" stroke={th.onAccent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       )}
       {indeterminate && (
-        <line x1="4" y1="8" x2="12" y2="8" stroke="#fff" strokeWidth="2" strokeLinecap="round" />
+        <line x1="4" y1="8" x2="12" y2="8" stroke={th.onAccent} strokeWidth="2" strokeLinecap="round" />
       )}
     </svg>
   );

@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
 import useUIStore from "../store/useUIStore.js";
+import { THEME_OPTIONS, barTheme } from "../constants/themes.js";
+import { chooseTheme } from "../utils/theme-preference.js";
 import useTabStore from "../store/useTabStore.js";
 import { toast } from "../store/useToastStore.js";
 import { DT_FORMATS, TIMEZONES } from "../constants/datetime.js";
@@ -67,7 +69,7 @@ import {
  * All action logic that depends on App state is passed in via props.
  */
 export default function MenuBar({
-  th,
+  th: rowTh,
   ct,
   tabs,
   tle,
@@ -102,6 +104,8 @@ export default function MenuBar({
   // Search bar slot (FilterBar component rendered by parent)
   searchBar,
 }) {
+  // The top row uses rowTh; the dropdown menus and the command palette can have their own colors.
+  const th = barTheme(rowTh, "dropdown");
   const buildAiHistoryExportOptions = (extra = {}) => {
     const visSet = new Set(ct.headers.filter((h) => !ct.hiddenColumns.has(h)));
     if (ct.headers.includes("FullText")) visSet.add("FullText");
@@ -212,7 +216,6 @@ export default function MenuBar({
   const helpMenuOpen = useUIStore((s) => s.helpMenuOpen);
   const setHelpMenuOpen = useUIStore((s) => s.setHelpMenuOpen);
   const themeName = useUIStore((s) => s.themeName);
-  const setThemeName = useUIStore((s) => s.setThemeName);
   const ftsTotal = ct?.ftsTotal || 0;
   const ftsPct = ftsTotal > 0 ? Math.round(((ct?.ftsIndexed || 0) / ftsTotal) * 100) : 0;
   const fontSize = useUIStore((s) => s.fontSize);
@@ -247,7 +250,9 @@ export default function MenuBar({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [setActionsMenuOpen, setFileMenuOpen, setHelpMenuOpen, setToolsOpen, setViewMenuOpen]);
 
-  const tb = { display: "flex", alignItems: "center", gap: 5, padding: "5px 12px", background: "transparent", color: th.textDim, border: "none", borderRadius: 8, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "-apple-system,sans-serif", whiteSpace: "nowrap" };
+  // The toolbar's dropdowns can have their own colors (`bars.inputs`).
+  const inputTh = barTheme(rowTh, "inputs");
+  const tb = { display: "flex", alignItems: "center", gap: 5, padding: "5px 12px", background: "transparent", color: rowTh.textDim, border: "none", borderRadius: 8, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "-apple-system,sans-serif", whiteSpace: "nowrap" };
 
   // Icon helper used in View/Actions/Tools menus
   const ic = (d, color) => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={color || th.accent} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>{d}</svg>;
@@ -590,14 +595,14 @@ export default function MenuBar({
 
   return (
     <>
-    <div className="tle-menubar-shell" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 12px 6px 84px", background: th.toolbarBg, backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderBottom: `1px solid ${th.glassBorder}`, gap: 10, flexShrink: 0, position: "relative", zIndex: 100, WebkitAppRegion: "drag" }}>
+    <div className="tle-menubar-shell" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 12px 6px 84px", background: rowTh.toolbarBg, backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", borderBottom: `1px solid ${th.glassBorder}`, gap: 10, flexShrink: 0, position: "relative", zIndex: 100, WebkitAppRegion: "drag" }}>
       <div className="tle-menubar-left" style={{ display: "flex", alignItems: "center", gap: 8, WebkitAppRegion: "no-drag" }}>
         {/* Menu capsule */}
-        <div role="menubar" aria-label="Main menu" style={{ display: "flex", alignItems: "center", gap: 1, background: th.glassBg, border: `1px solid ${th.glassBorder}`, borderRadius: 10, padding: 2 }}>
+        <div role="menubar" aria-label="Main menu" style={{ display: "flex", alignItems: "center", gap: 1, background: rowTh.glassBg, border: `1px solid ${rowTh.glassBorder}`, borderRadius: 10, padding: 2 }}>
 
         {/* File menu */}
         <div style={{ position: "relative" }}>
-          <button className="tle-tb" role="menuitem" aria-haspopup="true" aria-expanded={fileMenuOpen} onKeyDown={menuButtonKeyDown} onClick={() => setFileMenuOpen((v) => !v)} style={{ ...tb, color: fileMenuOpen ? th.accent : th.textDim }}>File ▾</button>
+          <button className="tle-tb" role="menuitem" aria-haspopup="true" aria-expanded={fileMenuOpen} onKeyDown={menuButtonKeyDown} onClick={() => setFileMenuOpen((v) => !v)} style={{ ...tb, color: fileMenuOpen ? rowTh.accent : rowTh.textDim }}>File ▾</button>
           {fileMenuOpen && (<>
             {backdrop(() => setFileMenuOpen(false))}
             <div style={ddStyle} role="menu" ref={focusFirstMenuItem} onKeyDown={menuKeyDown}>
@@ -671,7 +676,7 @@ export default function MenuBar({
 
         {/* View menu */}
         <div style={{ position: "relative" }}>
-          <button className="tle-tb" role="menuitem" aria-haspopup="true" aria-expanded={viewMenuOpen} onKeyDown={menuButtonKeyDown} onClick={() => setViewMenuOpen((v) => !v)} style={{ ...tb, color: viewMenuOpen ? th.accent : th.textDim }}>View ▾</button>
+          <button className="tle-tb" role="menuitem" aria-haspopup="true" aria-expanded={viewMenuOpen} onKeyDown={menuButtonKeyDown} onClick={() => setViewMenuOpen((v) => !v)} style={{ ...tb, color: viewMenuOpen ? rowTh.accent : rowTh.textDim }}>View ▾</button>
           {viewMenuOpen && (<>
             {backdrop(() => setViewMenuOpen(false))}
             <div style={ddStyle} role="menu" ref={focusFirstMenuItem} onKeyDown={menuKeyDown}>
@@ -682,7 +687,7 @@ export default function MenuBar({
 
         {/* Actions menu */}
         <div style={{ position: "relative" }}>
-          <button className="tle-tb" role="menuitem" aria-haspopup="true" aria-expanded={actionsMenuOpen} onKeyDown={menuButtonKeyDown} onClick={() => setActionsMenuOpen((v) => !v)} style={{ ...tb, color: actionsMenuOpen ? th.accent : ct?.showBookmarkedOnly ? th.warning : th.textDim }}>Actions ▾</button>
+          <button className="tle-tb" role="menuitem" aria-haspopup="true" aria-expanded={actionsMenuOpen} onKeyDown={menuButtonKeyDown} onClick={() => setActionsMenuOpen((v) => !v)} style={{ ...tb, color: actionsMenuOpen ? rowTh.accent : ct?.showBookmarkedOnly ? rowTh.warning : rowTh.textDim }}>Actions ▾</button>
           {actionsMenuOpen && (<>
             {backdrop(() => setActionsMenuOpen(false))}
             <div style={ddStyle} role="menu" ref={focusFirstMenuItem} onKeyDown={menuKeyDown}>
@@ -693,7 +698,7 @@ export default function MenuBar({
 
         {/* Tools menu */}
         <div style={{ position: "relative" }}>
-          <button className="tle-tb" role="menuitem" aria-haspopup="true" aria-expanded={toolsOpen} onKeyDown={menuButtonKeyDown} onClick={() => setToolsOpen((v) => !v)} style={{ ...tb, color: toolsOpen ? th.accent : th.textDim }}>Tools ▾</button>
+          <button className="tle-tb" role="menuitem" aria-haspopup="true" aria-expanded={toolsOpen} onKeyDown={menuButtonKeyDown} onClick={() => setToolsOpen((v) => !v)} style={{ ...tb, color: toolsOpen ? rowTh.accent : rowTh.textDim }}>Tools ▾</button>
           {toolsOpen && (<>
             {backdrop(() => setToolsOpen(false))}
             <div style={{ ...ddStyle, minWidth: 280, width: "max-content", maxWidth: "min(420px, 92vw)" }} role="menu" ref={focusFirstMenuItem} onKeyDown={menuKeyDown}>
@@ -704,7 +709,7 @@ export default function MenuBar({
 
         {/* Help menu */}
         <div style={{ position: "relative" }}>
-          <button className="tle-tb" role="menuitem" aria-haspopup="true" aria-expanded={helpMenuOpen} onKeyDown={menuButtonKeyDown} onClick={() => setHelpMenuOpen((v) => !v)} style={{ ...tb, color: helpMenuOpen ? th.accent : th.textDim }}>Help ▾</button>
+          <button className="tle-tb" role="menuitem" aria-haspopup="true" aria-expanded={helpMenuOpen} onKeyDown={menuButtonKeyDown} onClick={() => setHelpMenuOpen((v) => !v)} style={{ ...tb, color: helpMenuOpen ? rowTh.accent : rowTh.textDim }}>Help ▾</button>
           {helpMenuOpen && (<>
             {backdrop(() => setHelpMenuOpen(false))}
             <div style={ddStyle} role="menu" ref={focusFirstMenuItem} onKeyDown={menuKeyDown}>
@@ -744,36 +749,38 @@ export default function MenuBar({
 
         {/* Settings capsule */}
         <div id="timeline-toolbar-settings" className="tle-toolbar-settings" data-open={settingsOpen ? "true" : "false"}
-          style={{ display: "flex", alignItems: "center", gap: 4, background: th.glassBg, border: `1px solid ${th.glassBorder}`, borderRadius: 10, padding: "2px 6px" }}>
-        <span aria-hidden="true" style={{ color: th.textMuted, fontSize: 10 }}>⏱</span>
-        <select aria-label="Timestamp display format" value={dateTimeFormat} onChange={(e) => setDateTimeFormat(e.target.value)} style={{ background: th.btnBg, border: `1px solid ${th.btnBorder}`, color: th.textDim, fontSize: 10, padding: "3px 5px", borderRadius: 4, cursor: "pointer", outline: "none" }}>
+          style={{ display: "flex", alignItems: "center", gap: 4, background: rowTh.glassBg, border: `1px solid ${rowTh.glassBorder}`, borderRadius: 10, padding: "2px 6px" }}>
+        <span aria-hidden="true" style={{ color: rowTh.textMuted, fontSize: 10 }}>⏱</span>
+        <select aria-label="Timestamp display format" value={dateTimeFormat} onChange={(e) => setDateTimeFormat(e.target.value)} style={{ background: inputTh.btnBg, border: `1px solid ${inputTh.btnBorder}`, color: inputTh.textDim, fontSize: 10, padding: "3px 5px", borderRadius: 4, cursor: "pointer", outline: "none" }}>
           {DT_FORMATS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
         </select>
-        <select aria-label="Timestamp timezone" value={timezone} onChange={(e) => setTimezone(e.target.value)} style={{ background: th.btnBg, border: `1px solid ${th.btnBorder}`, color: th.textDim, fontSize: 10, padding: "3px 5px", borderRadius: 4, cursor: "pointer", outline: "none" }}>
+        <select aria-label="Timestamp timezone" value={timezone} onChange={(e) => setTimezone(e.target.value)} style={{ background: inputTh.btnBg, border: `1px solid ${inputTh.btnBorder}`, color: inputTh.textDim, fontSize: 10, padding: "3px 5px", borderRadius: 4, cursor: "pointer", outline: "none" }}>
           {TIMEZONES.map((tz) => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
         </select>
-        <span style={{ width: 1, height: 14, background: th.glassBorder, display: "inline-block" }} />
-        <button className="tle-tb" aria-label={`Switch to ${themeName === "dark" ? "light" : "dark"} theme`} onClick={() => setThemeName((p) => p === "dark" ? "light" : "dark")} style={{ ...tb, padding: "4px 8px" }} title="Toggle theme">{themeName === "dark" ? "☀" : "🌙"}</button>
-        <span style={{ width: 1, height: 14, background: th.glassBorder, display: "inline-block" }} />
-        <span aria-hidden="true" style={{ color: th.textMuted, fontSize: 10 }}>A</span>
+        <span style={{ width: 1, height: 14, background: rowTh.glassBorder, display: "inline-block" }} />
+        <select aria-label="Color scheme" title="Color scheme" value={themeName} onChange={(e) => chooseTheme(e.target.value)} style={{ background: inputTh.btnBg, border: `1px solid ${inputTh.btnBorder}`, color: inputTh.textDim, fontSize: 10, padding: "3px 5px", borderRadius: 4, cursor: "pointer", outline: "none" }}>
+          {THEME_OPTIONS.map((t) => <option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}
+        </select>
+        <span style={{ width: 1, height: 14, background: rowTh.glassBorder, display: "inline-block" }} />
+        <span aria-hidden="true" style={{ color: rowTh.textMuted, fontSize: 10 }}>A</span>
         <button className="tle-tb" aria-label="Decrease grid font size" onClick={() => setFontSize((s) => Math.max(9, s - 1))} style={{ ...tb, fontSize: 11, padding: "3px 5px" }} title="Decrease font size">−</button>
-        <output aria-label="Grid font size" style={{ color: th.textDim, fontSize: 10, minWidth: 18, textAlign: "center" }}>{fontSize}</output>
+        <output aria-label="Grid font size" style={{ color: rowTh.textDim, fontSize: 10, minWidth: 18, textAlign: "center" }}>{fontSize}</output>
         <button className="tle-tb" aria-label="Increase grid font size" onClick={() => setFontSize((s) => Math.min(18, s + 1))} style={{ ...tb, fontSize: 11, padding: "3px 5px" }} title="Increase font size">+</button>
-        <span style={{ width: 1, height: 14, background: th.glassBorder, display: "inline-block" }} />
-        <button className="tle-tb" aria-label="Toggle timeline histogram" aria-pressed={histogramVisible} onClick={() => setHistogramVisible((v) => !v)} style={{ ...tb, color: histogramVisible ? th.accent : th.textDim, padding: "4px 8px" }} title="Toggle timeline histogram">
+        <span style={{ width: 1, height: 14, background: rowTh.glassBorder, display: "inline-block" }} />
+        <button className="tle-tb" aria-label="Toggle timeline histogram" aria-pressed={histogramVisible} onClick={() => setHistogramVisible((v) => !v)} style={{ ...tb, color: histogramVisible ? rowTh.accent : rowTh.textDim, padding: "4px 8px" }} title="Toggle timeline histogram">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="12" width="4" height="9" rx="1" /><rect x="10" y="6" width="4" height="15" rx="1" /><rect x="17" y="3" width="4" height="18" rx="1" /></svg>
         </button>
         </div>{/* end settings capsule */}
 
         {/* Proximity filter pill */}
         {proximityFilter && ct?.dateRangeFilters?.[proximityFilter.tsCol] && (
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", background: `${th.warning}22`, border: `1px solid ${th.warning}4D`, borderRadius: 10, color: th.warning, fontSize: 10, fontFamily: "-apple-system,sans-serif", whiteSpace: "nowrap" }}
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", background: `${rowTh.warning}22`, border: `1px solid ${rowTh.warning}4D`, borderRadius: 10, color: rowTh.warning, fontSize: 10, fontFamily: "-apple-system,sans-serif", whiteSpace: "nowrap" }}
             title={`Proximity: ±${proximityFilter.label} around ${proximityFilter.pivotRaw}`}>
             ⏱ ±{proximityFilter.label}
-            <span style={{ color: th.textMuted, maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis" }}>{" near "}{(proximityFilter.pivotRaw || "").slice(11, 19)}</span>
+            <span style={{ color: rowTh.textMuted, maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis" }}>{" near "}{(proximityFilter.pivotRaw || "").slice(11, 19)}</span>
             <button onClick={() => { const next = { ...(ct?.dateRangeFilters || {}) }; delete next[proximityFilter.tsCol]; up("dateRangeFilters", next); setProximityFilter(null); }}
               aria-label="Clear proximity filter"
-              style={{ background: "none", border: "none", color: th.warning, cursor: "pointer", fontSize: 10, padding: "0 0 0 2px", lineHeight: 1 }} title="Clear proximity filter">✕</button>
+              style={{ background: "none", border: "none", color: rowTh.warning, cursor: "pointer", fontSize: 10, padding: "0 0 0 2px", lineHeight: 1 }} title="Clear proximity filter">✕</button>
           </span>
         )}
       </div>
@@ -786,9 +793,9 @@ export default function MenuBar({
       {/* Background indexing indicator */}
       {ct && ct.dataReady && (!ct.indexesReady || (!ct.ftsReady && ct.ftsTotal > 0)) && (
         <div className="tle-indexing-indicator" style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 6px", flexShrink: 0 }}>
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={th.warning} strokeWidth="2.5" style={{ animation: "tle-spin 1s linear infinite", flexShrink: 0 }}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={rowTh.warning} strokeWidth="2.5" style={{ animation: "tle-spin 1s linear infinite", flexShrink: 0 }}>
             <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" /></svg>
-          <span style={{ color: th.warning, fontSize: 9, fontFamily: "-apple-system,sans-serif", whiteSpace: "nowrap" }}>
+          <span style={{ color: rowTh.warning, fontSize: 9, fontFamily: "-apple-system,sans-serif", whiteSpace: "nowrap" }}>
             {!ct.indexesReady && (!ct.ftsReady && ct.ftsTotal > 0)
               ? `Indexing cols ${ct.indexesBuilt || 0}/${ct.indexesTotal || "..."} + search ${ftsPct}%`
               : !ct.indexesReady

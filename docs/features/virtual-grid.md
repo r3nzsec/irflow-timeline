@@ -133,7 +133,7 @@ When one or more rows are checked, a compact **selection bar** appears above the
 To the right of the menu capsule, the **settings toolbar** mirrors common [Preferences](/reference/preferences):
 
 - **Datetime format** and **timezone** dropdowns (same options as macOS **Tools** menu)
-- **Theme toggle** — **☀ / 🌙** button (dark/light); also available as **Tools → Theme** on the macOS menu bar
+- **Color scheme** — the toolbar's color-scheme dropdown (Dark Mode, Light Mode and six seasonal schemes); also available as **Tools → Color Scheme** on the macOS menu bar
 - **Font size** — **− / +** with live px readout; **Cmd+Plus** / **Cmd+-** via macOS **Tools → Font Size**
 - **Histogram** — bar-chart icon toggles the timeline panel (also **Tools → Toggle Histogram** on the macOS menu bar)
 

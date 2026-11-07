@@ -1223,7 +1223,7 @@ export default function LateralMovementModal() {
                       </div>
                     </div>
                     <button onClick={() => setModal((p) => ({ ...p, lmMultiSource: !p.lmMultiSource, lmSelectedTabIds: p.lmSelectedTabIds || [] }))}
-                      style={{ width: 36, height: 20, borderRadius: 10, border: "none", background: modal.lmMultiSource ? th.accent : th.btnBg, cursor: "pointer", position: "relative", transition: "background var(--m-base)", flexShrink: 0 }}>
+                      style={{ width: 36, height: 20, borderRadius: 10, border: "none", background: modal.lmMultiSource ? th.fillAccent : th.btnBg, cursor: "pointer", position: "relative", transition: "background var(--m-base)", flexShrink: 0 }}>
                       <div style={{ width: 16, height: 16, borderRadius: 8, background: "#fff", position: "absolute", top: 2, left: modal.lmMultiSource ? 18 : 2, transition: "left var(--m-base)", boxShadow: "0 1px 3px rgba(0,0,0,0.3)" }} />
                     </button>
                   </div>
@@ -1504,7 +1504,7 @@ export default function LateralMovementModal() {
                         </div>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 8 }}>
                           <button onClick={() => setModal((p) => ({ ...p, lmAddingRule: false, lmNewRule: {} }))} style={ms.bsm}>Cancel</button>
-                          <button onClick={addLmCustomRule} style={{ ...ms.bsm, background: th.primaryBtn, color: "#fff", border: "none" }}>Add Rule</button>
+                          <button onClick={addLmCustomRule} style={{ ...ms.bsm, background: th.primaryBtn, color: th.onPrimary, border: "none" }}>Add Rule</button>
                         </div>
                       </div>
                     )}
@@ -1746,7 +1746,7 @@ export default function LateralMovementModal() {
                   ...((data.findings || []).length > 0 ? [{ id: "findings", label: `Findings (${data.findings.length})${(data.incidents || []).length > 0 ? ` / ${data.incidents.length} incidents` : ""}`, icon: "M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" }] : []),
                 ].map((tab) => (
                   <button key={tab.id} onClick={() => setModal((p) => ({ ...p, viewTab: tab.id, selectedNode: null, selectedEdge: null }))}
-                    style={{ padding: "5px 12px", background: viewTab === tab.id ? `linear-gradient(180deg, ${th.accent}ee, ${th.accent})` : "transparent", color: viewTab === tab.id ? "#fff" : th.textDim, border: "none", borderRadius: 6, fontSize: LM_TYPOGRAPHY.body, cursor: "pointer", fontFamily: "-apple-system, sans-serif", fontWeight: viewTab === tab.id ? 600 : 400, transition: "all var(--m-base)", display: "flex", alignItems: "center", gap: 5, boxShadow: viewTab === tab.id ? `0 1px 4px ${th.accent}44` : "none" }}
+                    style={{ padding: "5px 12px", background: viewTab === tab.id ? `linear-gradient(180deg, ${th.fillAccent}ee, ${th.fillAccent})` : "transparent", color: viewTab === tab.id ? th.onAccent : th.textDim, border: "none", borderRadius: 6, fontSize: LM_TYPOGRAPHY.body, cursor: "pointer", fontFamily: "-apple-system, sans-serif", fontWeight: viewTab === tab.id ? 600 : 400, transition: "all var(--m-base)", display: "flex", alignItems: "center", gap: 5, boxShadow: viewTab === tab.id ? `0 1px 4px ${th.accent}44` : "none" }}
                     onMouseEnter={(ev) => { if (viewTab !== tab.id) ev.currentTarget.style.background = th.textMuted + "11"; }}
                     onMouseLeave={(ev) => { if (viewTab !== tab.id) ev.currentTarget.style.background = "transparent"; }}>
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={tab.icon}/></svg>
@@ -1839,7 +1839,7 @@ export default function LateralMovementModal() {
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                           <div style={{ display: "inline-flex", background: th.panelBg, borderRadius: 6, padding: 2, border: `1px solid ${th.border}44`, gap: 1 }}>
                             {[{ id: "table", label: "Table" }, { id: "timeline", label: "Timeline" }].map((m) => (
-                              <button key={m.id} onClick={() => setModal((p) => ({ ...p, esViewMode: m.id }))} style={{ padding: "2px 10px", background: esViewMode === m.id ? th.accent : "transparent", color: esViewMode === m.id ? "#fff" : th.textDim, border: "none", borderRadius: 4, fontSize: LM_TYPOGRAPHY.meta, cursor: "pointer", fontFamily: "-apple-system, sans-serif", fontWeight: esViewMode === m.id ? 600 : 400, transition: "all var(--m-base)" }}>{m.label}</button>
+                              <button key={m.id} onClick={() => setModal((p) => ({ ...p, esViewMode: m.id }))} style={{ padding: "2px 10px", background: esViewMode === m.id ? th.fillAccent : "transparent", color: esViewMode === m.id ? th.onAccent : th.textDim, border: "none", borderRadius: 4, fontSize: LM_TYPOGRAPHY.meta, cursor: "pointer", fontFamily: "-apple-system, sans-serif", fontWeight: esViewMode === m.id ? 600 : 400, transition: "all var(--m-base)" }}>{m.label}</button>
                             ))}
                           </div>
                           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -2166,7 +2166,7 @@ export default function LateralMovementModal() {
                 // _filterEvents and _viewInGraph hoisted to component scope above
 
                 const _btnS = { padding: "2px 8px", background: `${th.accent}15`, color: th.accent, border: `1px solid ${th.accent}33`, borderRadius: 4, fontSize: LM_TYPOGRAPHY.meta, cursor: "pointer", fontFamily: "-apple-system, sans-serif", fontWeight: 500 };
-                const _btnActive = (active) => active ? { ..._btnS, background: th.accent, color: "#fff" } : _btnS;
+                const _btnActive = (active) => active ? { ..._btnS, background: th.fillAccent, color: th.onAccent } : _btnS;
 
                 const _renderCard = (f) => {
                   const isExpanded = expandedId === f.id;
@@ -2636,7 +2636,7 @@ export default function LateralMovementModal() {
                           const active = graphMode === mode.id;
                           return (
                             <button key={mode.id} onClick={() => setGraphMode(mode.id)}
-                              style={{ padding: "3px 9px", border: "none", borderRadius: 4, background: active ? th.accent : "transparent", color: active ? "#fff" : th.textDim, fontSize: LM_TYPOGRAPHY.control, fontWeight: active ? 600 : 500, cursor: "pointer", fontFamily: "-apple-system, sans-serif" }}>
+                              style={{ padding: "3px 9px", border: "none", borderRadius: 4, background: active ? th.fillAccent : "transparent", color: active ? th.onAccent : th.textDim, fontSize: LM_TYPOGRAPHY.control, fontWeight: active ? 600 : 500, cursor: "pointer", fontFamily: "-apple-system, sans-serif" }}>
                               {mode.label}
                             </button>
                           );
@@ -3780,7 +3780,7 @@ export default function LateralMovementModal() {
                         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: `${th.accent}11`, borderRadius: 6, fontSize: LM_TYPOGRAPHY.control, color: th.accent, fontFamily: "-apple-system, sans-serif" }}>
                           <span style={{ fontWeight: 600 }}>Filter active ({rdpActiveFilterCount} column{rdpActiveFilterCount > 1 ? "s" : ""})</span>
                           <span style={{ fontSize: LM_TYPOGRAPHY.control, color: th.textMuted }}>{"\u2014"} {filteredSessions.length} of {sessions.length} sessions</span>
-                          <button onClick={() => setModal((p) => ({ ...p, rdpColFilters: {} }))} style={{ padding: "1px 8px", fontSize: LM_TYPOGRAPHY.meta, background: th.accent, color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>Clear All</button>
+                          <button onClick={() => setModal((p) => ({ ...p, rdpColFilters: {} }))} style={{ padding: "1px 8px", fontSize: LM_TYPOGRAPHY.meta, background: th.fillAccent, color: th.onAccent, border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>Clear All</button>
                         </div>
                       )}
                       <div style={{ display: "flex", gap: 6, marginLeft: "auto", alignItems: "center" }}>
@@ -3788,7 +3788,7 @@ export default function LateralMovementModal() {
                         {gSessions.length > 0 && (
                           <div style={{ display: "inline-flex", background: th.panelBg, borderRadius: 6, padding: 2, border: `1px solid ${th.border}44`, gap: 1 }}>
                             {[{ id: "grouped", label: "Grouped" }, { id: "individual", label: "Individual" }, { id: "timeline", label: "Timeline" }].map((m) => (
-                              <button key={m.id} onClick={() => setModal((p) => ({ ...p, rdpViewMode: m.id }))} style={{ padding: "2px 10px", background: rdpViewMode === m.id ? `${th.accent}` : "transparent", color: rdpViewMode === m.id ? "#fff" : th.textDim, border: "none", borderRadius: 4, fontSize: LM_TYPOGRAPHY.meta, cursor: "pointer", fontFamily: "-apple-system, sans-serif", fontWeight: rdpViewMode === m.id ? 600 : 400, transition: "all var(--m-base)" }}>{m.label}</button>
+                              <button key={m.id} onClick={() => setModal((p) => ({ ...p, rdpViewMode: m.id }))} style={{ padding: "2px 10px", background: rdpViewMode === m.id ? `${th.fillAccent}` : "transparent", color: rdpViewMode === m.id ? th.onAccent : th.textDim, border: "none", borderRadius: 4, fontSize: LM_TYPOGRAPHY.meta, cursor: "pointer", fontFamily: "-apple-system, sans-serif", fontWeight: rdpViewMode === m.id ? 600 : 400, transition: "all var(--m-base)" }}>{m.label}</button>
                             ))}
                           </div>
                         )}
@@ -4248,7 +4248,7 @@ export default function LateralMovementModal() {
                             <button onClick={() => setModal((p) => ({ ...p, rdpFilterOpen: null }))}
                               style={{ padding: "4px 12px", fontSize: LM_TYPOGRAPHY.control, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Cancel</button>
                             <button onClick={() => setModal((p) => ({ ...p, rdpColFilters: { ...(p.rdpColFilters || {}), [rdpFilterOpen]: [...(p.rdpFilterSel || [])] }, rdpFilterOpen: null }))}
-                              style={{ padding: "4px 12px", fontSize: LM_TYPOGRAPHY.control, background: th.accent, border: "none", borderRadius: 4, color: "#fff", cursor: "pointer", fontWeight: 600 }}>Apply</button>
+                              style={{ padding: "4px 12px", fontSize: LM_TYPOGRAPHY.control, background: th.fillAccent, border: "none", borderRadius: 4, color: th.onAccent, cursor: "pointer", fontWeight: 600 }}>Apply</button>
                           </div>
                           <div onMouseDown={(e) => {
                             e.preventDefault(); e.stopPropagation();
@@ -4671,7 +4671,7 @@ export default function LateralMovementModal() {
                         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: `${th.accent}11`, borderRadius: 6, fontSize: LM_TYPOGRAPHY.control, color: th.accent, fontFamily: "-apple-system, sans-serif" }}>
                           <span style={{ fontWeight: 600 }}>Filter active ({activeFilterCount} column{activeFilterCount > 1 ? "s" : ""})</span>
                           <span style={{ fontSize: LM_TYPOGRAPHY.control, color: th.textMuted }}>{"\u2014"} {filteredEdges.length} of {data.edges.length} connections</span>
-                          <button onClick={() => setModal((p) => ({ ...p, lmColFilters: {} }))} style={{ padding: "1px 8px", fontSize: LM_TYPOGRAPHY.meta, background: th.accent, color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>Clear All</button>
+                          <button onClick={() => setModal((p) => ({ ...p, lmColFilters: {} }))} style={{ padding: "1px 8px", fontSize: LM_TYPOGRAPHY.meta, background: th.fillAccent, color: th.onAccent, border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>Clear All</button>
                         </div>
                       )}
                       <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
@@ -4881,7 +4881,7 @@ export default function LateralMovementModal() {
                             <button onClick={() => setModal((p) => ({ ...p, lmFilterOpen: null }))}
                               style={{ padding: "4px 12px", fontSize: LM_TYPOGRAPHY.control, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Cancel</button>
                             <button onClick={() => setModal((p) => ({ ...p, lmColFilters: { ...(p.lmColFilters || {}), [filterOpen]: [...(p.lmFilterSel || [])] }, lmFilterOpen: null }))}
-                              style={{ padding: "4px 12px", fontSize: LM_TYPOGRAPHY.control, background: th.accent, border: "none", borderRadius: 4, color: "#fff", cursor: "pointer", fontWeight: 600 }}>Apply</button>
+                              style={{ padding: "4px 12px", fontSize: LM_TYPOGRAPHY.control, background: th.fillAccent, border: "none", borderRadius: 4, color: th.onAccent, cursor: "pointer", fontWeight: 600 }}>Apply</button>
                           </div>
                           <div onMouseDown={(e) => {
                             e.preventDefault(); e.stopPropagation();

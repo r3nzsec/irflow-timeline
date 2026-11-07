@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { CheckboxIcon } from "./icons.jsx";
+import { barTheme, createHistogramColorScale } from "../constants/themes.js";
 import { formatNumber } from "../utils/format.js";
 import useUIStore from "../store/useUIStore.js";
 import { toast } from "../store/useToastStore.js";
@@ -86,7 +87,11 @@ export default function VirtualGrid({
   // Sticky cells need an opaque base in both axes. Translucent backgrounds let
   // horizontally scrolled columns and vertically scrolled rows remain legible
   // underneath, which looks like duplicated/overlapping header content.
-  const stickyHeaderBg = th.headerBg;
+  // The column header row belongs to the bars above the timeline and takes their colors.
+  const headerTh = useMemo(() => barTheme(th, "top", "header"), [th]);
+  // The text boxes under the column headers can have their own colors.
+  const filterTh = useMemo(() => barTheme(th, "filters"), [th]);
+  const stickyHeaderBg = headerTh.headerBg;
   const stickyFilterBg = th.bg;
   // Structural (non-data) sticky columns rendered in each data row, for an accurate
   // aria-colcount: bookmark + checkbox + tags, plus VT and Evidence when present.
@@ -279,10 +284,7 @@ export default function VirtualGrid({
                   const textColor = th.textMuted;
                   // Cache bar geometry for DOM-based brush updates (no re-renders during drag)
                   histBarGeomRef.current = { barW, yAxisW: Y_AXIS_W, chartPadT: CHART_PAD_T, chartH, len: histogramData.length };
-                  const heatColor = (ratio) => {
-                    const t = Math.max(0, Math.min(1, ratio));
-                    return `rgb(${Math.round(30 + t * 202)},${Math.round(40 + t * 53)},${Math.round(56 - t * 14)})`;
-                  };
+                  const heatColor = createHistogramColorScale(th);
                   // Active date filter check
                   const activeFilter = ct.dateRangeFilters?.[effectiveHistCol];
                   const filterFrom = activeFilter?.from?.slice(0, isHourly ? 13 : 10);
@@ -434,9 +436,9 @@ export default function VirtualGrid({
             )}
             <div style={{ minWidth: tw }}>
               {/* Header */}
-              <div role="row" aria-rowindex={1} style={{ display: "flex", position: "sticky", top: 0, zIndex: 10, background: stickyHeaderBg, borderBottom: `2px solid ${th.borderAccent}` }}>
+              <div role="row" aria-rowindex={1} style={{ display: "flex", position: "sticky", top: 0, zIndex: 10, background: stickyHeaderBg, borderBottom: `2px solid ${headerTh.borderAccent}` }}>
                 {/* # column - always sticky */}
-                <div role="columnheader" aria-colindex={1} aria-colspan={2} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2, width: isGrouped ? (16 + 26 + CHECKBOX_COL_WIDTH) : (BKMK_COL_WIDTH + CHECKBOX_COL_WIDTH), minWidth: isGrouped ? (16 + 26 + CHECKBOX_COL_WIDTH) : (BKMK_COL_WIDTH + CHECKBOX_COL_WIDTH), height: HEADER_HEIGHT, color: th.textMuted, fontSize: 11, fontWeight: 600, position: "sticky", left: 0, zIndex: 13, background: stickyHeaderBg }}>
+                <div role="columnheader" aria-colindex={1} aria-colspan={2} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2, width: isGrouped ? (16 + 26 + CHECKBOX_COL_WIDTH) : (BKMK_COL_WIDTH + CHECKBOX_COL_WIDTH), minWidth: isGrouped ? (16 + 26 + CHECKBOX_COL_WIDTH) : (BKMK_COL_WIDTH + CHECKBOX_COL_WIDTH), height: HEADER_HEIGHT, color: headerTh.textMuted, fontSize: 11, fontWeight: 600, position: "sticky", left: 0, zIndex: 13, background: stickyHeaderBg }}>
                   <span>#</span>
                   {!isGrouped && <button type="button" onClick={handleSelectAllRows}
                     aria-label={selectionCount > 0 && allRowsSelected && selectedRows.size === 0 ? "Deselect all filtered rows" : "Select all filtered rows"}
@@ -456,9 +458,9 @@ export default function VirtualGrid({
                   onClick={(e) => { if (e.metaKey || e.ctrlKey) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, colName: "__tags__" }); return; } handleSort("__tags__"); }}
                   onDoubleClick={() => { clearTimeout(sortTimerRef.current); }}
                   onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                  style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: tagColWidth, minWidth: tagColWidth, boxSizing: "border-box", padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: `1px solid ${th.border}`, position: "sticky", left: isGrouped ? (16 + 26 + CHECKBOX_COL_WIDTH) : (BKMK_COL_WIDTH + CHECKBOX_COL_WIDTH), zIndex: 12, background: stickyHeaderBg, overflow: "hidden" }}>
+                  style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: tagColWidth, minWidth: tagColWidth, boxSizing: "border-box", padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: headerTh.headerText, fontSize: 11, borderRight: `1px solid ${th.border}`, position: "sticky", left: isGrouped ? (16 + 26 + CHECKBOX_COL_WIDTH) : (BKMK_COL_WIDTH + CHECKBOX_COL_WIDTH), zIndex: 12, background: stickyHeaderBg, overflow: "hidden" }}>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>Tags</span>
-                  {ct.sortCol === "__tags__" && <span style={{ fontSize: 11, color: th.accent, marginLeft: 3 }}>{ct.sortDir === "asc" ? "▲" : "▼"}</span>}
+                  {ct.sortCol === "__tags__" && <span style={{ fontSize: 11, color: headerTh.accent, marginLeft: 3 }}>{ct.sortDir === "asc" ? "▲" : "▼"}</span>}
                   <div onMouseDown={(e) => {
                     e.preventDefault(); e.stopPropagation();
                     const startX = e.clientX, startW = tagColWidth;
@@ -479,11 +481,11 @@ export default function VirtualGrid({
                     tabIndex={0}
                     onKeyDown={(e) => activateOnKey(e, () => handleSort("__vt__"))}
                     onClick={() => handleSort("__vt__")}
-                    style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2, height: HEADER_HEIGHT, width: vtW, minWidth: 40, boxSizing: "border-box", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: `1px solid ${th.border}`, position: "sticky", left: (isGrouped ? (16 + 26 + CHECKBOX_COL_WIDTH) : (BKMK_COL_WIDTH + CHECKBOX_COL_WIDTH)) + tagColWidth, zIndex: 12, background: stickyHeaderBg, cursor: "pointer", userSelect: "none", overflow: "hidden" }}>
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2, height: HEADER_HEIGHT, width: vtW, minWidth: 40, boxSizing: "border-box", fontWeight: 600, color: headerTh.headerText, fontSize: 11, borderRight: `1px solid ${headerTh.border}`, position: "sticky", left: (isGrouped ? (16 + 26 + CHECKBOX_COL_WIDTH) : (BKMK_COL_WIDTH + CHECKBOX_COL_WIDTH)) + tagColWidth, zIndex: 12, background: stickyHeaderBg, cursor: "pointer", userSelect: "none", overflow: "hidden" }}>
                     VirusTotal
-                    {ct.sortCol === "__vt__" && <span style={{ fontSize: 11, color: th.accent }}>{ct.sortDir === "asc" ? "▲" : "▼"}</span>}
+                    {ct.sortCol === "__vt__" && <span style={{ fontSize: 11, color: headerTh.accent }}>{ct.sortDir === "asc" ? "▲" : "▼"}</span>}
                     <div onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); setResizingCol("__vt__"); setResizeX(e.clientX); setResizeW(vtW); }}
-                      style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 5, cursor: "col-resize", background: resizingCol === "__vt__" ? th.borderAccent : "transparent" }} />
+                      style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 5, cursor: "col-resize", background: resizingCol === "__vt__" ? headerTh.borderAccent : "transparent" }} />
                   </div>;
                 })()}
                 {/* Evidence pills column header — only when persistence/lateral analysis populated pills */}
@@ -495,17 +497,17 @@ export default function VirtualGrid({
                   
                   return <div title={`Evidence pills (${Object.keys(pillsMap).length} rows tagged) — derived from analysis modal output`}
                     role="columnheader" aria-colindex={headerColIdxEvidence}
-                    style={{ display: "flex", alignItems: "center", gap: 4, height: HEADER_HEIGHT, width: evW, minWidth: EVIDENCE_COL_MIN_WIDTH, boxSizing: "border-box", padding: "0 8px", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: `1px solid ${th.border}`, position: "sticky", left: leftBase, zIndex: 12, background: stickyHeaderBg, userSelect: "none", overflow: "hidden" }}>
+                    style={{ display: "flex", alignItems: "center", gap: 4, height: HEADER_HEIGHT, width: evW, minWidth: EVIDENCE_COL_MIN_WIDTH, boxSizing: "border-box", padding: "0 8px", fontWeight: 600, color: headerTh.headerText, fontSize: 11, borderRight: `1px solid ${headerTh.border}`, position: "sticky", left: leftBase, zIndex: 12, background: stickyHeaderBg, userSelect: "none", overflow: "hidden" }}>
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
                       Evidence
-                      {ct.evidencePillFilter && <span style={{ marginLeft: 4, fontSize: 11, padding: "1px 4px", borderRadius: 3, background: th.accent + "22", color: th.accent, fontWeight: 500 }}>{ct.evidencePillFilter}</span>}
+                      {ct.evidencePillFilter && <span style={{ marginLeft: 4, fontSize: 11, padding: "1px 4px", borderRadius: 3, background: headerTh.accent + "22", color: headerTh.accent, fontWeight: 500 }}>{ct.evidencePillFilter}</span>}
                     </span>
                     {ct.evidencePillFilter && <button onClick={(e) => { e.stopPropagation(); up("evidencePillFilter", null); }}
-                      style={{ width: 24, height: 24, background: "none", border: "none", color: th.accent, cursor: "pointer", fontSize: 11, padding: 0, flexShrink: 0, lineHeight: 1 }} aria-label="Clear pill focus" title="Clear pill focus">✕</button>}
+                      style={{ width: 24, height: 24, background: "none", border: "none", color: headerTh.accent, cursor: "pointer", fontSize: 11, padding: 0, flexShrink: 0, lineHeight: 1 }} aria-label="Clear pill focus" title="Clear pill focus">✕</button>}
                     <button onClick={(e) => { e.stopPropagation(); up("evidencePillsByRowid", {}); up("evidencePillFilter", null); }}
-                      style={{ background: "none", border: "none", color: th.textMuted, cursor: "pointer", fontSize: 11, padding: "0 2px", flexShrink: 0, lineHeight: 1 }} aria-label="Clear all evidence pills" title="Clear all evidence pills">✕</button>
+                      style={{ background: "none", border: "none", color: headerTh.textMuted, cursor: "pointer", fontSize: 11, padding: "0 2px", flexShrink: 0, lineHeight: 1 }} aria-label="Clear all evidence pills" title="Clear all evidence pills">✕</button>
                     <div onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); setResizingCol("__evidence__"); setResizeX(e.clientX); setResizeW(evW); }}
-                      style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 5, cursor: "col-resize", background: resizingCol === "__evidence__" ? th.borderAccent : "transparent" }} />
+                      style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 5, cursor: "col-resize", background: resizingCol === "__evidence__" ? headerTh.borderAccent : "transparent" }} />
                   </div>;
                 })()}
                 {/* Pinned columns */}
@@ -519,15 +521,15 @@ export default function VirtualGrid({
                     onClick={(e) => { if (e.metaKey || e.ctrlKey) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, colName: h }); return; } if (e.altKey) { e.preventDefault(); e.stopPropagation(); setSelectedColumn?.(selectedColumn === h ? null : h); return; } handleSort(h); }}
                     onDoubleClick={() => handleHeaderDblClick(h)}
                     onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                    style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: h === pinnedH[pinnedH.length - 1] ? `2px solid ${th.borderAccent}` : `1px solid ${th.border}`, borderLeft: selectedColumn === h ? `2px solid ${th.accent}` : headerDragOver === h ? `2px solid ${th.accent}` : "2px solid transparent", position: "sticky", left: pinnedOffsets.offsets[h], zIndex: 12, background: selectedColumn === h ? `linear-gradient(${th.accent}30, ${th.accent}30), ${stickyHeaderBg}` : headerDragOver === h ? `linear-gradient(${th.accent}1a, ${th.accent}1a), ${stickyHeaderBg}` : stickyHeaderBg, overflow: "hidden", transition: "background var(--m-fast) var(--ease-out), border-left-color var(--m-fast) var(--ease-out)" }}>
+                    style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: headerTh.headerText, fontSize: 11, borderRight: h === pinnedH[pinnedH.length - 1] ? `2px solid ${th.borderAccent}` : `1px solid ${th.border}`, borderLeft: selectedColumn === h ? `2px solid ${th.accent}` : headerDragOver === h ? `2px solid ${th.accent}` : "2px solid transparent", position: "sticky", left: pinnedOffsets.offsets[h], zIndex: 12, background: selectedColumn === h ? `linear-gradient(${th.accent}30, ${th.accent}30), ${stickyHeaderBg}` : headerDragOver === h ? `linear-gradient(${th.accent}1a, ${th.accent}1a), ${stickyHeaderBg}` : stickyHeaderBg, overflow: "hidden", transition: "background var(--m-fast) var(--ease-out), border-left-color var(--m-fast) var(--ease-out)" }}>
                     <button type="button" onClick={(e) => { e.stopPropagation(); unpinColumn(h); }} aria-label={`Unpin ${h}`}
                       style={{ width: 24, height: 24, padding: 0, background: "none", border: "none", fontSize: 11, marginRight: 3, cursor: "pointer", opacity: 0.8, flexShrink: 0 }} title="Unpin">📌</button>
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{h}</span>
                     {ct.tsColumns.has(h) && <span aria-label="Timestamp column" style={{ fontSize: 11, marginRight: 2, opacity: 0.8 }}>⏱</span>}
-                    {ct.sortCol === h && <span style={{ fontSize: 11, color: th.accent, marginLeft: 3 }}>{ct.sortDir === "asc" ? "▲" : "▼"}</span>}
+                    {ct.sortCol === h && <span style={{ fontSize: 11, color: headerTh.accent, marginLeft: 3 }}>{ct.sortDir === "asc" ? "▲" : "▼"}</span>}
                     <div onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); setResizingCol(h); setResizeX(e.clientX); setResizeW(gw(h)); }}
                       onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); autoFitColumn(h); }}
-                      style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 5, cursor: "col-resize", background: resizingCol === h ? th.borderAccent : "transparent" }} />
+                      style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 5, cursor: "col-resize", background: resizingCol === h ? headerTh.borderAccent : "transparent" }} />
                   </div>
                 ))}
                 {/* Scrollable columns */}
@@ -542,13 +544,13 @@ export default function VirtualGrid({
                     onClick={(e) => { if (e.metaKey || e.ctrlKey) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, colName: h }); return; } if (e.altKey) { e.preventDefault(); e.stopPropagation(); setSelectedColumn?.(selectedColumn === h ? null : h); return; } handleSort(h); }}
                     onDoubleClick={() => handleHeaderDblClick(h)}
                     onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                    style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: th.headerText, fontSize: 11, borderRight: `1px solid ${th.border}`, borderLeft: selectedColumn === h ? `2px solid ${th.accent}` : headerDragOver === h ? `2px solid ${th.accent}` : "2px solid transparent", position: "relative", overflow: "hidden", background: selectedColumn === h ? `${th.accent}30` : headerDragOver === h ? `${th.accent}1a` : undefined, transition: "background var(--m-fast) var(--ease-out), border-left-color var(--m-fast) var(--ease-out)" }}>
+                    style={{ display: "flex", alignItems: "center", height: HEADER_HEIGHT, width: gw(h), minWidth: gw(h), boxSizing: "border-box", padding: "0 8px", cursor: "pointer", userSelect: "none", fontWeight: 600, color: headerTh.headerText, fontSize: 11, borderRight: `1px solid ${th.border}`, borderLeft: selectedColumn === h ? `2px solid ${th.accent}` : headerDragOver === h ? `2px solid ${th.accent}` : "2px solid transparent", position: "relative", overflow: "hidden", background: selectedColumn === h ? `${th.accent}30` : headerDragOver === h ? `${th.accent}1a` : undefined, transition: "background var(--m-fast) var(--ease-out), border-left-color var(--m-fast) var(--ease-out)" }}>
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{h}</span>
                     {ct.tsColumns.has(h) && <span aria-label="Timestamp column" style={{ fontSize: 11, marginRight: 2, opacity: 0.8 }}>⏱</span>}
-                    {ct.sortCol === h && <span style={{ fontSize: 11, color: th.accent, marginLeft: 3 }}>{ct.sortDir === "asc" ? "▲" : "▼"}</span>}
+                    {ct.sortCol === h && <span style={{ fontSize: 11, color: headerTh.accent, marginLeft: 3 }}>{ct.sortDir === "asc" ? "▲" : "▼"}</span>}
                     <div onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); setResizingCol(h); setResizeX(e.clientX); setResizeW(gw(h)); }}
                       onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); autoFitColumn(h); }}
-                      style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 5, cursor: "col-resize", background: resizingCol === h ? th.borderAccent : "transparent" }} />
+                      style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 5, cursor: "col-resize", background: resizingCol === h ? headerTh.borderAccent : "transparent" }} />
                   </div>
                 ))}
                 {colWindow.padRight > 0 && <div aria-hidden="true" style={{ width: colWindow.padRight, minWidth: colWindow.padRight, flexShrink: 0 }} />}
@@ -572,7 +574,7 @@ export default function VirtualGrid({
                         aria-label={isDis ? "Enable Tags filter" : "Disable Tags filter"}
                         style={{ width: 24, height: 24, background: "none", border: "none", cursor: "pointer", padding: 0, color: isDis ? th.danger : th.success, fontSize: 11, flexShrink: 0, lineHeight: 1 }} title={isDis ? "Enable filter" : "Disable filter"}>{isDis ? "⊘" : "⊙"}</button>}
                       <input aria-label="Filter Tags" value={ct.columnFilters["__tags__"] || ""} onChange={(e) => up("columnFilters", { ...ct.columnFilters, "__tags__": e.target.value })} placeholder="Filter..."
-                        style={{ flex: 1, background: th.bgInput, border: `1px solid ${hasCbf ? th.borderAccent : th.border}`, borderRadius: 3, color: th.text, fontSize: 11, padding: "3px 4px", outline: "none", fontFamily: "inherit", minWidth: 0, opacity: isDis ? 0.4 : 1, textDecoration: isDis ? "line-through" : "none" }} />
+                        style={{ flex: 1, background: filterTh.bgInput, border: `1px solid ${hasCbf ? th.borderAccent : th.border}`, borderRadius: 3, color: filterTh.text, fontSize: 11, padding: "3px 4px", outline: "none", fontFamily: "inherit", minWidth: 0, opacity: isDis ? 0.4 : 1, textDecoration: isDis ? "line-through" : "none" }} />
                       <button onClick={(e) => { e.stopPropagation(); const rect = e.currentTarget.getBoundingClientRect(); setFilterDropdown(filterDropdown?.colName === "__tags__" ? null : { colName: "__tags__", x: rect.left, y: rect.bottom + 2 }); }}
                         style={{ background: "none", border: "none", cursor: "pointer", padding: "2px 3px", color: hasCbf ? th.borderAccent : th.textDim, fontSize: 12, flexShrink: 0, lineHeight: 1 }} title="Filter by tags">▼</button>
                     </div>
@@ -619,7 +621,7 @@ export default function VirtualGrid({
                         aria-label={`${isDis ? "Enable" : "Disable"} ${h} filter`}
                         style={{ width: 24, height: 24, background: "none", border: "none", cursor: "pointer", padding: 0, color: isDis ? th.danger : th.success, fontSize: 11, flexShrink: 0, lineHeight: 1 }} title={isDis ? "Enable filter" : "Disable filter"}>{isDis ? "⊘" : "⊙"}</button>}
                       <input aria-label={`Filter ${h}`} value={ct.columnFilters[h] || ""} onChange={(e) => up("columnFilters", { ...ct.columnFilters, [h]: e.target.value })} placeholder="Filter..."
-                        style={{ flex: 1, background: th.bgInput, border: `1px solid ${hasCbf ? th.borderAccent : th.border}`, borderRadius: 3, color: th.text, fontSize: 11, padding: "3px 4px", outline: "none", fontFamily: "inherit", minWidth: 0, opacity: isDis ? 0.4 : 1, textDecoration: isDis ? "line-through" : "none" }} />
+                        style={{ flex: 1, background: filterTh.bgInput, border: `1px solid ${hasCbf ? th.borderAccent : th.border}`, borderRadius: 3, color: filterTh.text, fontSize: 11, padding: "3px 4px", outline: "none", fontFamily: "inherit", minWidth: 0, opacity: isDis ? 0.4 : 1, textDecoration: isDis ? "line-through" : "none" }} />
                       {isTs && <button onClick={(e) => { e.stopPropagation(); const rect = e.currentTarget.getBoundingClientRect(); setDateRangeDropdown(dateRangeDropdown?.colName === h ? null : { colName: h, x: rect.left, y: rect.bottom + 2, from: hasDr?.from || "", to: hasDr?.to || "" }); }}
                         aria-label={`Date range filter for ${h}`}
                         style={{ width: 24, height: 24, background: "none", border: "none", cursor: "pointer", padding: 0, color: hasDr ? th.warning : th.textMuted, fontSize: 11, flexShrink: 0, lineHeight: 1 }} title="Date range filter">⏱</button>}
@@ -642,7 +644,7 @@ export default function VirtualGrid({
                         aria-label={`${isDis ? "Enable" : "Disable"} ${h} filter`}
                         style={{ width: 24, height: 24, background: "none", border: "none", cursor: "pointer", padding: 0, color: isDis ? th.danger : th.success, fontSize: 11, flexShrink: 0, lineHeight: 1 }} title={isDis ? "Enable filter" : "Disable filter"}>{isDis ? "⊘" : "⊙"}</button>}
                       <input aria-label={`Filter ${h}`} value={ct.columnFilters[h] || ""} onChange={(e) => up("columnFilters", { ...ct.columnFilters, [h]: e.target.value })} placeholder="Filter..."
-                        style={{ flex: 1, background: th.bgInput, border: `1px solid ${hasCbf ? th.borderAccent : th.border}`, borderRadius: 3, color: th.text, fontSize: 11, padding: "3px 4px", outline: "none", fontFamily: "inherit", minWidth: 0, opacity: isDis ? 0.4 : 1, textDecoration: isDis ? "line-through" : "none" }} />
+                        style={{ flex: 1, background: filterTh.bgInput, border: `1px solid ${hasCbf ? th.borderAccent : th.border}`, borderRadius: 3, color: filterTh.text, fontSize: 11, padding: "3px 4px", outline: "none", fontFamily: "inherit", minWidth: 0, opacity: isDis ? 0.4 : 1, textDecoration: isDis ? "line-through" : "none" }} />
                       {isTs && <button onClick={(e) => { e.stopPropagation(); const rect = e.currentTarget.getBoundingClientRect(); setDateRangeDropdown(dateRangeDropdown?.colName === h ? null : { colName: h, x: rect.left, y: rect.bottom + 2, from: hasDr?.from || "", to: hasDr?.to || "" }); }}
                         aria-label={`Date range filter for ${h}`}
                         style={{ width: 24, height: 24, background: "none", border: "none", cursor: "pointer", padding: 0, color: hasDr ? th.warning : th.textMuted, fontSize: 11, flexShrink: 0, lineHeight: 1 }} title="Date range filter">⏱</button>}

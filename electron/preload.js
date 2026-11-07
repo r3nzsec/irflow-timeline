@@ -301,4 +301,8 @@ contextBridge.exposeInMainWorld("tle", {
   onSetTheme: (cb) => onIpc("set-theme", cb, (_event, name) => name),
   onTriggerHistogram: (cb) => onIpcNoArgs("trigger-histogram", cb),
   onTriggerVtSettings: (cb) => onIpcNoArgs("trigger-vt-settings", cb),
+
+  // Color scheme preference — persisted by the main process in ui-prefs.json
+  getUiPrefs: () => ipcRenderer.invoke("get-ui-prefs"),
+  setThemePreference: (themeName) => ipcRenderer.invoke("set-theme-preference", { themeName }),
 });

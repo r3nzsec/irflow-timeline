@@ -531,7 +531,7 @@ export default function ProcessTreeConfigPhase(p) {
 	                  )}
 	                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 8 }}>
 	                    <button onClick={() => setModal(p => ({ ...p, ptAddingRule: false, ptNewRule: {}, ptNewRuleError: "" }))} style={ms.bsm}>Cancel</button>
-                    <button onClick={addPiCustomRule} style={{ ...ms.bsm, background: th.primaryBtn || th.accent, color: "#fff", border: "none" }}>Add Rule</button>
+                    <button onClick={addPiCustomRule} style={{ ...ms.bsm, background: th.primaryBtn || th.fillAccent, color: th.onPrimary, border: "none" }}>Add Rule</button>
                   </div>
                 </div>
               )}
@@ -541,7 +541,7 @@ export default function ProcessTreeConfigPhase(p) {
           {/* 6i. Action Buttons */}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
             <button onClick={() => setModal(null)} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer", background: th.btnBg, color: th.textDim, border: `1px solid ${th.border}`, fontFamily: "-apple-system, sans-serif" }}>Cancel</button>
-            <button onClick={handleBuild} disabled={!hasCols} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: hasCols ? "pointer" : "not-allowed", background: hasCols ? (th.accent) : th.border, color: "#fff", border: "none", fontFamily: "-apple-system, sans-serif" }}>Build Tree</button>
+            <button onClick={handleBuild} disabled={!hasCols} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, cursor: hasCols ? "pointer" : "not-allowed", background: hasCols ? (th.fillAccent) : th.border, color: hasCols ? th.onAccent : th.textMuted, border: "none", fontFamily: "-apple-system, sans-serif" }}>Build Tree</button>
           </div>
         </div>
   );

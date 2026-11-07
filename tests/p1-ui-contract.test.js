@@ -19,12 +19,6 @@ function contrast(foreground, background) {
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
 
-function themeColor(section, key) {
-  const match = section.match(new RegExp(`\\b${key}:\\s*"(#[0-9a-fA-F]{6})"`));
-  assert.ok(match, `missing ${key} theme token`);
-  return match[1];
-}
-
 test("search UI explains its minimum and exposes one match-mode control", () => {
   const source = read("src/components/FilterBar.jsx");
   const helper = read("src/utils/search.js");
@@ -78,16 +72,13 @@ test("column value filter is not hard-capped at a Top 1000 list", () => {
   assert.match(app, /FD_ROW_H/);
 });
 
-test("core theme text tokens meet WCAG AA contrast", () => {
-  const source = read("src/constants/themes.js");
-  const dark = source.split("dark: {")[1].split("light: {")[0];
-  const light = source.split("light: {")[1];
-
-  for (const section of [dark, light]) {
-    const bg = themeColor(section, "bg");
-    const headerBg = themeColor(section, "headerBg");
-    assert.ok(contrast(themeColor(section, "textMuted"), bg) >= 4.5);
-    assert.ok(contrast(themeColor(section, "textDim"), bg) >= 4.5);
-    assert.ok(contrast(themeColor(section, "headerText"), headerBg) >= 4.5);
+test("standard theme text tokens meet WCAG AA contrast", async () => {
+  // The exact reference Christmas palette explicitly reports its lower contrast in color-schemes.test.js.
+  const { THEMES } = await import("../src/constants/themes.js");
+  for (const [name, th] of Object.entries(THEMES)) {
+    if (name === "christmas") continue;
+    assert.ok(contrast(th.textMuted, th.bg) >= 4.5, `${name}: textMuted on bg`);
+    assert.ok(contrast(th.textDim, th.bg) >= 4.5, `${name}: textDim on bg`);
+    assert.ok(contrast(th.headerText, th.headerBg) >= 4.5, `${name}: headerText on headerBg`);
   }
 });

@@ -418,7 +418,7 @@ export default function SigmaDetectionSettings() {
               </select>
               <div style={{ display: "inline-flex", background: th.panelBg, borderRadius: 4, padding: 1, border: `1px solid ${th.border}33`, gap: 1 }}>
                 {OUTPUT_MODES.map((m) => (
-                  <button key={m.id} onClick={() => setModal((p) => ({ ...p, outputMode: m.id, scanPreflight: null }))} style={{ padding: "2px 10px", borderRadius: 3, fontSize: 9, border: "none", cursor: "pointer", fontFamily: "-apple-system,sans-serif", background: (modal.outputMode || "csv") === m.id ? th.accent : "transparent", color: (modal.outputMode || "csv") === m.id ? "#fff" : th.textMuted, fontWeight: (modal.outputMode || "csv") === m.id ? 600 : 400 }}>{m.label}</button>
+                  <button key={m.id} onClick={() => setModal((p) => ({ ...p, outputMode: m.id, scanPreflight: null }))} style={{ padding: "2px 10px", borderRadius: 3, fontSize: 9, border: "none", cursor: "pointer", fontFamily: "-apple-system,sans-serif", background: (modal.outputMode || "csv") === m.id ? th.fillAccent : "transparent", color: (modal.outputMode || "csv") === m.id ? th.onAccent : th.textMuted, fontWeight: (modal.outputMode || "csv") === m.id ? 600 : 400 }}>{m.label}</button>
                 ))}
               </div>
             </div>

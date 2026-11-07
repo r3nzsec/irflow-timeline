@@ -615,7 +615,7 @@ export default function PersistenceModal() {
 
   // --- Pivot handlers ---
   const _paBtnS = { padding: "2px 8px", background: `${th.accent}15`, color: th.accent, border: `1px solid ${th.accent}33`, borderRadius: 4, fontSize: 9, cursor: "pointer", fontFamily: "-apple-system, sans-serif", fontWeight: 500 };
-  const _paBtnActive = (a) => a ? { ..._paBtnS, background: th.accent, color: "#fff" } : _paBtnS;
+  const _paBtnActive = (a) => a ? { ..._paBtnS, background: th.fillAccent, color: th.onAccent } : _paBtnS;
   // Artifact search term: use the shortest unique identifier so it actually matches payload text
   const _artSearchTerm = (inc) => {
     if (!inc.artifact) return "";
@@ -886,7 +886,7 @@ export default function PersistenceModal() {
                       </div>
                     </div>
                     <button onClick={() => setModal((p) => ({ ...p, paMultiSource: !p.paMultiSource, paSelectedTabIds: p.paSelectedTabIds || [], _paNeedsMultiPreview: !p.paMultiSource }))}
-                      style={{ width: 36, height: 20, borderRadius: 10, border: "none", background: modal.paMultiSource ? th.accent : th.btnBg, cursor: "pointer", position: "relative", transition: "background var(--m-base)", flexShrink: 0 }}>
+                      style={{ width: 36, height: 20, borderRadius: 10, border: "none", background: modal.paMultiSource ? th.fillAccent : th.btnBg, cursor: "pointer", position: "relative", transition: "background var(--m-base)", flexShrink: 0 }}>
                       <div style={{ width: 16, height: 16, borderRadius: 8, background: "#fff", position: "absolute", top: 2, left: modal.paMultiSource ? 18 : 2, transition: "left var(--m-base)", boxShadow: "0 1px 3px rgba(0,0,0,0.3)" }} />
                     </button>
                   </div>
@@ -1022,7 +1022,7 @@ export default function PersistenceModal() {
                         <div key={gi} title={clickable ? `Click to highlight rules using ${g.detector || g.label}` : (g.detector || g.label)}
                           onClick={clickable ? () => setModal((p) => ({ ...p, paHilite: active ? null : g.eids, showRules: true })) : undefined}
                           style={{ padding: "3px 8px", borderRadius: 6, fontSize: 9, fontWeight: 600, fontFamily: "-apple-system, sans-serif", cursor: clickable ? "pointer" : "default",
-                          background: active ? th.accent : hasData ? `${th.accent}15` : `${th.border}22`, color: active ? "#fff" : hasData ? th.accent : th.textMuted, border: `1px solid ${active ? th.accent : hasData ? th.accent + "33" : th.border + "22"}`, transition: "all var(--m-base)" }}>
+                          background: active ? th.fillAccent : hasData ? `${th.accent}15` : `${th.border}22`, color: active ? th.onAccent : hasData ? th.accent : th.textMuted, border: `1px solid ${active ? th.accent : hasData ? th.accent + "33" : th.border + "22"}`, transition: "all var(--m-base)" }}>
                           {g.label} {hasData && <span style={{ fontFamily: "SF Mono, monospace", fontSize: 8 }}>({count.toLocaleString()})</span>}
                         </div>
                       );
@@ -1224,7 +1224,7 @@ export default function PersistenceModal() {
                         </div>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 8 }}>
                           <button onClick={() => setModal((p) => ({ ...p, addingRule: false, newRule: {} }))} style={ms.bsm}>Cancel</button>
-                          <button onClick={addCustomRule} style={{ ...ms.bsm, background: th.primaryBtn, color: "#fff", border: "none" }}>Add Rule</button>
+                          <button onClick={addCustomRule} style={{ ...ms.bsm, background: th.primaryBtn, color: th.onPrimary, border: "none" }}>Add Rule</button>
                         </div>
                       </div>
                     )}
@@ -1753,7 +1753,7 @@ export default function PersistenceModal() {
                   <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
                     {Object.entries(TL_MODES).map(([k, m]) => (
                       <button key={k} onClick={() => setModal((p) => ({ ...p, tlMode: k }))} title={m.desc}
-                        style={{ padding: "3px 10px", fontSize: 10, fontWeight: tlMode === k ? 700 : 500, background: tlMode === k ? th.accent : `${th.accent}15`, color: tlMode === k ? "#fff" : th.accent, border: `1px solid ${tlMode === k ? th.accent : th.accent + "33"}`, borderRadius: 4, cursor: "pointer", fontFamily: "-apple-system, sans-serif" }}>{m.label}</button>
+                        style={{ padding: "3px 10px", fontSize: 10, fontWeight: tlMode === k ? 700 : 500, background: tlMode === k ? th.fillAccent : `${th.accent}15`, color: tlMode === k ? th.onAccent : th.accent, border: `1px solid ${tlMode === k ? th.accent : th.accent + "33"}`, borderRadius: 4, cursor: "pointer", fontFamily: "-apple-system, sans-serif" }}>{m.label}</button>
                     ))}
                     {tlMode === "custom" && <span style={{ fontSize: 9, color: th.textMuted, fontFamily: "-apple-system, sans-serif", fontStyle: "italic" }}>Custom sort/filter</span>}
                     <span style={{ width: 1, height: 16, background: th.border, margin: "0 2px" }} />
@@ -1794,7 +1794,7 @@ export default function PersistenceModal() {
                     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", marginBottom: 6, background: `${th.accent}11`, borderRadius: 6, fontSize: 10, color: th.accent, fontFamily: "-apple-system, sans-serif" }}>
                       <span style={{ fontWeight: 600 }}>Filter active ({activeFilterCount} column{activeFilterCount > 1 ? "s" : ""})</span>
                       <span style={{ fontSize: 10, color: th.textMuted }}>— {tlFiltered.length} of {filteredItems.length} items</span>
-                      <button onClick={() => setModal((p) => ({ ...p, tableColFilters: {} }))} style={{ marginLeft: "auto", padding: "1px 8px", fontSize: 9, background: th.accent, color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>Clear All</button>
+                      <button onClick={() => setModal((p) => ({ ...p, tableColFilters: {} }))} style={{ marginLeft: "auto", padding: "1px 8px", fontSize: 9, background: th.fillAccent, color: th.onAccent, border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>Clear All</button>
                     </div>
                   )}
                   {/* Header */}
@@ -1932,7 +1932,7 @@ export default function PersistenceModal() {
                           <button onClick={() => setModal((p) => ({ ...p, colFilterOpen: null }))}
                             style={{ padding: "4px 12px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Cancel</button>
                           <button onClick={() => setModal((p) => ({ ...p, tableColFilters: { ...(p.tableColFilters || {}), [filterOpen]: [...(p.colFilterSel || [])] }, colFilterOpen: null }))}
-                            style={{ padding: "4px 12px", fontSize: 10, background: th.accent, border: "none", borderRadius: 4, color: "#fff", cursor: "pointer", fontWeight: 600 }}>Apply</button>
+                            style={{ padding: "4px 12px", fontSize: 10, background: th.fillAccent, border: "none", borderRadius: 4, color: th.onAccent, cursor: "pointer", fontWeight: 600 }}>Apply</button>
                         </div>
                         <div onMouseDown={(e) => {
                           e.preventDefault(); e.stopPropagation();
@@ -2150,7 +2150,7 @@ export default function PersistenceModal() {
                     <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", borderBottom: `1px solid ${th.border}22` }}>
                       {Object.entries(TBL_MODES).map(([k, m]) => (
                         <button key={k} onClick={() => setModal((p) => ({ ...p, tblMode: k, _expandedCluster: null }))} title={m.desc}
-                          style={{ padding: "3px 10px", fontSize: PA_SZ.label, fontWeight: PA_W.strong, background: tblMode === k ? th.accent : `${th.accent}15`, color: tblMode === k ? "#fff" : th.accent, border: `1px solid ${tblMode === k ? th.accent : th.accent + "33"}`, borderRadius: 4, cursor: "pointer", fontFamily: PA_SANS }}>{m.label}</button>
+                          style={{ padding: "3px 10px", fontSize: PA_SZ.label, fontWeight: PA_W.strong, background: tblMode === k ? th.fillAccent : `${th.accent}15`, color: tblMode === k ? th.onAccent : th.accent, border: `1px solid ${tblMode === k ? th.accent : th.accent + "33"}`, borderRadius: 4, cursor: "pointer", fontFamily: PA_SANS }}>{m.label}</button>
                       ))}
                       {tblMode === "custom" && <span style={paMeta}>Custom</span>}
                       <button onClick={() => setModal(p => ({ ...p, _tblHideExpected: !p._tblHideExpected }))} title="Hide expected/whitelisted items"
@@ -2308,7 +2308,7 @@ export default function PersistenceModal() {
                             <button onClick={() => setModal((p) => ({ ...p, colFilterOpen: null }))}
                               style={{ padding: "4px 12px", fontSize: 10, background: th.panelBg, border: `1px solid ${th.border}44`, borderRadius: 4, color: th.text, cursor: "pointer" }}>Cancel</button>
                             <button onClick={() => setModal((p) => ({ ...p, tableColFilters: { ...(p.tableColFilters || {}), [filterOpen]: [...(p.colFilterSel || [])] }, colFilterOpen: null }))}
-                              style={{ padding: "4px 12px", fontSize: 10, background: th.accent, border: "none", borderRadius: 4, color: "#fff", cursor: "pointer", fontWeight: 600 }}>Apply</button>
+                              style={{ padding: "4px 12px", fontSize: 10, background: th.fillAccent, border: "none", borderRadius: 4, color: th.onAccent, cursor: "pointer", fontWeight: 600 }}>Apply</button>
                           </div>
                           {/* Resize handle */}
                           <div onMouseDown={(e) => {

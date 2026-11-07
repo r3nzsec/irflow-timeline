@@ -230,7 +230,7 @@ export default function LogSourceCoverageModal() {
                 <span style={{ color: th.textMuted, fontSize: 10, alignSelf: "center", fontFamily: "-apple-system, sans-serif" }}>Sort:</span>
                 {["count", "name", "earliest", "duration"].map((s) => (
                   <button key={s} onClick={() => setModal((p) => ({ ...p, sortBy: s }))}
-                    style={{ padding: "3px 10px", background: sortBy === s ? th.accent : th.btnBg, color: sortBy === s ? "#fff" : th.text, border: `1px solid ${sortBy === s ? th.accent : th.btnBorder}`, borderRadius: 4, fontSize: 10, cursor: "pointer", fontFamily: "-apple-system, sans-serif" }}>
+                    style={{ padding: "3px 10px", background: sortBy === s ? th.fillAccent : th.btnBg, color: sortBy === s ? th.onAccent : th.text, border: `1px solid ${sortBy === s ? th.accent : th.btnBorder}`, borderRadius: 4, fontSize: 10, cursor: "pointer", fontFamily: "-apple-system, sans-serif" }}>
                     {s.charAt(0).toUpperCase() + s.slice(1)}
                   </button>
                 ))}

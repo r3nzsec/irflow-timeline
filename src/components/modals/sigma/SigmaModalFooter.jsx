@@ -52,7 +52,7 @@ export default function SigmaModalFooter() {
               {scanMode === "kape-output" && (() => {
                 const ready = hasRules && hasTargetReady && hasPresetReady;
                 return (
-                  <button onClick={handleScanKapeOutput} disabled={!ready} style={{ ...ms.bp, background: th.accent, opacity: ready ? 1 : 0.4, cursor: ready ? "pointer" : "not-allowed" }}>
+                  <button onClick={handleScanKapeOutput} disabled={!ready} style={{ ...ms.bp, background: th.fillAccent, color: th.onAccent, opacity: ready ? 1 : 0.4, cursor: ready ? "pointer" : "not-allowed" }}>
                     Scan {formatNumber(modal.kapeOutput?.fileCount || 0)} EvtxECmd File{(modal.kapeOutput?.fileCount || 0) === 1 ? "" : "s"}
                   </button>
                 );
@@ -61,8 +61,8 @@ export default function SigmaModalFooter() {
                 const busy = modal.preflightChecking;
                 const ready = hasTargetReady && !busy && hasPresetReady;
                 return (
-                  <button onClick={handleScanDirectory} disabled={!ready} style={{ ...ms.bp, background: th.accent, opacity: ready ? 1 : 0.4, cursor: ready ? "pointer" : "not-allowed" }}>
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" style={{ marginRight: 5, verticalAlign: "middle" }}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                  <button onClick={handleScanDirectory} disabled={!ready} style={{ ...ms.bp, background: th.fillAccent, color: th.onAccent, opacity: ready ? 1 : 0.4, cursor: ready ? "pointer" : "not-allowed" }}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ marginRight: 5, verticalAlign: "middle" }}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
                     {busy ? "Checking Scan Setup..." : `Scan ${modal.evtxDir?.fileCount || 0} EVTX File${(modal.evtxDir?.fileCount || 0) !== 1 ? "s" : ""}`}
                   </button>
                 );

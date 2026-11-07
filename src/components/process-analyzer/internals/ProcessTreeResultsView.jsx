@@ -152,7 +152,7 @@ export default function ProcessTreeResultsView(p) {
             {/* View mode toggle */}
             {Object.entries(PT_VIEW_MODES).map(([k, m]) => (
               <button key={k} onClick={() => setModal(p => ({ ...p, ptViewMode: k, _ptExpandedCluster: null, _ptExpandedIncident: null, ptClusterKeys: m.clustered ? null : p.ptClusterKeys, ptClusterContext: m.clustered ? false : p.ptClusterContext }))} title={m.incident ? `${m.label}: grouped into investigation stories` : m.graph ? `${m.label}: spatial parent-child node graph (multi-host)` : m.clustered ? `${m.label}: clustered by chain` : `${m.label}: full tree view`}
-                style={{ padding: "4px 10px", fontSize: PI_TYPOGRAPHY.control, fontWeight: ptViewMode === k ? 700 : 500, background: ptViewMode === k ? th.accent : `${th.accent}15`, color: ptViewMode === k ? "#fff" : th.accent, border: `1px solid ${ptViewMode === k ? th.accent : th.accent + "33"}`, borderRadius: 4, cursor: "pointer", fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0 }}>{m.label}</button>
+                style={{ padding: "4px 10px", fontSize: PI_TYPOGRAPHY.control, fontWeight: ptViewMode === k ? 700 : 500, background: ptViewMode === k ? th.fillAccent : `${th.accent}15`, color: ptViewMode === k ? th.onAccent : th.accent, border: `1px solid ${ptViewMode === k ? th.accent : th.accent + "33"}`, borderRadius: 4, cursor: "pointer", fontFamily: "-apple-system, sans-serif", whiteSpace: "nowrap", flexShrink: 0 }}>{m.label}</button>
             ))}
             <button
               type="button"
@@ -164,8 +164,8 @@ export default function ProcessTreeResultsView(p) {
               title="Rule health & coverage report — which rules fired, stayed silent, or are disabled"
               style={{
                 padding: "4px 10px", fontSize: PI_TYPOGRAPHY.control, fontWeight: isHealthMode ? 700 : 500,
-                background: isHealthMode ? th.accent : `${th.accent}15`,
-                color: isHealthMode ? "#fff" : th.accent,
+                background: isHealthMode ? th.fillAccent : `${th.accent}15`,
+                color: isHealthMode ? th.onAccent : th.accent,
                 border: `1px solid ${isHealthMode ? th.accent : th.accent + "33"}`,
                 borderRadius: 4, cursor: "pointer", fontFamily: "-apple-system, sans-serif",
                 whiteSpace: "nowrap", flexShrink: 0,
@@ -868,7 +868,7 @@ export default function ProcessTreeResultsView(p) {
                     <div style={{ padding: "4px 12px", display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${th.border}33`, boxShadow: `inset 3px 0 0 ${th.accent}`, width: rawTotalPtW, minWidth: rawTotalPtW, boxSizing: "border-box" }}>
                       <span style={{ fontSize: 10, fontWeight: 600, color: th.accent, fontFamily: "-apple-system, sans-serif" }}>Filter active ({ptActiveFilterCount} column{ptActiveFilterCount > 1 ? "s" : ""})</span>
                       <span style={{ fontSize: 10, color: th.textDim }}>{"\u2014"} {flatNodes.length} of {data.stats.totalProcesses} processes</span>
-                      <button onClick={() => setModal((p) => ({ ...p, ptColFilters: {} }))} style={{ padding: "1px 8px", fontSize: 9, background: th.accent, color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>Clear All</button>
+                      <button onClick={() => setModal((p) => ({ ...p, ptColFilters: {} }))} style={{ padding: "1px 8px", fontSize: 9, background: th.fillAccent, color: th.onAccent, border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>Clear All</button>
                     </div>
                   )}
                   {/* Column header row */}
@@ -1136,7 +1136,7 @@ export default function ProcessTreeResultsView(p) {
                       else { filters[ptFilterOpen] = selected; }
                       return { ...p, ptColFilters: filters, ptFilterOpen: null };
                     });
-                  }} style={{ padding: "4px 12px", fontSize: 10, background: th.accent, color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>Apply</button>
+                  }} style={{ padding: "4px 12px", fontSize: 10, background: th.fillAccent, color: th.onAccent, border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>Apply</button>
                   <button onClick={() => {
                     setModal((p) => {
                       const filters = { ...(p.ptColFilters || {}) };

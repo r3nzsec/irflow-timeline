@@ -36,7 +36,7 @@ The renderer runs in a sandboxed browser context with no direct Node.js access �
 - **`hooks/`**, **`modals/modalRegistry.js`** (namespaced modal state), **`constants/`** (`themes.js`, `presets.js`, `kape-profiles.js`, …), **`utils/`** (`ipc-result.js`, `datetime.js`, `process-inspector` / `process-inspector-pipeline` / `process-rule-health` / `process-grid-pivot` / `process-handoffs`, a mirror of `forensic-normalize`, …)
 - **`detection-rules.js`** + **`detection-rules/`** (`tool-aliases.js` — the canonical RMM/tunnel/exfil tool catalog), mapped to MITRE ATT&CK and consumed by the process analyzer
 
-Responsibilities: grid rendering with virtual scrolling, user-interaction handling, Zustand state management, visualization (histogram, process inspector, lateral-movement graphs, NTFS analysis panels), KAPE profile auto-detection, VirusTotal verdict display, and theme management (dark default + light).
+Responsibilities: grid rendering with virtual scrolling, user-interaction handling, Zustand state management, visualization (histogram, process inspector, lateral-movement graphs, NTFS analysis panels), KAPE profile auto-detection, VirusTotal verdict display, and color schemes (Dark Mode by default, Light Mode and six seasonal schemes).
 
 ### Preload Bridge
 

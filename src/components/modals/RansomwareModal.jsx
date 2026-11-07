@@ -12,7 +12,7 @@ import { formatNumber } from "../../utils/format.js";
 export default function RansomwareModal() {
   const modal = useUIStore((s) => s.modal);
   const setModal = useUIStore((s) => s.setModal);
-  const { th, themeName } = useTheme();
+  const { th, isDark } = useTheme();
   const ct = useCurrentTab();
   const tabs = useTabStore((s) => s.tabs);
   const tle = typeof window !== "undefined" ? window.tle : null;
@@ -351,7 +351,6 @@ export default function RansomwareModal() {
     }
 
     // Theme-aware CSS — adapts to current dark/light mode
-    const isDark = themeName === "dark";
     const c = {
       bg: isDark ? "#0d1117" : "#ffffff",
       bgAlt: isDark ? "#161b22" : "#f7f5f3",
@@ -413,7 +412,7 @@ strong{color:${c.text}}
 
   const cbStyle = (checked) => ({
     width: 14, height: 14, borderRadius: 4, flexShrink: 0, cursor: "pointer",
-    background: checked ? (th.accent) : "transparent",
+    background: checked ? (th.fillAccent) : "transparent",
     border: `1.5px solid ${checked ? th.accent : th.border}`,
     display: "flex", alignItems: "center", justifyContent: "center", transition: "all var(--m-base)",
   });
@@ -616,8 +615,8 @@ strong{color:${c.text}}
                     return (
                       <div key={i} onClick={() => toggleExt(c.extension)}
                         style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", fontSize: 11, borderBottom: `1px solid ${th.border}15`, cursor: "pointer", background: sel ? `${th.accent}12` : (i % 2 === 0 ? "transparent" : `${th.border}08`), transition: "all var(--m-base)" }}>
-                        <div style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, background: sel ? th.accent : "transparent", border: `1.5px solid ${sel ? th.accent : th.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          {sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        <div style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, background: sel ? th.fillAccent : "transparent", border: `1.5px solid ${sel ? th.accent : th.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          {sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke={th.onAccent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                         </div>
                         <span style={{ padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700, background: `${scoreColor}22`, color: scoreColor, fontFamily: "'SF Mono',Menlo,monospace", minWidth: 28, textAlign: "center" }}>{Math.round(c.score * 100)}</span>
                         <span style={{ fontFamily: "'SF Mono',Menlo,monospace", fontWeight: 600, color: th.text, minWidth: 80 }}>{c.extension}</span>
@@ -670,7 +669,7 @@ strong{color:${c.text}}
                   <div style={{ display: "flex", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
                     {[".locked", ".encrypted", ".enc", ".crypt", ".WNCRY", ".cerber", ".locky", ".ryuk"].map((ext) => (
                       <button key={ext} onClick={() => setModal((p) => ({ ...p, encryptedExt: ext }))}
-                        style={{ padding: "3px 8px", background: encryptedExt === ext ? th.accent : th.btnBg, color: encryptedExt === ext ? "#fff" : th.textDim, border: `1px solid ${encryptedExt === ext ? th.accent : th.btnBorder}`, borderRadius: 4, fontSize: 10, cursor: "pointer", fontFamily: "'SF Mono',Menlo,monospace" }}>
+                        style={{ padding: "3px 8px", background: encryptedExt === ext ? th.fillAccent : th.btnBg, color: encryptedExt === ext ? th.onAccent : th.textDim, border: `1px solid ${encryptedExt === ext ? th.accent : th.btnBorder}`, borderRadius: 4, fontSize: 10, cursor: "pointer", fontFamily: "'SF Mono',Menlo,monospace" }}>
                         {ext}
                       </button>
                     ))}
@@ -1011,7 +1010,7 @@ strong{color:${c.text}}
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <div onClick={() => toggleAll("rwSelFirst", shown.length)} style={cbStyle(allF)}>
-                        {allF && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        {allF && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke={th.onAccent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                       </div>
                       <span style={{ fontSize: 10, fontWeight: 700, color: th.accent, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "-apple-system, sans-serif" }}>Encryption Spread — First {shown.length} Files</span>
                     </div>
@@ -1031,7 +1030,7 @@ strong{color:${c.text}}
                       return (<Fragment key={i}>
                       <div onClick={() => toggleSet("rwSelFirst", i)} style={{ ...rowStyle(i), background: sel ? `${th.accent}0a` : (i % 2 === 0 ? "transparent" : `${th.border}0a`), borderBottom: `1px solid ${th.border}15`, cursor: "pointer" }}>
                         <div style={cbStyle(sel)}>
-                          {sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                          {sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke={th.onAccent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                         </div>
                         <span onClick={(e) => { e.stopPropagation(); setModal((p) => ({ ...p, rwExpandedRow: isExp ? null : { section: "first", idx: i } })); }} style={{ width: firstW[0], flexShrink: 0, color: th.accent, fontWeight: 600, fontSize: 10, cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted" }}>#{f.entryNumber}</span>
                         <span style={{ width: firstW[1], flexShrink: 0, color: th.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.fileName}</span>
@@ -1102,7 +1101,7 @@ strong{color:${c.text}}
                       return (
                       <div key={i} onClick={() => toggleSet("rwSelPairs", i)} style={{ ...rowStyle(i), background: sel ? `${th.accent}0a` : (i % 2 === 0 ? "transparent" : `${th.border}0a`), borderBottom: `1px solid ${th.border}15`, cursor: "pointer" }}>
                         <div style={cbStyle(sel)}>
-                          {sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                          {sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke={th.onAccent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                         </div>
                         <span style={{ width: 130, flexShrink: 0, color: th.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10 }}>{p.originalFile}</span>
                         <span style={{ width: 150, flexShrink: 0, color: th.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10 }}>{p.encryptedFile}</span>
@@ -1395,7 +1394,7 @@ strong{color:${c.text}}
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <div onClick={() => toggleAll("rwSelDirs", shown.length)} style={cbStyle(allD)}>
-                        {allD && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        {allD && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke={th.onAccent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                       </div>
                       <span style={{ fontSize: 10, fontWeight: 700, color: th.accent, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "-apple-system, sans-serif" }}>Affected Subtrees</span>
                     </div>
@@ -1414,7 +1413,7 @@ strong{color:${c.text}}
                         <div key={i} onClick={() => toggleSet("rwSelDirs", i)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", fontSize: 11, borderBottom: `1px solid ${th.border}15`, position: "relative", cursor: "pointer", background: sel ? `${th.accent}0a` : "transparent" }}>
                           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${pctBar}%`, background: `linear-gradient(90deg, ${ratioColor}12, ${ratioColor}04)`, borderRadius: i === 0 ? "10px 0 0 0" : 0 }} />
                           <div style={{ ...cbStyle(sel), position: "relative" }}>
-                            {sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                            {sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke={th.onAccent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                           </div>
                           <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "'SF Mono',Menlo,monospace", color: th.textDim, position: "relative", fontSize: 10 }}>{dir.path || "(root)"}</span>
                           {dir.childDirCount > 1 && <span style={{ position: "relative", fontSize: 8, color: th.textMuted, padding: "1px 4px", background: `${th.border}22`, borderRadius: 3, fontFamily: "-apple-system, sans-serif" }}>{dir.childDirCount} dirs</span>}
@@ -1438,7 +1437,7 @@ strong{color:${c.text}}
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <div onClick={() => toggleAll("rwSelNotes", shownN.length)} style={cbStyle(allN)}>
-                        {allN && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        {allN && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke={th.onAccent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                       </div>
                       <span style={{ fontSize: 10, fontWeight: 700, color: th.accent, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "-apple-system, sans-serif" }}>Ransom Note Locations</span>
                     </div>
@@ -1458,7 +1457,7 @@ strong{color:${c.text}}
                       return (
                       <div key={i} onClick={() => toggleSet("rwSelNotes", i)} style={{ ...rowStyle(i), background: sel ? `${th.accent}0a` : (i % 2 === 0 ? "transparent" : `${th.border}0a`), borderBottom: `1px solid ${th.border}15`, cursor: "pointer" }}>
                         <div style={cbStyle(sel)}>
-                          {sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                          {sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke={th.onAccent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                         </div>
                         <span style={{ width: notesW[0], flexShrink: 0, color: th.warning, fontWeight: 600, fontSize: 10 }}>#{note.entryNumber}</span>
                         <span style={{ width: notesW[1], flexShrink: 0, color: th.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{note.fileName}</span>
@@ -1485,7 +1484,7 @@ strong{color:${c.text}}
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <div onClick={() => toggleAll("rwSelSusp", data.suspiciousFiles.length)} style={cbStyle(allS)}>
-                        {allS && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        {allS && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke={th.onAccent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                       </div>
                       <span style={{ fontSize: 10, fontWeight: 700, color: th.accent, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "-apple-system, sans-serif" }}>Payload Candidates</span>
                       {topConf && <span style={{ fontSize: 8, padding: "1px 6px", borderRadius: 3, background: `${confColor}22`, color: confColor, fontFamily: "'SF Mono',Menlo,monospace", fontWeight: 600, border: `1px solid ${confColor}44`, textTransform: "uppercase", letterSpacing: "0.05em" }}>{topConf}</span>}
@@ -1510,7 +1509,7 @@ strong{color:${c.text}}
                       return (<Fragment key={i}>
                       <div onClick={() => toggleSet("rwSelSusp", i)} style={{ ...rowStyle(i), background: sel ? `${th.accent}0a` : (sc >= 0.35 ? `linear-gradient(90deg, ${scoreColor}08, transparent)` : (i % 2 === 0 ? "transparent" : `${th.border}0a`)), borderBottom: `1px solid ${th.border}15`, cursor: "pointer", flexWrap: "wrap" }}>
                         <div style={cbStyle(sel)}>
-                          {sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                          {sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke={th.onAccent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                         </div>
                         <span style={{ padding: "1px 5px", borderRadius: 4, fontSize: 9, fontWeight: 700, background: `${scoreColor}22`, color: scoreColor, fontFamily: "'SF Mono',Menlo,monospace", minWidth: 28, textAlign: "center", width: 32, flexShrink: 0 }}>{Math.round(sc * 100)}</span>
                         <span onClick={(e) => { e.stopPropagation(); setModal((p) => ({ ...p, rwExpandedRow: isExpanded ? null : { section: "susp", idx: i } })); }} style={{ width: suspW[0], flexShrink: 0, color: th.danger, fontWeight: 600, fontSize: 10, cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted" }}>{sf.extension}</span>
@@ -1518,7 +1517,7 @@ strong{color:${c.text}}
                         <span style={{ flex: 1, color: th.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sf.parentPath}</span>
                         <span style={{ width: suspW[3], flexShrink: 0, color: th.textMuted, fontSize: 10, whiteSpace: "nowrap" }}>{(sf.created || "").slice(0, 19)}</span>
                         <div style={{ display: "flex", gap: 3, width: 78, flexShrink: 0, justifyContent: "flex-end" }}>
-                          {sf.executionConfirmed && <span title={`Process-creation observed in EVTX${sf.execContext?.time ? ` @ ${(sf.execContext.time || "").slice(0, 19)}` : ""}`} style={{ padding: "1px 4px", borderRadius: 3, fontSize: 7, fontWeight: 800, color: "#fff", background: th.accent }}>▶RAN</span>}
+                          {sf.executionConfirmed && <span title={`Process-creation observed in EVTX${sf.execContext?.time ? ` @ ${(sf.execContext.time || "").slice(0, 19)}` : ""}`} style={{ padding: "1px 4px", borderRadius: 3, fontSize: 7, fontWeight: 800, color: th.onAccent, background: th.fillAccent }}>▶RAN</span>}
                           {sf.zoneId && <span style={{ padding: "1px 4px", borderRadius: 3, fontSize: 7, fontWeight: 700, color: "#fff", background: th.danger }}>WEB</span>}
                           {sf.inUse === "False" && <span style={{ padding: "1px 4px", borderRadius: 3, fontSize: 7, fontWeight: 700, color: "#fff", background: th.warning }}>DEL</span>}
                           {sf.siFN === "True" && <span style={{ padding: "1px 4px", borderRadius: 3, fontSize: 7, fontWeight: 700, color: "#fff", background: "#a855f7" }}>TS</span>}
@@ -1597,7 +1596,7 @@ strong{color:${c.text}}
                         const sel = selAF.has(gi);
                         return (
                           <div key={`${cat.key}-${ii}`} onClick={() => toggleSet("rwSelAF", gi)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", fontSize: 10, borderBottom: `1px solid ${th.border}12`, cursor: "pointer", background: sel ? `${th.accent}0a` : (gi % 2 === 0 ? "transparent" : `${th.border}08`) }}>
-                            <div style={cbStyle(sel)}>{sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}</div>
+                            <div style={cbStyle(sel)}>{sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke={th.onAccent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}</div>
                             <span style={{ fontSize: 7, padding: "1px 4px", borderRadius: 3, background: `${cat.color}22`, color: cat.color, fontWeight: 600, fontFamily: "-apple-system, sans-serif", textTransform: "uppercase", flexShrink: 0 }}>{cat.label.split(" ")[0]}</span>
                             <span style={{ color: th.textDim, fontFamily: "'SF Mono',Menlo,monospace", fontSize: 9, flexShrink: 0 }}>#{item.entryNumber}</span>
                             <span style={{ color: th.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, fontFamily: "'SF Mono',Menlo,monospace" }}>{item.fileName}</span>
@@ -1670,7 +1669,7 @@ strong{color:${c.text}}
                         const sel = (modal.rwSelUsn || new Set()).has(i);
                         return (
                           <div key={i} onClick={() => toggleSet("rwSelUsn", i)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", fontSize: 10, borderBottom: `1px solid ${th.border}12`, cursor: "pointer", background: sel ? `${th.accent}0a` : (i % 2 === 0 ? "transparent" : `${th.border}08`), fontFamily: "'SF Mono',Menlo,monospace" }}>
-                            <div style={cbStyle(sel)}>{sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}</div>
+                            <div style={cbStyle(sel)}>{sel && <svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2 6 5 9 10 3" fill="none" stroke={th.onAccent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}</div>
                             <span style={{ width: 130, flexShrink: 0, color: th.textMuted, fontSize: 9 }}>{(r.timestamp || "").slice(0, 19)}</span>
                             <span style={{ flex: 1, color: th.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
                             <span style={{ width: 200, flexShrink: 0, color: th.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.parentPath || ""}</span>
@@ -1939,7 +1938,7 @@ strong{color:${c.text}}
               <span style={{ fontSize: 10, color: th.accent, fontWeight: 500, fontFamily: "-apple-system, sans-serif", animation: "tle-overlay-in var(--m-base) var(--ease-out-soft)" }}>{modal.rwPivotMsg}</span>
             )}
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              {totalSelected > 0 && <button onClick={copySelected} style={{ ...ms.bs, display: "flex", alignItems: "center", gap: 4 }}>Copy Selected <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 8, background: th.accent, color: "#fff", fontWeight: 700, lineHeight: "14px" }}>{totalSelected}</span></button>}
+              {totalSelected > 0 && <button onClick={copySelected} style={{ ...ms.bs, display: "flex", alignItems: "center", gap: 4 }}>Copy Selected <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 8, background: th.fillAccent, color: th.onAccent, fontWeight: 700, lineHeight: "14px" }}>{totalSelected}</span></button>}
               {data && data.encryptedCount > 0 && <button onClick={copyReport} style={ms.bs}>Copy Summary</button>}
               {data && data.encryptedCount > 0 && <button onClick={exportPdf} style={{ ...ms.bs, display: "flex", alignItems: "center", gap: 4 }}><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>Export PDF</button>}
               <button onClick={() => setModal(null)} style={ms.bp}>Done</button>

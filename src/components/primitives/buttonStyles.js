@@ -56,8 +56,8 @@ export function buttonStyles(th, { variant = "primary", size = "md", disabled = 
     case "primary":
     default:
       variantStyle = {
-        background: disabled ? th.btnBg : th.accent,
-        color: disabled ? th.textMuted : "#fff",
+        background: disabled ? th.btnBg : th.fillAccent,
+        color: disabled ? th.textMuted : th.onAccent,
         border: "none",
         fontWeight: 600,
       };
