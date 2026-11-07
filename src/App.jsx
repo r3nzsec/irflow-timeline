@@ -2629,6 +2629,21 @@ export default function App() {
     },
     [dateTimeFormat, timezone, ct?.tsColumns],
   );
+  // Cell popup (double-click a cell): its Copy buttons fill in solid and say "Copied" for a
+  // second, and Timestamp Converter values say "Copied", because the popup's overlay blurs
+  // the status bar's "Copied!".
+  const [popupCopied, setPopupCopied] = useState(null); // { key, ok, tick }
+  const popupCopiedTimerRef = useRef(null);
+  const copyFromPopup = useCallback(async (key, text) => {
+    let ok = true;
+    try { await navigator.clipboard.writeText(text); } catch { ok = false; }
+    setPopupCopied({ key, ok, tick: Date.now() });
+    clearTimeout(popupCopiedTimerRef.current);
+    popupCopiedTimerRef.current = setTimeout(() => setPopupCopied(null), 1000);
+    if (ok) { setCopiedMsg(true); setTimeout(() => setCopiedMsg(false), 1200); }
+  }, []);
+  useEffect(() => { setPopupCopied(null); }, [cellPopup]);
+  useEffect(() => () => clearTimeout(popupCopiedTimerRef.current), []);
   const copyCell = useCallback((val, colName) => {
     const text = colName != null && colName !== "" ? fmtCell(colName, val) : (val || "");
     navigator.clipboard?.writeText(text);
@@ -3688,6 +3703,7 @@ export default function App() {
         @keyframes tle-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(0.95); } }
         @keyframes tle-modal-in { from { opacity: 0; transform: scale(0.97) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
         @keyframes tle-overlay-in { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes tle-copy-pop { 0% { transform: scale(1); } 30% { transform: scale(0.9); } 65% { transform: scale(1.06); } 100% { transform: scale(1); } }
         ::-webkit-scrollbar { width: 14px; height: 14px; }
         ::-webkit-scrollbar-track { background: ${th.bg}; }
         ::-webkit-scrollbar-thumb { background: ${th.textMuted}; border-radius: 7px; border: 3px solid ${th.bg}; }
@@ -4380,16 +4396,39 @@ export default function App() {
             if (decoded && /[\x20-\x7e]/.test(decoded)) cpDecoded = decoded;
           } catch { /* invalid base64 */ }
         }
+        // A Copy button that fills in solid for 1 s with "Copied" (or red "Copy failed") and a
+        // quick press. The fill is the theme's text color, so it is near-black on light themes and
+        // near-white on dark ones, the strongest contrast with the popup in every theme. The key
+        // changes on every copy, so the button remounts and the animation plays again.
+        const copyButton = (key, text, small = false) => {
+          const done = popupCopied?.key === key ? popupCopied : null;
+          const fill = done ? (done.ok ? th.text : th.danger) : null;
+          const ink = done ? (done.ok ? th.modalBg : "#ffffff") : th.text;
+          return (
+            <button key={done ? `${key}-${done.tick}` : key} type="button" onClick={() => copyFromPopup(key, text)}
+              aria-label={done ? (done.ok ? "Copied" : "Copy failed") : "Copy"}
+              style={{
+                background: fill || th.btnBg, border: `1px solid ${fill || th.btnBorder}`, borderRadius: small ? 4 : 6,
+                color: ink, fontWeight: done ? 600 : undefined, fontSize: small ? 10 : 11, padding: small ? "2px 8px" : "4px 10px", cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: small ? 3 : 4, minWidth: small ? 66 : 82,
+                animation: done ? "tle-copy-pop 320ms var(--ease-out-soft)" : undefined,
+                transition: "background var(--m-base), color var(--m-base), border-color var(--m-base)",
+              }}>
+              {done?.ok
+                ? <svg width={small ? 10 : 11} height={small ? 10 : 11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                : <svg width={small ? 10 : 11} height={small ? 10 : 11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>}
+              <span aria-live="polite">{done ? (done.ok ? "Copied" : "Copy failed") : "Copy"}</span>
+            </button>
+          );
+        };
+        const cpCopyText = cellPopup.column ? fmtCell(cellPopup.column, cellPopup.value) : (cellPopup.value || "");
         return (
         <div onClick={() => setCellPopup(null)} style={{ position: "fixed", inset: 0, background: th.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, backdropFilter: "blur(4px)" }}>
           <div onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", background: th.modalBg + "f2", border: `1px solid ${th.glassBorder}`, borderRadius: 12, padding: 0, width: 560, maxWidth: "92vw", maxHeight: "80vh", display: "flex", flexDirection: "column", backdropFilter: "blur(40px) saturate(1.6)", WebkitBackdropFilter: "blur(40px) saturate(1.6)", boxShadow: "0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04) inset", animation: "tle-modal-in var(--m-modal) var(--ease-out)" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: `1px solid ${th.border}` }}>
               <span style={{ color: th.textDim, fontSize: 12, fontWeight: 600 }}>{cellPopup.column}</span>
               <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => copyCell(cellPopup.value, cellPopup.column)} style={{ background: th.btnBg, border: `1px solid ${th.btnBorder}`, borderRadius: 6, color: th.text, fontSize: 11, padding: "4px 10px", cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
-                  Copy
-                </button>
+                {copyButton("value", cpCopyText)}
                 <button onClick={() => setCellPopup(null)} style={{ background: "none", border: "none", color: th.textMuted, cursor: "pointer", fontSize: 16, padding: "2px 6px", lineHeight: 1 }}>✕</button>
               </div>
             </div>
@@ -4442,12 +4481,17 @@ export default function App() {
                       {formats.map(([label, val]) => (
                         <Fragment key={label}>
                           <span style={{ color: th.textMuted, fontSize: 10, fontFamily: "-apple-system, sans-serif", textAlign: "right", whiteSpace: "nowrap" }}>{label}</span>
-                          <span onClick={() => { navigator.clipboard?.writeText(val); setCopiedMsg(true); setTimeout(() => setCopiedMsg(false), 1200); }}
+                          <span onClick={() => copyFromPopup(`ts:${label}`, val)}
                             style={{ color: th.text, fontSize: 11, fontFamily: "'SF Mono', Menlo, monospace", cursor: "pointer", padding: "1px 4px", borderRadius: 3, wordBreak: "break-all" }}
                             title="Click to copy"
                             onMouseEnter={(e) => { e.currentTarget.style.background = th.glassBg; }}
                             onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
                             {val}
+                            {popupCopied?.key === `ts:${label}` && (
+                              <span key={popupCopied.tick} aria-live="polite" style={{ display: "inline-block", marginLeft: 8, color: popupCopied.ok ? th.success : th.danger, fontSize: 10, fontWeight: 600, fontFamily: "-apple-system, sans-serif", animation: "tle-copy-pop 320ms var(--ease-out-soft)" }}>
+                                {popupCopied.ok ? "✓ Copied" : "Copy failed"}
+                              </span>
+                            )}
                           </span>
                         </Fragment>
                       ))}
@@ -4460,11 +4504,7 @@ export default function App() {
                 <div style={{ marginTop: 12, padding: "10px 12px", background: `${th.danger}11`, border: `1px solid ${th.danger}33`, borderRadius: 8 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                     <span style={{ fontSize: 11, color: th.danger, fontWeight: 600, fontFamily: "-apple-system, sans-serif" }}>Decoded PowerShell (-enc)</span>
-                    <button onClick={() => { navigator.clipboard?.writeText(cpDecoded); setCopiedMsg(true); setTimeout(() => setCopiedMsg(false), 1200); }}
-                      style={{ background: th.btnBg, border: `1px solid ${th.btnBorder}`, borderRadius: 4, color: th.text, fontSize: 10, padding: "2px 8px", cursor: "pointer", display: "flex", alignItems: "center", gap: 3 }}>
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
-                      Copy
-                    </button>
+                    {copyButton("decoded", cpDecoded, true)}
                   </div>
                   <pre style={{ color: th.text, fontSize: 11, fontFamily: "'SF Mono', Menlo, monospace", whiteSpace: "pre-wrap", wordBreak: "break-all", margin: 0, lineHeight: 1.5 }}>{cpDecoded}</pre>
                 </div>
