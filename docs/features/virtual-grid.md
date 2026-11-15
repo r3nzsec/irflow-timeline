@@ -58,7 +58,11 @@ The menu bar provides access to all application features through five dropdown m
 
 ![Proximity pivot dialog to filter the grid to a time window around a selected row](/dfir-tips/Proximity-pivot.png)
 
-Select a row, then choose **Actions → Pivot ±N Minutes** to open the proximity dialog. Pick a window (for example ±5 or ±15 minutes) and apply — a **Proximity** chip appears in the toolbar showing the active window around your pivot timestamp.
+Select a row, then choose **Actions → Pivot ±N Minutes** to open the proximity dialog. Select a timestamp column and window (for example ±5 minutes). **Apply** keeps existing filters; **Apply and remove filters** clears other restrictions while preserving the evidence, bookmarks, and tags. Either action closes the dialog on success and keeps the source event selected and centered, even when it falls outside the previously loaded rows. A **Proximity** chip shows the active window.
+
+For a faster pivot, right-click a timestamp cell and choose **Pivot with filters** or **Pivot and clear filters**, followed by ±30s, ±1m, ±5m, or ±10m. The clicked event is the pivot source, independently of the previous selection. Timestamp menus omit generic filtering and tag controls; right-click the **Tags** column for the available tags and **Clear**.
+
+The histogram and column date-range controls use the same active filters. Date controls display UTC bounds to milliseconds, while an unchanged range retains its original sub-millisecond precision. Naive timestamps are treated as UTC and explicit offsets are honored.
 
 ### Tools
 

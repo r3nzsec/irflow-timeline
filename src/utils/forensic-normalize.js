@@ -15,6 +15,14 @@ export function isUnsetWindowsTimestamp(value) {
   return /^(1600|1601|0001)[-/T]/.test(s);
 }
 
+// Keep the source fraction as text: Date only retains milliseconds. Match a time
+// component so a decimal epoch or Excel serial is not mistaken for seconds.
+export function timestampFraction(value) {
+  if (typeof value !== "string") return "";
+  const m = /[T\s]\d{1,2}:\d{2}:\d{2}[.,](\d{1,9})/i.exec(value);
+  return m ? m[1] : "";
+}
+
 export function normalizeTimestamp(value) {
   if (value == null || value === "") return NaN;
   const s = String(value).trim();
@@ -22,7 +30,7 @@ export function normalizeTimestamp(value) {
   if (isUnsetWindowsTimestamp(s)) return NaN;
 
   if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(s)) {
-    const iso = s.replace(" ", "T");
+    const iso = s.replace(" ", "T").replace(/\s+([zZ]|[+-]\d{2}:?\d{2})$/, "$1");
     const t = Date.parse(/[zZ]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + "Z");
     if (!Number.isNaN(t)) return t;
   }
@@ -30,15 +38,15 @@ export function normalizeTimestamp(value) {
     const t = Date.parse(s + "T00:00:00Z");
     if (!Number.isNaN(t)) return t;
   }
-  let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AP]M)?)?/i);
+  let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2})(?:[.,](\d{1,9}))?)?\s*([AP]M)?\s*([zZ]|[+-]\d{2}:?\d{2})?)?$/i);
   if (m) {
     let h = parseInt(m[4] || "0", 10);
-    const ap = m[7];
+    const ap = m[8];
     if (ap) {
       if (/PM/i.test(ap) && h !== 12) h += 12;
       if (/AM/i.test(ap) && h === 12) h = 0;
     }
-    const iso = `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}T${String(h).padStart(2, "0")}:${m[5] || "00"}:${m[6] || "00"}Z`;
+    const iso = `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}T${String(h).padStart(2, "0")}:${m[5] || "00"}:${m[6] || "00"}${m[7] ? "." + m[7].slice(0, 3).padEnd(3, "0") : ""}${m[9] || "Z"}`;
     const t = Date.parse(iso);
     if (!Number.isNaN(t)) return t;
   }

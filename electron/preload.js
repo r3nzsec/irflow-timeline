@@ -142,6 +142,7 @@ contextBridge.exposeInMainWorld("tle", {
   // Apply/remove ONE tag across an explicit row-ID list in a single transaction.
   // Multi-row tagging must use this, never a per-row addTag loop.
   setTagOnRows: (tabId, rowIds, tag, add) => ipcRenderer.invoke("set-tag-on-rows", { tabId, rowIds, tag, add }),
+  clearTagsFiltered: (tabId, options) => ipcRenderer.invoke("clear-tags-filtered", { tabId, options }),
   getTagsForRows: (tabId, rowIds) => ipcRenderer.invoke("get-tags-for-rows", { tabId, rowIds }),
   renameTag: (tabId, from, to) => ipcRenderer.invoke("rename-tag", { tabId, from, to }),
   deleteTag: (tabId, tag) => ipcRenderer.invoke("delete-tag", { tabId, tag }),

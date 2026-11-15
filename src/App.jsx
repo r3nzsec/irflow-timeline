@@ -27,6 +27,7 @@ import { IOC_CATEGORY_PATTERNS } from "./utils/ioc-parsing.js";
 import { getColumnGeometry, getColumnWindow, getGridBodyViewportHeight, getGridContentWidth, getRowScrollTarget, getVisibleRowRange, getWindowSlice, planWindowFetch, rowWindowCovers } from "./utils/grid-layout.js";
 import { getSelectedRowCount, isRowSelected, selectRowIds, toggleRowSelection } from "./utils/row-selection.js";
 import { effectiveSearchTerm, isSearchTooShort } from "./utils/search.js";
+import { buildProximityFilter, clearedFiltersPatch, dateRangeInputValue } from "./utils/proximity-filter.js";
 
 // ── Extracted components ─────────────────────────────────────────
 import { BkmkIcon, CheckboxIcon } from "./components/icons.jsx";
@@ -35,6 +36,8 @@ import DiffBanner from "./components/DiffBanner.jsx";
 import FilterBar, { SearchOptionsBar } from "./components/FilterBar.jsx";
 import StatusBar from "./components/StatusBar.jsx";
 import SelectionBar from "./components/SelectionBar.jsx";
+import TimestampPivotMenu from "./components/TimestampPivotMenu.jsx";
+import RowTagMenu from "./components/RowTagMenu.jsx";
 import { Overlay, ColorModal, ColModal, ShortModal, SheetModal, ImportProgress, makeModalStyles } from "./components/InlineModals.jsx";
 import { ConfirmDialog, ToastContainer, Loading } from "./components/primitives/index.js";
 import useToastStore, { toast } from "./store/useToastStore.js";
@@ -779,6 +782,7 @@ export default function App() {
     if (!tle || !tab) return;
     // Stale request prevention: capture current fetch ID before async work
     const myFetchId = ++fetchId.current;
+    const focusRowId = tab.pendingFocusRowId || null;
     // Skip query for single-character searches (too broad, expensive on large datasets)
     const rawSearch = tab.searchHighlight ? "" : tab.searchTerm;
     const effectiveSearch = effectiveSearchTerm(rawSearch);
@@ -815,10 +819,10 @@ export default function App() {
     }
     // Check search cache (instant FL/HL toggle and tab switching)
     const tabCache = searchCache.current[tab.id];
-    if (tabCache && tabCache[cacheKey] && centerRow === 0) {
+    if (!focusRowId && tabCache && tabCache[cacheKey] && centerRow === 0) {
       const cached = tabCache[cacheKey];
       setTabs((prev) => prev.map((t) =>
-        t.id === tab.id ? { ...t, rows: cached.rows, rowOffset: cached.rowOffset, totalFiltered: cached.totalFiltered, bookmarkedSet: cached.bookmarkedSet, rowTags: cached.rowTags, dataReady: true } : t
+        t.id === tab.id ? { ...t, rows: cached.rows, rowOffset: cached.rowOffset, totalFiltered: cached.totalFiltered, bookmarkedSet: cached.bookmarkedSet, rowTags: cached.rowTags, dataReady: true, rowFocusResult: null } : t
       ));
       setSearchLoading(false);
       return;
@@ -832,6 +836,7 @@ export default function App() {
     const fetchOffset = Math.max(0, Math.min(maxOffset, centerRow - Math.floor(fetchLimit / 2)));
     const result = await tle.queryRows(tab.id, {
       offset: fetchOffset, limit: fetchLimit,
+      ...(focusRowId ? { focusRowId } : {}),
       ...(aiHist ? aiHistoryQueryIpcOptions() : {}),
       sortCol: tab.sortCol, sortDir: tab.sortDir,
       searchTerm: effectiveSearch, searchMode: tab.searchMode, searchCondition: tab.searchCondition || "contains",
@@ -857,7 +862,7 @@ export default function App() {
     }
     // Cache only initial/filter loads (centerRow===0), NOT scroll-driven fetches,
     // to prevent stale offset data from being returned on scroll-back
-    if (centerRow === 0) {
+    if (centerRow === 0 && !focusRowId) {
       if (!searchCache.current[tab.id]) searchCache.current[tab.id] = {};
       const tc = searchCache.current[tab.id];
       const keys = Object.keys(tc);
@@ -865,7 +870,13 @@ export default function App() {
       tc[cacheKey] = { rows: result.rows, rowOffset: fetchOffset, totalFiltered: result.totalFiltered, bookmarkedSet: new Set(result.bookmarkedRows), rowTags: result.rowTags || {} };
     }
     setTabs((prev) => prev.map((t) =>
-      t.id === tab.id ? { ...t, rows: result.rows, rowOffset: fetchOffset, totalFiltered: result.totalFiltered, bookmarkedSet: new Set(result.bookmarkedRows), rowTags: result.rowTags || {}, dataReady: true } : t
+      t.id === tab.id ? {
+        ...t, rows: result.rows, rowOffset: result.rowOffset ?? fetchOffset,
+        totalFiltered: result.totalFiltered, bookmarkedSet: new Set(result.bookmarkedRows),
+        rowTags: result.rowTags || {}, dataReady: true, rowFocusResult: null,
+        ...(focusRowId ? { pendingFocusRowId: null,
+          rowFocusResult: { rowId: focusRowId, index: result.focusIndex ?? -1 } } : {}),
+      } : t
     ));
     setSearchLoading(false);
   }, [tle]);
@@ -908,8 +919,8 @@ export default function App() {
     const dfSig = ct?.disabledFilters ? [...ct.disabledFilters].sort().join(",") : "";
     const afSig = ct?.advancedFilters?.map(f => `${f.column}:${f.operator}:${f.value}:${f.logic}`).join(",") || "";
     const rowIdSig = rowIdFilterSignature(ct?.rowIdFilter);
-    return `${ct?.sortCol}|${ct?.sortDir}|${ct?.showBookmarkedOnly}|${cbfSig}|${gbSig}|${drSig}|${ct?.searchHighlight}|${ct?.searchCondition}|${dfSig}|${ct?.tagFilter || ""}|${afSig}|${rowIdSig}`;
-  }, [ct?.sortCol, ct?.sortDir, ct?.showBookmarkedOnly, ct?.checkboxFilters, ct?.groupByColumns, ct?.dateRangeFilters, ct?.searchHighlight, ct?.searchCondition, ct?.disabledFilters, ct?.tagFilter, ct?.advancedFilters, ct?.rowIdFilter]);
+    return `${ct?.sortCol}|${ct?.sortDir}|${ct?.showBookmarkedOnly}|${cbfSig}|${gbSig}|${drSig}|${ct?.searchHighlight}|${ct?.searchCondition}|${dfSig}|${ct?.tagFilter || ""}|${afSig}|${rowIdSig}|${ct?.rowFocusVersion || 0}`;
+  }, [ct?.sortCol, ct?.sortDir, ct?.showBookmarkedOnly, ct?.checkboxFilters, ct?.groupByColumns, ct?.dateRangeFilters, ct?.searchHighlight, ct?.searchCondition, ct?.disabledFilters, ct?.tagFilter, ct?.advancedFilters, ct?.rowIdFilter, ct?.rowFocusVersion]);
 
   useEffect(() => {
     if (!ct || !ct.dataReady) return;
@@ -963,29 +974,26 @@ export default function App() {
     }
     const hCol = histogramCol && ct.tsColumns.has(histogramCol) ? histogramCol : [...ct.tsColumns][0];
     if (!hCol) return;
-    const sig = `${ct.id}:${hCol}:${histGranularity}:${ct.totalFiltered}:${ct.searchTerm}:${ct.searchMode}:${ct.showBookmarkedOnly}:${rowIdFilterSignature(ct.rowIdFilter)}:${JSON.stringify(ct.dateRangeFilters)}:${JSON.stringify(ct.advancedFilters)}`;
+    const sig = JSON.stringify([ct.id, hCol, histGranularity, ct.totalFiltered, currentFilterOptions]);
     const cached = histogramCache.current[ct.id];
     if (cached && cached.sig === sig) { setHistogramData(cached.data); setHistogramLoaded(true); return; }
     if (cached) setHistogramData(cached.data); // show stale data while refreshing
     setHistogramLoaded(false);
+    let cancelled = false;
     histogramTimer.current = setTimeout(async () => {
-      const af = activeFilters(ct);
-      const effectiveSearch = effectiveSearchTerm(ct.searchHighlight ? "" : ct.searchTerm);
       const data = await tle.getHistogramData(ct.id, hCol, {
-        searchTerm: effectiveSearch, searchMode: ct.searchMode, searchCondition: ct.searchCondition || "contains",
-        columnFilters: af.columnFilters, checkboxFilters: af.checkboxFilters,
-        bookmarkedOnly: ct.showBookmarkedOnly, rowIdFilter: ct.rowIdFilter || null,
-        dateRangeFilters: ct.dateRangeFilters || {}, advancedFilters: ct.advancedFilters || [],
+        ...currentFilterOptions,
         granularity: histGranularity,
       });
+      if (cancelled) return;
       const result = isIpcError(data) || !Array.isArray(data) ? [] : data;
       if (isIpcCancelled(data)) return;
       histogramCache.current[ct.id] = { sig, data: result };
       setHistogramData(result);
       setHistogramLoaded(true);
     }, 400);
-    return () => { if (histogramTimer.current) clearTimeout(histogramTimer.current); };
-  }, [histogramVisible, histogramCol, histGranularity, ct?.id, ct?.totalFiltered, ct?.searchTerm, ct?.searchMode, ct?.showBookmarkedOnly, ct?.rowIdFilter, JSON.stringify(ct?.dateRangeFilters), JSON.stringify(ct?.advancedFilters)]); // eslint-disable-line
+    return () => { cancelled = true; if (histogramTimer.current) clearTimeout(histogramTimer.current); };
+  }, [histogramVisible, histogramCol, histGranularity, ct?.id, ct?.dataReady, ct?.totalFiltered, currentFilterOptions]); // eslint-disable-line
 
   // Histogram container width tracking via ResizeObserver
   useEffect(() => {
@@ -1647,6 +1655,7 @@ export default function App() {
     setCellContextMenu(null);
     setRowContextMenu({
       x, y,
+      tabId: tab.id,
       rowId: row.__idx,
       rowIndex,
       currentTags: rTags,
@@ -1774,6 +1783,7 @@ export default function App() {
     setCellContextMenu(null);
     setRowContextMenu({
       x, y,
+      tabId: tab.id,
       rowId: row.__idx,
       rowIndex,
       currentTags: rTags,
@@ -1787,8 +1797,7 @@ export default function App() {
   }, [markRightClickHandled, openGridContextMenuFromGeometry, setCellContextMenu, setContextMenu, setRowContextMenu]);
 
   // Supported grid context-menu shortcut: Command-click on macOS (Ctrl-click elsewhere).
-  // Plain secondary-click handling is intentionally disabled after unreliable
-  // external-trackpad behavior; this path is explicit and stable.
+  // Timestamp cells also open their context menu on a plain secondary click.
   useEffect(() => {
     const onModifiedPrimaryPointer = (e) => {
       const modifiedPrimaryClick = e.button === 0 && (e.ctrlKey || e.metaKey);
@@ -1856,13 +1865,19 @@ export default function App() {
 
   useEffect(() => {
     const onClickAfterSecondary = (e) => {
-      if (!rightClickFired.current) return;
+      if (!rightClickFired.current || e.target?.closest?.("[data-timestamp-pivot-menu], [data-row-tag-menu]")) return;
       e.preventDefault();
       e.stopPropagation();
     };
     document.addEventListener("click", onClickAfterSecondary, true);
     return () => document.removeEventListener("click", onClickAfterSecondary, true);
   }, []);
+
+  useEffect(() => {
+    // The guard protects the opening secondary click, not subsequent row actions
+    // after the menu has been dismissed.
+    if (!rowContextMenu && !cellContextMenu && !contextMenu) rightClickFired.current = false;
+  }, [rowContextMenu, cellContextMenu, contextMenu]);
 
   useEffect(() => {
     if (contextMenu) debugRightClick("column context menu render", { x: contextMenu.x, y: contextMenu.y, colName: contextMenu.colName });
@@ -1969,19 +1984,24 @@ export default function App() {
   };
 
   // ── Temporal Proximity Search ──────────────────────────────────
-  const applyProximity = useCallback((tsCol, pivotRaw, windowMs, label) => {
-    const normalized = (pivotRaw || "").replace(" ", "T");
-    const pivotMs = Date.parse(normalized);
-    if (isNaN(pivotMs)) return;
-    const fmt = (ms) => {
-      const d = new Date(ms);
-      const pad = (n) => String(n).padStart(2, "0");
-      return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
-    };
-    up("dateRangeFilters", { ...(ct?.dateRangeFilters || {}), [tsCol]: { from: fmt(pivotMs - windowMs), to: fmt(pivotMs + windowMs) } });
-    setProximityFilter({ tsCol, pivotRaw, windowMs, label });
+  const applyProximity = useCallback((tsCol, pivotRow, windowMs, label, removeFilters = false) => {
+    const pivotRaw = pivotRow?.[tsCol];
+    const result = buildProximityFilter(ct, tsCol, pivotRaw, windowMs, label, removeFilters);
+    if (result.error) {
+      if (modal?.type === "proximity") setModal(updateModal("proximity", { error: result.error }));
+      else toast.error("Pivot failed", { detail: result.error });
+      return;
+    }
+    setTabs((prev) => prev.map((t) => t.id === ct.id ? {
+      ...t, ...result.tabPatch, pendingFocusRowId: pivotRow.__idx,
+      rowFocusResult: null, rowFocusVersion: (t.rowFocusVersion || 0) + 1,
+    } : t));
+    setHistogramCol(tsCol);
+    setProximityFilter(result.proximity);
+    setRowContextMenu(null);
+    setCellContextMenu(null);
     setModal(null);
-  }, [ct, up]);
+  }, [ct, modal?.type, setTabs, setProximityFilter, setModal, setHistogramCol, setRowContextMenu, setCellContextMenu]);
 
   // ── Session save/load ──────────────────────────────────────────
   // Build a session payload from the current tabs. Shared by save/auto-save.
@@ -2535,6 +2555,28 @@ export default function App() {
     }
   }, [tle, ct, resolveTagTarget, invalidateRowMetaCache, up, fetchData]);
 
+  const clearTagsOnTarget = useCallback(async (anchorRowId) => {
+    if (!tle || !ct) return;
+    const target = resolveTagTarget(anchorRowId);
+    const options = target.mode === "filtered"
+      ? { ...target.options, confirmWholeTab: true }
+      : { rowIdFilter: target.rowIds };
+    try {
+      const result = await tle.clearTagsFiltered(ct.id, options);
+      if (isIpcError(result) || !result?.ok) throw new Error(ipcErrorMessage(result, result?.error || "Could not clear tags"));
+      invalidateRowMetaCache(ct.id);
+      const tagFilterActive = ct.tagFilter && !(ct.disabledFilters || new Set()).has("__tags__");
+      if (tagFilterActive) {
+        setScrollTop(0);
+        if (scrollRef.current) scrollRef.current.scrollTop = 0;
+      }
+      await fetchData(ct, tagFilterActive ? 0 : Math.floor((scrollMapRef.current.logicalScrollTop || 0) / ROW_HEIGHT));
+      toast.success(`Cleared ${formatNumber(result.removed)} tag${result.removed === 1 ? "" : "s"}`);
+    } catch (err) {
+      toast.error("Could not clear tags", { detail: String(err?.message || err) });
+    }
+  }, [tle, ct, resolveTagTarget, invalidateRowMetaCache, fetchData]);
+
   const rowOffset = ct?.rowOffset || 0;
   const totalH = totalCount * ROW_HEIGHT;
   // The scroll container has already shrunk around the detail panel. Only remove
@@ -2797,7 +2839,7 @@ export default function App() {
     currentFilterScopeSignature,
   ]);
 
-  const scrollToRow = useCallback((idx) => {
+  const scrollToRow = useCallback((idx, align = "nearest") => {
     if (!scrollRef.current) return;
     const sf = scrollMapRef.current.scaleFactor || 1;
     const target = getRowScrollTarget({
@@ -2806,6 +2848,7 @@ export default function App() {
       logicalScrollTop: scrollMapRef.current.logicalScrollTop || 0,
       viewportHeight: scrollRef.current.clientHeight,
       stickyHeight: HEADER_HEIGHT + FILTER_HEIGHT,
+      align,
     });
     // Map the logical row target back to the capped physical scroll range.
     if (target !== null) scrollRef.current.scrollTop = target / sf;
@@ -2828,19 +2871,25 @@ export default function App() {
     }
   }, [ct, isGrouped, fetchData]);
 
-  // Process Inspector grid pivot: after filters land, scroll/select the source create event.
+  // The query resolves the stable source ID against the new filters/sort, including
+  // events beyond the loaded window. Never consume focus against the old rows.
   useEffect(() => {
-    const focusId = ct?.pendingFocusRowId;
-    if (!ct?.dataReady || !focusId || isGrouped) return;
-    const rows = ct.rows || [];
-    const local = rows.findIndex((r) => Number(r?.__idx) === Number(focusId));
-    if (local < 0) return; // not in current window yet — wait for next fetch
-    const absIdx = (ct.rowOffset || 0) + local;
-    up("pendingFocusRowId", null);
-    setSelectedRows(new Set([Number(focusId)]));
-    setLastClickedRow(absIdx);
-    requestAnimationFrame(() => scrollToRow(absIdx));
-  }, [ct?.pendingFocusRowId, ct?.rows, ct?.rowOffset, ct?.dataReady, isGrouped]); // eslint-disable-line react-hooks/exhaustive-deps
+    const focus = ct?.rowFocusResult;
+    if (!focus || isGrouped) return;
+    if (scrollFetchTimer.current) clearTimeout(scrollFetchTimer.current);
+    setAllRowsSelected(false);
+    setSelectionTabId(ct.id);
+    setSelectAllScopeSignature(null);
+    setSelectedRows(new Set([Number(focus.rowId)]));
+    setLastClickedRow(focus.index >= 0 ? focus.index : null);
+    const frame = requestAnimationFrame(() => {
+      if (ctRef.current?.id !== ct.id || ctRef.current?.rows !== ct.rows) return;
+      up("rowFocusResult", null);
+      if (focus.index >= 0) scrollToRow(focus.index, "center");
+      else toast.info("Selected event is outside the active filters");
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [ct?.rowFocusResult, ct?.id, isGrouped]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectSingleRowAt = async (idx, knownRowId = null) => {
     let rowId = Number(knownRowId);
@@ -3414,7 +3463,6 @@ export default function App() {
   }, [ct, activeTab, selectedRows, allRowsSelected, selectionCount, lastClickedRow, lastClickedRowData, applyTagToRows, ct?.totalFiltered, isGrouped, getRowAt, searchMatchIdx, navigateSearch, selectedColumn, setSelectedColumn, copyColumnValues, copySelectedRows, contextMenu, clearRowSelection]);
 
 
-
   // ── Modal styles (shared by all modals) ───────────────────────
   const ms = makeModalStyles(th);
 
@@ -3425,7 +3473,6 @@ export default function App() {
     if (bm) return th.bookmark;
     return ai % 2 === 0 ? th.rowEven : th.rowOdd;
   }, [th]);
-
 
   // ── Empty state ──────────────────────────────────────────────────
   if (tabs.length === 0) {
@@ -3662,10 +3709,7 @@ export default function App() {
   const totalActiveFilters = activeCheckboxCount + activeColumnFilterCount + activeDateFilterCount + activeAdvFilterCount + (hasSearch ? 1 : 0) + (hasBookmarkFilter ? 1 : 0) + (hasTagFilter ? 1 : 0) + (hasRowIdFilter ? 1 : 0);
   const clearAllFilters = () => {
     setTabs((prev) => prev.map((t) => t.id !== ct.id ? t : {
-      ...t, searchTerm: "", columnFilters: {}, checkboxFilters: {},
-      dateRangeFilters: {}, advancedFilters: [], showBookmarkedOnly: false,
-      tagFilter: null, rowIdFilter: null, rowIdFilterLabel: null,
-      searchHighlight: false, disabledFilters: new Set(),
+      ...t, ...clearedFiltersPatch(),
     }));
   };
 
@@ -3812,7 +3856,6 @@ export default function App() {
       </Suspense>
       <SearchOptionsBar th={th} ct={ct} up={up} />
 
-
       {/* Cross-tab search results (auto-shown with 2+ tabs and active search) */}
       {crossTabCounts && crossTabOpen && crossTabCounts.results.length > 0 && (
         <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 12px", background: th.panelBg, borderBottom: `1px solid ${th.border}`, flexShrink: 0, overflowX: "auto" }}>
@@ -3887,7 +3930,6 @@ export default function App() {
           )}
         </div>
       )}
-
 
       {/* EVTX fast-message mode notice */}
       {ct?.messagesDeferred && (
@@ -3972,7 +4014,6 @@ export default function App() {
           searchLoading={searchLoading} fontSize={fontSize}
         />
       </Suspense>
-
 
       {/* ── StatusBar ─────────────────────────────────────────── */}
       <StatusBar
@@ -4199,19 +4240,20 @@ export default function App() {
         const customU = modal.customU ?? "m";
         const pivotVal = pivotRow?.[selCol] ?? "";
         const PROX_PRESETS = [
-          { label: "±30s", ms: 30_000, short: "30s" },
-          { label: "±1m", ms: 60_000, short: "1m" },
-          { label: "±5m", ms: 300_000, short: "5m" },
-          { label: "±15m", ms: 900_000, short: "15m" },
-          { label: "±30m", ms: 1_800_000, short: "30m" },
-          { label: "±1h", ms: 3_600_000, short: "1h" },
-          { label: "±4h", ms: 14_400_000, short: "4h" },
-          { label: "±1d", ms: 86_400_000, short: "1d" },
+          { label: "±30s", value: 30, unit: "s" },
+          { label: "±1m", value: 1, unit: "m" },
+          { label: "±5m", value: 5, unit: "m" },
+          { label: "±15m", value: 15, unit: "m" },
+          { label: "±30m", value: 30, unit: "m" },
+          { label: "±1h", value: 1, unit: "h" },
+          { label: "±4h", value: 4, unit: "h" },
+          { label: "±1d", value: 1, unit: "d" },
         ];
         const unitMs = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
         const customMs = (Number(customN) || 0) * (unitMs[customU] || 60_000);
+        const canApply = !!pivotVal && Number.isSafeInteger(customMs) && customMs > 0;
         return (
-          <Overlay th={th}>
+          <Overlay th={th} label="Find Nearby Events">
             <h3 style={ms.mh}>Find Nearby Events</h3>
             <div style={{ background: th.bgAlt, border: `1px solid ${th.border}`, borderRadius: 6, padding: "8px 10px", marginBottom: 12 }}>
               <div style={{ ...ms.lb, marginBottom: 2 }}>Pivot Timestamp</div>
@@ -4222,7 +4264,7 @@ export default function App() {
             {tsCols.length > 1 && (
               <div style={ms.fg}>
                 <label style={ms.lb}>Timestamp Column</label>
-                <select value={selCol} onChange={(e) => setModal((p) => ({ ...p, selCol: e.target.value }))} style={ms.sl}>
+                <select aria-label="Timestamp column" value={selCol} onChange={(e) => setModal((p) => ({ ...p, selCol: e.target.value, error: null }))} style={ms.sl}>
                   {tsCols.map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
@@ -4232,37 +4274,46 @@ export default function App() {
               <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 4 }}>
                 {PROX_PRESETS.map((p) => (
                   <button key={p.label} disabled={!pivotVal}
-                    onClick={() => applyProximity(selCol, pivotVal, p.ms, p.short)}
+                    aria-pressed={Number(customN) * unitMs[customU] === p.value * unitMs[p.unit]}
+                    onClick={() => setModal((prev) => ({ ...prev, customN: p.value, customU: p.unit, error: null }))}
                     onMouseEnter={(e) => { if (pivotVal) e.currentTarget.style.borderColor = th.accent; }}
                     onMouseLeave={(e) => { e.currentTarget.style.borderColor = th.btnBorder; }}
-                    style={{ padding: "5px 12px", background: th.btnBg, border: `1px solid ${th.btnBorder}`, borderRadius: 6, color: pivotVal ? th.text : th.textMuted, fontSize: 12, cursor: pivotVal ? "pointer" : "not-allowed", fontFamily: "-apple-system,sans-serif", transition: "border-color var(--m-base)" }}>
+                    style={{ padding: "5px 12px", background: Number(customN) * unitMs[customU] === p.value * unitMs[p.unit] ? `${th.accent}22` : th.btnBg, border: `1px solid ${th.btnBorder}`, borderRadius: 6, color: pivotVal ? th.text : th.textMuted, fontSize: 12, cursor: pivotVal ? "pointer" : "not-allowed", fontFamily: "-apple-system,sans-serif", transition: "border-color var(--m-base)" }}>
                     {p.label}
                   </button>
                 ))}
               </div>
             </div>
             <div style={ms.fg}>
-              <label style={ms.lb}>Custom Window</label>
+              <label htmlFor="proximity-window-count" style={ms.lb}>Custom Window</label>
               <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 4 }}>
                 <span style={{ color: th.textDim, fontSize: 12 }}>±</span>
-                <input type="number" min="1" value={customN}
-                  onChange={(e) => setModal((p) => ({ ...p, customN: e.target.value }))}
+                <input id="proximity-window-count" type="number" min="1" value={customN}
+                  onChange={(e) => setModal((p) => ({ ...p, customN: e.target.value, error: null }))}
                   style={{ ...ms.ip, width: 70 }} />
-                <select value={customU} onChange={(e) => setModal((p) => ({ ...p, customU: e.target.value }))} style={{ ...ms.sl, width: 100 }}>
+                <select aria-label="Time window unit" value={customU} onChange={(e) => setModal((p) => ({ ...p, customU: e.target.value, error: null }))} style={{ ...ms.sl, width: 100 }}>
                   <option value="s">seconds</option>
                   <option value="m">minutes</option>
                   <option value="h">hours</option>
                   <option value="d">days</option>
                 </select>
-                <button disabled={!pivotVal || customMs <= 0}
-                  onClick={() => applyProximity(selCol, pivotVal, customMs, `${customN}${customU}`)}
-                  style={{ ...ms.bp, opacity: (!pivotVal || customMs <= 0) ? 0.5 : 1, cursor: (!pivotVal || customMs <= 0) ? "not-allowed" : "pointer" }}>
-                  Apply
-                </button>
               </div>
             </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 6 }}>
+            {modal.error && <div role="alert" style={{ color: th.danger, fontSize: 12, marginBottom: 10 }}>{modal.error}</div>}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", marginTop: 6 }}>
               <button onClick={() => setModal(null)} style={ms.bs}>Cancel</button>
+              <button disabled={!canApply}
+                onClick={() => applyProximity(selCol, pivotRow, customMs, `${customN}${customU}`)}
+                title="Apply the time window and keep existing filters"
+                style={{ ...ms.bp, opacity: canApply ? 1 : 0.5, cursor: canApply ? "pointer" : "not-allowed" }}>
+                Apply
+              </button>
+              <button disabled={!canApply}
+                onClick={() => applyProximity(selCol, pivotRow, customMs, `${customN}${customU}`, true)}
+                title="Apply the time window and remove all other filters"
+                style={{ ...ms.bp, opacity: canApply ? 1 : 0.5, cursor: canApply ? "pointer" : "not-allowed" }}>
+                Apply and remove filters
+              </button>
             </div>
           </Overlay>
         );
@@ -4575,16 +4626,17 @@ export default function App() {
         <>
           <div aria-hidden="true" onClick={() => setDateRangeDropdown(null)} style={{ position: "fixed", inset: 0, zIndex: 199 }} />
           <div role="dialog" aria-modal="true" aria-label={`Date range for ${dateRangeDropdown.colName}`} onClick={(e) => e.stopPropagation()} style={{ WebkitAppRegion: "no-drag", position: "fixed", left: Math.min(dateRangeDropdown.x, window.innerWidth - 300), top: Math.min(dateRangeDropdown.y, window.innerHeight - 220), width: 290, background: th.modalBg + "f2", border: `1px solid ${th.glassBorder}`, borderRadius: 10, backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", boxShadow: "0 12px 40px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04) inset", zIndex: 200, padding: 12, animation: "tle-modal-in var(--m-modal) var(--ease-out)" }}>
-            <div style={{ color: th.textDim, fontSize: 11, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: "-apple-system, sans-serif" }}>Date Range — {dateRangeDropdown.colName}</div>
+            <div style={{ color: th.textDim, fontSize: 11, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: "-apple-system, sans-serif" }}>Date Range (UTC) — {dateRangeDropdown.colName}</div>
             <div style={{ marginBottom: 8 }}>
               <label style={{ display: "block", color: th.textMuted, fontSize: 11, marginBottom: 2, fontFamily: "-apple-system, sans-serif" }}>From</label>
-              <input type="datetime-local" value={dateRangeDropdown.from} onChange={(e) => setDateRangeDropdown({ ...dateRangeDropdown, from: e.target.value })}
+              <input type="datetime-local" step="0.001" aria-label="From" value={dateRangeInputValue(dateRangeDropdown.from)} onChange={(e) => setDateRangeDropdown({ ...dateRangeDropdown, from: e.target.value })}
                 style={{ width: "100%", background: th.bgInput, border: `1px solid ${th.btnBorder}`, borderRadius: 4, color: th.text, fontSize: 11, padding: "4px 6px", outline: "none", fontFamily: "inherit", boxSizing: "border-box", colorScheme: themeName }} />
             </div>
             <div style={{ marginBottom: 10 }}>
               <label style={{ display: "block", color: th.textMuted, fontSize: 11, marginBottom: 2, fontFamily: "-apple-system, sans-serif" }}>To</label>
-              <input type="datetime-local" value={dateRangeDropdown.to} onChange={(e) => setDateRangeDropdown({ ...dateRangeDropdown, to: e.target.value })}
+              <input type="datetime-local" step="0.001" aria-label="To" value={dateRangeInputValue(dateRangeDropdown.to)} onChange={(e) => setDateRangeDropdown({ ...dateRangeDropdown, to: e.target.value })}
                 style={{ width: "100%", background: th.bgInput, border: `1px solid ${th.btnBorder}`, borderRadius: 4, color: th.text, fontSize: 11, padding: "4px 6px", outline: "none", fontFamily: "inherit", boxSizing: "border-box", colorScheme: themeName }} />
+
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
               <button onClick={() => {
@@ -4847,7 +4899,19 @@ export default function App() {
       {rowContextMenu && renderContextPortal(
         <>
           <div onMouseDown={(e) => { if (shouldCloseContextBackdrop(e)) setRowContextMenu(null); }} onContextMenu={(e) => { e.preventDefault(); }} style={{ position: "fixed", inset: 0, zIndex: 99998 }} />
-          <div onMouseDown={(e) => e.stopPropagation()} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }} style={{ position: "fixed", left: Math.min(rowContextMenu.x, window.innerWidth - 220), top: Math.min(rowContextMenu.y, window.innerHeight - 300), background: themeName === "dark" ? "rgba(28,31,36,0.97)" : "rgba(252,252,254,0.97)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", border: `1px solid ${themeName === "dark" ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)"}`, borderRadius: 10, padding: "5px 0", zIndex: 99999, boxShadow: themeName === "dark" ? "0 12px 40px rgba(0,0,0,0.55), 0 0 0 0.5px rgba(255,255,255,0.06) inset" : "0 12px 40px rgba(0,0,0,0.18), 0 0 0 0.5px rgba(255,255,255,0.5) inset", minWidth: 200, animation: "tle-modal-in var(--m-fast) var(--ease-out)" }}>
+          <div role="menu" aria-label={rowContextMenu.cellColumn === "__tags__" ? "Tags" : "Event actions"} ref={(el) => {
+            if (!el) return;
+            const rect = el.getBoundingClientRect();
+            el.style.left = Math.max(8, Math.min(rowContextMenu.x, window.innerWidth - rect.width - 8)) + "px";
+            el.style.top = Math.max(8, Math.min(rowContextMenu.y, window.innerHeight - rect.height - 8)) + "px";
+          }} onMouseDown={(e) => e.stopPropagation()} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }} style={{ position: "fixed", left: Math.min(rowContextMenu.x, window.innerWidth - 220), top: Math.min(rowContextMenu.y, window.innerHeight - 300), background: themeName === "dark" ? "rgba(28,31,36,0.97)" : "rgba(252,252,254,0.97)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", border: `1px solid ${themeName === "dark" ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)"}`, borderRadius: 10, padding: "5px 0", zIndex: 99999, boxShadow: themeName === "dark" ? "0 12px 40px rgba(0,0,0,0.55), 0 0 0 0.5px rgba(255,255,255,0.06) inset" : "0 12px 40px rgba(0,0,0,0.18), 0 0 0 0.5px rgba(255,255,255,0.5) inset", minWidth: 200, animation: "tle-modal-in var(--m-fast) var(--ease-out)" }}>
+            {rowContextMenu.cellColumn === "__tags__" ? (
+              rowContextMenu.tabId === ct?.id && <RowTagMenu th={th} palette={ct.tagColors || {}}
+                currentTags={rowContextMenu.currentTags || []} targetCount={resolveTagTarget(rowContextMenu.rowId).count}
+                onToggle={(tag, add) => { setRowContextMenu(null); void applyTagToRows(tag, rowContextMenu.rowId, add); }}
+                onClear={() => { setRowContextMenu(null); void clearTagsOnTarget(rowContextMenu.rowId); }} />
+            ) : (<>
+
             {rowContextMenu.cellColumn && (
               <button onClick={() => { copyCell(rowContextMenu.cellValue, rowContextMenu.cellColumn); setRowContextMenu(null); }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = `${th.accent}22`; }}
@@ -4886,7 +4950,9 @@ export default function App() {
               {selectionCount > 1 ? "Copy This Row" : "Copy Row"}
             </button>
             {/* Filter in / Filter out */}
-            {rowContextMenu.cellColumn && (
+            {rowContextMenu.tabId === ct?.id && <TimestampPivotMenu key={`${ct.id}:${rowContextMenu.rowId}:${rowContextMenu.cellColumn}`}
+              th={th} tab={ct} column={rowContextMenu.cellColumn} row={rowContextMenu.row} onPivot={applyProximity} />}
+            {rowContextMenu.cellColumn && !ct?.tsColumns?.has(rowContextMenu.cellColumn) && (
               <>
                 <div style={{ height: 1, background: themeName === "dark" ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)", margin: "4px 8px" }} />
                 <div style={{ padding: "4px 14px 2px", color: th.textMuted, fontSize: 10, fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif", textTransform: "uppercase", letterSpacing: "0.06em" }}>Filters</div>
@@ -4922,9 +4988,10 @@ export default function App() {
                 </button>
               </>
             )}
-            <div style={{ height: 1, background: themeName === "dark" ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)", margin: "4px 8px" }} />
+            {!ct?.tsColumns?.has(rowContextMenu.cellColumn) && <div style={{ height: 1, background: th.border, margin: "4px 8px" }} />}
+
             {/* Tags — collapsible submenu */}
-            {(() => {
+            {!ct?.tsColumns?.has(rowContextMenu.cellColumn) && (() => {
               // The palette is the tag vocabulary, but a row can carry tags no
               // palette entry ever registered (Sigma / IOC: / VT: / analyzer tags
               // written straight through bulkTagFiltered). Union them in, or those
@@ -5065,6 +5132,7 @@ export default function App() {
                 <span style={{ width: 16, textAlign: "center", fontSize: 11 }}>⏱</span>
                 Find Nearby Events...
               </button>
+            </>)}
             </>)}
           </div>
         </>

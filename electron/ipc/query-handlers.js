@@ -7,6 +7,7 @@ function hasOwnValues(obj) {
 function hasHeavyQueryOptions(options = {}) {
   return Boolean(
     options.sortCol ||
+    options.focusRowId ||
     String(options.searchTerm || "").trim() ||
     hasOwnValues(options.columnFilters) ||
     hasOwnValues(options.checkboxFilters) ||

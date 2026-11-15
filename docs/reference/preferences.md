@@ -41,7 +41,7 @@ Control how timestamp columns are displayed in the grid. The underlying data is 
 | `yyyy-MM-dd` | `2025-03-15` |
 
 ::: tip Sub-Second Precision
-Use `yyyy-MM-dd HH:mm:ss.fffffff` for Sysmon and EVTX data where sub-second precision is forensically relevant — especially when correlating process creation with network connections.
+Use `yyyy-MM-dd HH:mm:ss.fffffff` for Sysmon and EVTX data where sub-second precision is forensically relevant — especially when correlating process creation with network connections. The display preserves up to seven fractional digits from the source, pads shorter fractions with zeroes, and truncates longer fractions without rounding. Timezone conversion retains those digits. Sorting retains the source fraction up to nine digits; raw values and exports remain unchanged.
 :::
 
 ### Timezone
