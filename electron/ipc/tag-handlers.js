@@ -25,6 +25,10 @@ module.exports = function registerTagHandlers(safeHandle, safeSend, { db }) {
     return db.setTagOnRows(tabId, rowIds, tag, add);
   });
 
+  safeHandle('clear-tags-filtered', (_e, { tabId, options }) => {
+    return db.clearTagsFiltered(tabId, options);
+  });
+
   safeHandle('get-all-tags', (_e, { tabId }) => {
     return db.getAllTags(tabId);
   });

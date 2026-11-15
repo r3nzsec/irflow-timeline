@@ -168,6 +168,28 @@ class QueryStoreMethods {
     // (including the intentional "load all in group" path), so an explicit non-negative
     // limit is honored as-is; only a missing/invalid one falls back to a bounded default.
     const effectiveLimit = Number.isInteger(limit) && limit >= 0 ? limit : 10000;
+    // A pivot must locate its source event in the NEW filtered/sorted view. Its old
+    // visible index (and the renderer's old filtered count) cannot locate it after
+    // removing a severity filter. Rank IDs in SQL, then fetch only a bounded window.
+    const focusRowId = Number(options.focusRowId);
+    const hasFocus = Number.isSafeInteger(focusRowId) && focusRowId > 0;
+    let focusIndex = -1;
+    let rowOffset = offset;
+    if (hasFocus) {
+      const ranked = db.prepare(`
+        WITH ranked AS (
+          SELECT data.rowid AS _rowid,
+                 ROW_NUMBER() OVER (${orderClause}) - 1 AS _index
+          FROM data ${whereClause}
+        )
+        SELECT _index FROM ranked WHERE _rowid = ?
+      `).get(...params, focusRowId);
+      if (ranked) focusIndex = Number(ranked._index);
+      rowOffset = focusIndex < 0 ? 0 : Math.max(0, Math.min(
+        Math.max(0, totalFiltered - effectiveLimit),
+        focusIndex - Math.floor(effectiveLimit / 2),
+      ));
+    }
     const omitSet = new Set(options.omitHeaders || []);
     const colsForSelect = meta.safeCols.filter((c) => !omitSet.has(c.original));
     const colList = colsForSelect.map((c) => {
@@ -176,7 +198,7 @@ class QueryStoreMethods {
     }).join(", ");
     const truncateColumns = options.truncateColumns || null;
     const querySql = `SELECT data.rowid as _rowid, ${colList} FROM data ${whereClause} ${orderClause} LIMIT ? OFFSET ?`;
-    const queryParams = [...params, effectiveLimit, offset];
+    const queryParams = [...params, effectiveLimit, rowOffset];
 
     const rawRows = db.prepare(querySql).all(...queryParams);
 
@@ -223,6 +245,7 @@ class QueryStoreMethods {
       totalRows: meta.rowCount,
       bookmarkedRows: [...bookmarkedSet],
       rowTags,
+      ...(hasFocus ? { rowOffset, focusIndex, focusRowId } : {}),
     };
   }
 

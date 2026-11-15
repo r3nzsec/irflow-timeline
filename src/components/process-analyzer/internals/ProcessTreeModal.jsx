@@ -113,7 +113,8 @@ export default function ProcessTreeModal() {
       toast.warning("Cannot filter grid", { detail: handoff.error || "No identity columns mapped for this process." });
       return;
     }
-    updateActiveTab(handoff.tabPatch);
+    updateActiveTab({ ...handoff.tabPatch, rowFocusResult: null,
+      rowFocusVersion: (ct.rowFocusVersion || 0) + 1 });
     if (handoff.proximity) setProximityFilter(handoff.proximity);
     else setProximityFilter(null);
     toast.success("Grid filtered to process", {

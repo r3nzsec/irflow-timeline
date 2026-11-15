@@ -60,6 +60,14 @@ test("keyboard row navigation leaves a fully visible row in place", async () => 
   assert.equal(target, null);
 });
 
+test("a pivot centers the source row even if it was already visible", async () => {
+  const { getRowScrollTarget } = await import("../src/utils/grid-layout.js");
+  assert.equal(getRowScrollTarget({ rowIndex: 20, rowHeight: 26, logicalScrollTop: 400,
+    viewportHeight: 400, stickyHeight: 62, align: "center" }), 364);
+  assert.equal(getRowScrollTarget({ rowIndex: 0, rowHeight: 26, logicalScrollTop: 400,
+    viewportHeight: 400, stickyHeight: 62, align: "center" }), 0);
+});
+
 test("visible row range reports viewport rows without overscan", async () => {
   const { getVisibleRowRange } = await import("../src/utils/grid-layout.js");
 

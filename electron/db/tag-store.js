@@ -573,6 +573,28 @@ class TagStoreMethods {
     }
   }
 
+  /** Remove every tag on the selected rows, without touching bookmarks or the palette. */
+  clearTagsFiltered(tabId, options = {}) {
+    const meta = this.databases.get(tabId);
+    if (!meta) return { ok: false, removed: 0, error: "Unknown tab" };
+    try {
+      const params = [], where = [];
+      this._applyStandardFilters(options || {}, meta, where, params);
+      // Explicit select-all is allowed; an accidentally omitted scope is not.
+      if (!where.length && options?.confirmWholeTab !== true) {
+        return { ok: false, removed: 0, error: "No row selection or filter was supplied" };
+      }
+      const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+      const result = meta.db.prepare(
+        `DELETE FROM tags WHERE rowid IN (SELECT data.rowid FROM data ${clause})`
+      ).run(...params);
+      this._invalidateCountCache(tabId);
+      return { ok: true, removed: result.changes || 0 };
+    } catch (e) {
+      return { ok: false, removed: 0, error: e.message };
+    }
+  }
+
   /**
    * Bulk bookmark (or un-bookmark) all rows matching current filters.
    * Uses INSERT...SELECT / DELETE...SELECT — never materializes rowIds in JS.

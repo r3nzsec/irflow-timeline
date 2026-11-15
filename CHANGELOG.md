@@ -3,7 +3,20 @@
 All notable changes to IRFlow Timeline. The macOS release workflow
 (`.github/workflows/release-macos.yml`) publishes the section matching the
 released version as the GitHub release notes — keep version headers in the form
-`## v<MAJOR.MINOR.PATCH>`.
+`## Unreleased
+
+### Fixed
+
+- Preserve the source timestamp's sub-millisecond digits in seven-digit display and UTC sort keys, including offset-bearing Hayabusa timestamps; raw evidence remains unchanged.
+- Apply temporal pivots to Hayabusa timestamps with a space before their UTC offset. Close the dialog on success and report invalid timestamps or windows.
+- Keep the pivot source event selected and centered after filtering, including when removing a severity filter places it outside the currently loaded rows. Keep the histogram and UTC date controls synchronized with the active filters and ignore stale histogram responses.
+
+### Added
+
+- **Apply and remove filters** in the temporal-pivot dialog, alongside **Apply**, which preserves existing filters.
+- Timestamp-cell context menus with **Pivot with filters** and **Pivot and clear filters** for ±30s, ±1m, ±5m, and ±10m. Right-click the Tags column for direct tag choices and **Clear**.
+
+## v<MAJOR.MINOR.PATCH>`.
 
 ## v1.0.10
 

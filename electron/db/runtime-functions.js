@@ -1,7 +1,7 @@
-const { registerForensicUDFs, normalizeTimestamp, isUnsetWindowsTimestamp } = require("../utils/forensic-normalize");
+const { registerForensicUDFs, normalizeTimestamp, isUnsetWindowsTimestamp, timestampFraction } = require("../utils/forensic-normalize");
 const { compileSafeRegex, MAX_VALUE_LEN, MAX_PATTERN_LEN } = require("../utils/safe-regex");
 
-// Canonical, lexicographically-sortable UTC form ("YYYY-MM-DD HH:MM:SS.fff") for a value
+// Canonical, lexicographically-sortable UTC form with the source fraction for a value
 // that carries an explicit timezone (Z or ±HH:MM). Mirrors the display path: the grid renders
 // timestamp cells via normalizeTimestamp (naive = UTC, offsets honored), so sorting must use
 // the same true instant or zoned rows (e.g. Hayabusa "+05:00" alongside naive EvtxECmd) sort
@@ -9,8 +9,14 @@ const { compileSafeRegex, MAX_VALUE_LEN, MAX_PATTERN_LEN } = require("../utils/s
 function zonedToCanonicalUtc(s) {
   const ms = normalizeTimestamp(s);
   if (!Number.isFinite(ms)) return null;
-  const iso = new Date(ms).toISOString(); // YYYY-MM-DDTHH:MM:SS.fffZ
-  return iso.slice(0, 10) + " " + iso.slice(11, 23);
+  return canonicalUtcKey(ms, timestampFraction(s));
+}
+
+// Do not collapse distinct forensic timestamps in the same millisecond.
+function canonicalUtcKey(ms, fraction) {
+  const iso = new Date(ms).toISOString();
+  const digits = (fraction || iso.slice(20, 23)).padEnd(3, "0");
+  return iso.slice(0, 10) + " " + iso.slice(11, 19) + "." + digits;
 }
 
 // Windows FILETIME 0 and .NET DateTime.MinValue show up as 1601-01-01 / 0001-01-01
@@ -255,6 +261,10 @@ function registerRuntimeFunctions(db) {
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s + " 00:00:00";
     let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\s*(.*)/);
     if (m) {
+      if (hasExplicitZone(s)) {
+        const canonical = zonedToCanonicalUtc(s);
+        if (canonical) return canonical;
+      }
       let timePart = m[4] || "00:00:00";
       const ampm = timePart.match(/\s*([AP]M)\s*$/i);
       timePart = timePart.replace(/\s*[AP]M\s*$/i, "").trim();
@@ -286,9 +296,7 @@ function registerRuntimeFunctions(db) {
       }
     }
     const t = looseParseUtcMs(s);
-    if (Number.isFinite(t)) {
-      return new Date(t).toISOString().replace("T", " ").replace("Z", "");
-    }
+    if (Number.isFinite(t)) return canonicalUtcKey(t, timestampFraction(s));
     return s;
   });
 

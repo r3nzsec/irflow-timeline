@@ -83,6 +83,19 @@ test("set-tag-on-rows defaults to adding when `add` is omitted", () => {
   assert.deepEqual(calls.at(-1), ["setTagOnRows", ["tab-1", [4], "C2", true]]);
 });
 
+test("clear-tags-filtered forwards the complete selection scope", () => {
+  const handlers = {};
+  const options = { columnFilters: { Level: "crit" }, excludedRowIds: [5] };
+  registerTagHandlers((channel, handler) => { handlers[channel] = handler; }, () => {}, {
+    db: { clearTagsFiltered(tabId, actual) {
+      assert.equal(tabId, "tab");
+      assert.deepEqual(actual, options);
+      return { ok: true, removed: 3 };
+    } },
+  });
+  assert.deepEqual(handlers["clear-tags-filtered"](null, { tabId: "tab", options }), { ok: true, removed: 3 });
+});
+
 test("bulk write handlers surface the store's refusal instead of swallowing it", () => {
   const handlers = {};
   registerTagHandlers((channel, handler) => { handlers[channel] = handler; }, () => {}, {

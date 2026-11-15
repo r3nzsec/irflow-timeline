@@ -1,4 +1,4 @@
-import { isUnsetWindowsTimestamp, normalizeTimestamp } from "./forensic-normalize.js";
+import { isUnsetWindowsTimestamp, normalizeTimestamp, timestampFraction } from "./forensic-normalize.js";
 
 export const UNSET_TIMESTAMP_LABEL = "Unset";
 export const UNSET_TIMESTAMP_TITLE = "Unset timestamp (Windows FILETIME epoch 1601-01-01 — not a real event time)";
@@ -36,9 +36,10 @@ export function formatDateTime(raw, fmt, tz) {
     h = parts.hour === "24" ? "00" : parts.hour; m = parts.minute; s = parts.second;
   }
   const ms3 = String(d.getMilliseconds()).padStart(3, "0");
-  const us7 = ms3 + "0000";
+  // Timezone conversion changes the wall clock, not the source fraction.
+  const fraction7 = (timestampFraction(raw) || ms3).padEnd(7, "0").slice(0, 7);
   return fmt
     .replace("yyyy", Y).replace("MM", M).replace("dd", D)
     .replace("HH", h).replace("mm", m).replace("ss", s)
-    .replace("fffffff", us7).replace("fff", ms3);
+    .replace("fffffff", fraction7).replace("fff", ms3);
 }

@@ -69,3 +69,22 @@ test("bookmark snapshots stay on the main database path", async () => {
 
   assert.deepEqual(await handlers["get-bookmarked-ids"](null, { tabId: "tab-1" }), [4, 9]);
 });
+
+test("resolving a pivot's row position runs in the query worker even without filters", async () => {
+  const handlers = {};
+  let job;
+  const db = {
+    getTabWorkerDescriptor: (tabId) => ({ tabId, dbPath: "/tmp/focus.db" }),
+    queryRows() { throw new Error("row ranking must not block the main process"); },
+  };
+  registerQueryHandlers((name, fn) => { handlers[name] = fn; }, () => {}, {
+    db, jobManager: { startWorkerJob(options) {
+      job = options;
+      return { promise: Promise.resolve({ result: { focusIndex: 15000 }, descriptors: [] }) };
+    }, cancelWhere() {} },
+  });
+  const options = { focusRowId: 16001, limit: 10000 };
+  assert.deepEqual(await handlers["query-rows"](null, { tabId: "tab", options }), { focusIndex: 15000 });
+  assert.equal(job.worker, "query-worker.js");
+  assert.deepEqual(job.workerData.payload.options, options);
+});
